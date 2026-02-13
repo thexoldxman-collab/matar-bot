@@ -1,63 +1,76 @@
 import telebot
 from telebot import types
 import os
+import json
 
-# جلب التوكن من إعدادات السيرفر
+# الإعدادات الأساسية
 TOKEN = os.getenv('TOKEN')
 bot = telebot.TeleBot(TOKEN)
+ADMIN_ID = 846938470  # آيديك الصحيح
 
-# --- إعدادات الإدمن (الآيدي الصحيح الخاص بك) ---
-ADMIN_ID = 846938470 
+# قاعدة بيانات بسيطة للحفظ
+DB_FILE = "database.json"
 
-# --- لوحة المفاتيح الرئيسية ---
-def main_kb():
+def load_db():
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r") as f: return json.load(f)
+    return {"users": {}, "settings": {"min_deposit": 100}}
+
+def save_db(db):
+    with open(DB_FILE, "w") as f: json.dump(db, f, indent=4)
+
+# --- كيبورد الإمبراطور ---
+def main_markup():
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    btn1 = types.KeyboardButton('⚽ ايشانسي | Ichancy')
-    btn2 = types.KeyboardButton('💰 حسابي')
-    btn3 = types.KeyboardButton('➕ شحن رصيد')
-    btn4 = types.KeyboardButton('➖ سحب أرباح')
-    btn5 = types.KeyboardButton('📢 القناة الرسمية')
-    btn6 = types.KeyboardButton('🛠 الدعم الفني')
-    markup.add(btn1, btn2, btn3, btn4, btn5, btn6)
+    markup.add('⚽ قسم ايشانسي', '💰 رصيدي')
+    markup.add('➕ شحن الحساب', '➖ طلب سحب')
+    markup.add('📊 الإحصائيات', '🛠 الدعم')
     return markup
 
-# --- لوحة التحكم (تظهر لك أنت فقط) ---
-def admin_kb():
+def admin_markup():
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    markup.add('📊 إحصائيات البوت', '➕ إضافة رصيد')
-    markup.add('📢 إرسال إعلان للكل', '🔙 العودة للقائمة')
+    markup.add('➕ إضافة رصيد', '📢 إذاعة عامة')
+    markup.add('📉 خصم رصيد', '🔙 العودة')
     return markup
 
-# --- أمر التشغيل /start ---
+# --- الأوامر ---
 @bot.message_handler(commands=['start'])
-def start(message):
-    welcome_text = (f"🎯 أهلاً بك يا {message.from_user.first_name} في نسخة الإمبراطور.\n\n"
-                    "البوت الأسرع لخدمات الشحن والسحب.")
-    bot.send_message(message.chat.id, welcome_text, reply_markup=main_kb())
+def welcome(message):
+    db = load_db()
+    uid = str(message.from_user.id)
+    if uid not in db["users"]:
+        db["users"][uid] = {"name": message.from_user.first_name, "balance": 0}
+        save_db(db)
+    bot.send_message(message.chat.id, f"🎯 مرحباً بك في بوت الإمبراطور للخدمات\n\nأهلاً بك: {message.from_user.first_name}", reply_markup=main_markup())
 
-# --- معالجة الأوامر والأزرار ---
-@bot.message_handler(func=lambda message: True)
-def handle_all(message):
-    uid = message.from_user.id
-    
-    if message.text == '💰 حسابي':
-        info = (f"👤 الاسم: {message.from_user.first_name}\n"
-                f"🆔 الآيدي: `{uid}`\n"
-                f"💰 رصيدك: 0.00 ليرة")
-        bot.reply_to(message, info, parse_mode="Markdown")
-    
-    elif message.text == '⚽ ايشانسي | Ichancy':
-        bot.reply_to(message, "✅ الحد الأدنى للتعبئة والسحب هو 100 ليرة.\nأرسل صورة التحويل للإدارة.")
+@bot.message_handler(func=lambda m: True)
+def handle_text(m):
+    uid = str(m.from_user.id)
+    db = load_db()
 
-    elif message.text == '🛠 الدعم الفني':
-        bot.reply_to(message, "للتواصل مع المطور.")
+    if m.text == '💰 رصيدي':
+        bal = db["users"].get(uid, {}).get("balance", 0)
+        bot.reply_to(m, f"💳 رصيدك الحالي هو: {bal} ليرة")
 
-    # --- الدخول للوحة الإدمن عبر أمر سري ---
-    elif message.text == '/admin' and uid == ADMIN_ID:
-        bot.send_message(uid, "🔓 أهلاً بك يا زعيم في لوحة التحكم السرية.", reply_markup=admin_kb())
+    elif m.text == '/admin' and int(uid) == ADMIN_ID:
+        bot.send_message(uid, "🔓 دخلت لوحة التحكم الإمبراطورية", reply_markup=admin_markup())
 
-    elif message.text == '🔙 العودة للقائمة':
-        bot.send_message(uid, "تمت العودة للقائمة الرئيسية.", reply_markup=main_kb())
+    elif m.text == '➕ إضافة رصيد' and int(uid) == ADMIN_ID:
+        msg = bot.send_message(uid, "أرسل (الآيدي:المبلغ) لإضافته")
+        bot.register_next_step_handler(msg, add_bal_func)
 
-# تشغيل البوت
+    elif m.text == '🔙 العودة':
+        bot.send_message(uid, "القائمة الرئيسية", reply_markup=main_markup())
+
+def add_bal_func(message):
+    try:
+        target, amount = message.text.split(':')
+        db = load_db()
+        if target in db["users"]:
+            db["users"][target]["balance"] += int(amount)
+            save_db(db)
+            bot.send_message(message.chat.id, "✅ تم الشحن بنجاح")
+            bot.send_message(target, f"💰 تم إضافة {amount} ليرة لرصيدك!")
+    except: bot.send_message(message.chat.id, "❌ خطأ بالتنسيق")
+
 bot.polling(none_stop=True)
