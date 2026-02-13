@@ -1,4 +1,5 @@
 import re
+import telebot
 from telebot import TeleBot, types
 
 # =======================
@@ -22,7 +23,7 @@ GIFTS = {}        # أكواد الهدايا {كود: قيمة}
 # =======================
 def main_keyboard():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add('⚽ ايشانسي | Ichancy')  # أول زر بمفرده
+    markup.add('⚽ ايشانسي | Ichancy')
     markup.add('➕ شحن رصيد', '➖ سحب أرباح')
     markup.add('💰 رصيدي', '📢 القناة الرسمية')
     markup.add('🛠 الدعم الفني', 'انضم كوكيل معتمد')
@@ -54,17 +55,21 @@ def start(message):
     user_id = message.from_user.id
     USER_STATE[user_id] = None
     USER_TEMP[user_id] = {}
-    USERS.setdefault(user_id, {
-        "account_name": None,
-        "password": None,
-        "bot_balance": 0,
-        "game_balance": 0,
-        "referrer": None,
-        "pending_commission": 0,
-        "banned": False,
-        "game_id": None,
-        "deleted": False
-    })
+    
+    # تعريف المستخدم إذا كان جديداً
+    if user_id not in USERS:
+        USERS[user_id] = {
+            "account_name": None,
+            "password": None,
+            "bot_balance": 0,
+            "game_balance": 0,
+            "referrer": None,
+            "pending_commission": 0,
+            "banned": False,
+            "game_id": None,
+            "deleted": False
+        }
+        
     bot.send_message(
         message.chat.id,
         f"أهلاً بك في بوت مطر 🎯\n🔗 يرجى الاشتراك في القناة: https://t.me/{CHANNEL_USERNAME}",
@@ -72,88 +77,101 @@ def start(message):
     )
 
 # =======================
-# التعامل مع الرسائل
+# معالجة إنشاء الحساب (الخطوات)
+# =======================
+def process_username(message):
+    user_id = message.from_user.id
+    username = message.text
+    
+    if message.text == '🔙 العودة':
+        USER_STATE[user_id] = None
+        bot.send_message(user_id, "تم الإلغاء.", reply_markup=main_keyboard())
+        return
+
+    if not is_valid_username(username):
+        msg = bot.send_message(user_id, "❌ الاسم غير صالح! استخدم أحرف إنجليزية وأرقام فقط:")
+        bot.register_next_step_handler(msg, process_username)
+        return
+        
+    USERS[user_id]["account_name"] = username
+    USER_STATE[user_id] = "creating_account_password"
+    msg = bot.send_message(user_id, "🔒 اختر كلمة المرور لحسابك (أحرف وأرقام فقط):")
+    bot.register_next_step_handler(msg, process_password)
+
+def process_password(message):
+    user_id = message.from_user.id
+    password = message.text
+
+    if not is_valid_password(password):
+        msg = bot.send_message(user_id, "❌ كلمة المرور غير صالحة! استخدم أحرف إنجليزية وأرقام فقط:")
+        bot.register_next_step_handler(msg, process_password)
+        return
+        
+    USERS[user_id]["password"] = password
+    USER_STATE[user_id] = None
+    bot.send_message(user_id, "✅ تم إنشاء حسابك في iChancy بنجاح!", reply_markup=main_keyboard())
+
+# =======================
+# التعامل مع الرسائل العامة
 # =======================
 @bot.message_handler(func=lambda m: True)
 def handle_msg(message):
     user_id = message.from_user.id
     text = message.text
 
-    # ---------- تحقق من الحظر ----------
-    if USERS.get(user_id, {}).get("banned", False):
+    # ضمان وجود المستخدم في القاعدة
+    if user_id not in USERS:
+        start(message)
+        return
+
+    # تحقق من الحظر
+    if USERS[user_id].get("banned", False):
         bot.send_message(user_id, "🚫 تم حظر حسابك، لا يمكنك استخدام البوت.")
         return
 
-    # ---------- زر Ichancy ----------
+    # زر Ichancy
     if text == '⚽ ايشانسي | Ichancy':
         if not USERS[user_id]["account_name"] or USERS[user_id]["deleted"]:
             USER_STATE[user_id] = "creating_account_username"
-            msg = bot.send_message(user_id, "📌 اختر اسم الحساب داخل اللعبة (بالأحرف الإنجليزية والأرقام فقط):")
+            markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+            markup.add('🔙 العودة')
+            msg = bot.send_message(user_id, "📌 لنبدأ.. اختر اسم الحساب داخل اللعبة (بالأحرف الإنجليزية والأرقام):", reply_markup=markup)
             bot.register_next_step_handler(msg, process_username)
         else:
             markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
             markup.add('💳 التعبئة في حسابي', '💸 السحب من حسابي', '🗑 حذف الحساب', '🔙 العودة')
             bot.send_message(user_id,
                              f"👤 حسابك داخل اللعبة: {USERS[user_id]['account_name']}\n"
-                             f"💰 رصيد اللعبة: {USERS[user_id]['game_balance']}\n"
-                             f"🆔 ID الحساب: {USERS[user_id]['game_id']}",
+                             f"💰 رصيد اللعبة الحالي: {USERS[user_id]['game_balance']}\n"
+                             f"🆔 معرف الحساب (ID): {user_id}",
                              reply_markup=markup)
 
-    # ---------- إنشاء الحساب ----------
-    elif USER_STATE.get(user_id) == "creating_account_username":
-        process_username(message)
-    elif USER_STATE.get(user_id) == "creating_account_password":
-        process_password(message)
+    elif text == '🔙 العودة':
+        bot.send_message(user_id, "القائمة الرئيسية:", reply_markup=main_keyboard())
 
-    # ---------- إدارة الحساب داخل اللعبة ----------
-    elif text == '💳 التعبئة في حسابي':
-        bot.send_message(user_id, "💰 هذه عملية شحن داخل اللعبة (يمكنك إضافة طريقة لاحقاً).")
-    elif text == '💸 السحب من حسابي':
-        bot.send_message(user_id, "💸 هذه عملية سحب من اللعبة (يمكنك إضافة طريقة لاحقاً).")
     elif text == '🗑 حذف الحساب':
         USER_STATE[user_id] = "confirm_delete"
-        bot.send_message(user_id, "⚠️ سيتم تعطيل حسابك! اكتب كلمة **حذف** لتأكيد العملية:")
+        bot.send_message(user_id, "⚠️ تحذير: سيتم حذف بيانات حسابك. اكتب كلمة (حذف) للتأكيد:")
 
     elif USER_STATE.get(user_id) == "confirm_delete":
-        if text.lower() == "حذف":
+        if text == "حذف":
             USERS[user_id]["deleted"] = True
+            USERS[user_id]["account_name"] = None
             USER_STATE[user_id] = None
-            bot.send_message(user_id, "✅ تم تعطيل حسابك! يمكنك إنشاء حساب جديد.")
+            bot.send_message(user_id, "✅ تم حذف بيانات الحساب بنجاح.", reply_markup=main_keyboard())
         else:
             USER_STATE[user_id] = None
-            bot.send_message(user_id, "❌ تم إلغاء عملية الحذف.")
+            bot.send_message(user_id, "❌ تم إلغاء العملية.", reply_markup=main_keyboard())
 
-    # ---------- أوامر البوت ----------
-    elif text == '➕ شحن رصيد':
-        bot.send_message(user_id, "💳 اختر طريقة شحن الرصيد داخل البوت (يمكنك إضافة طرق لاحقاً).")
-    elif text == '➖ سحب أرباح':
-        bot.send_message(user_id, "💸 اختر طريقة سحب أرباحك (يمكنك إضافة طرق لاحقاً).")
+    elif text == '💰 رصيدي':
+        balance = USERS[user_id].get("bot_balance", 0)
+        bot.send_message(user_id, f"💳 رصيدك الحالي في البوت هو: {balance}$")
 
-# ========== وظائف مساعدة ==========
-def process_username(message):
-    user_id = message.from_user.id
-    username = message.text
-    if not is_valid_username(username):
-        msg = bot.send_message(user_id, "❌ الاسم غير صالح! استخدم أحرف إنجليزية وأرقام فقط:")
-        bot.register_next_step_handler(msg, process_username)
-        return
-    USERS[user_id]["account_name"] = username
-    USER_STATE[user_id] = "creating_account_password"
-    msg = bot.send_message(user_id, "🔒 اختر كلمة المرور (أحرف وأرقام فقط):")
-    bot.register_next_step_handler(msg, process_password)
-
-def process_password(message):
-    user_id = message.from_user.id
-    password = message.text
-    if not is_valid_password(password):
-        msg = bot.send_message(user_id, "❌ كلمة المرور غير صالحة! استخدم أحرف إنجليزية وأرقام فقط:")
-        bot.register_next_step_handler(msg, process_password)
-        return
-    USERS[user_id]["password"] = password
-    USER_STATE[user_id] = None
-    bot.send_message(user_id, "✅ تم إنشاء الحساب بنجاح! يمكنك الآن استخدام البوت.")
+    elif text == '🛠 الدعم الفني':
+        bot.send_message(user_id, f"👨‍💻 للدعم الفني والاستفسارات: @{CHANNEL_USERNAME}")
 
 # =======================
 # تشغيل البوت
 # =======================
+print("بوت مطر بدأ العمل بنجاح...")
 bot.infinity_polling()
