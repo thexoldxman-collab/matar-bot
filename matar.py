@@ -1,76 +1,97 @@
 import telebot
 from telebot import types
 import os
-import json
 
-# الإعدادات الأساسية
 TOKEN = os.getenv('TOKEN')
 bot = telebot.TeleBot(TOKEN)
-ADMIN_ID = 846938470  # آيديك الصحيح
+ADMIN_ID = 846938470 
+CHANNEL_ID = "@Matar_ichancy" 
+CHANNEL_LINK = "https://t.me/Matar_ichancy"
 
-# قاعدة بيانات بسيطة للحفظ
-DB_FILE = "database.json"
+# متغيرات وهمية لتجربة الكود (سيتم ربطها بقاعدة بيانات لاحقاً)
+user_data = {} 
 
-def load_db():
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r") as f: return json.load(f)
-    return {"users": {}, "settings": {"min_deposit": 100}}
-
-def save_db(db):
-    with open(DB_FILE, "w") as f: json.dump(db, f, indent=4)
-
-# --- كيبورد الإمبراطور ---
-def main_markup():
-    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    markup.add('⚽ قسم ايشانسي', '💰 رصيدي')
-    markup.add('➕ شحن الحساب', '➖ طلب سحب')
-    markup.add('📊 الإحصائيات', '🛠 الدعم')
-    return markup
-
-def admin_markup():
-    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    markup.add('➕ إضافة رصيد', '📢 إذاعة عامة')
-    markup.add('📉 خصم رصيد', '🔙 العودة')
-    return markup
-
-# --- الأوامر ---
-@bot.message_handler(commands=['start'])
-def welcome(message):
-    db = load_db()
-    uid = str(message.from_user.id)
-    if uid not in db["users"]:
-        db["users"][uid] = {"name": message.from_user.first_name, "balance": 0}
-        save_db(db)
-    bot.send_message(message.chat.id, f"🎯 مرحباً بك في بوت الإمبراطور للخدمات\n\nأهلاً بك: {message.from_user.first_name}", reply_markup=main_markup())
-
-@bot.message_handler(func=lambda m: True)
-def handle_text(m):
-    uid = str(m.from_user.id)
-    db = load_db()
-
-    if m.text == '💰 رصيدي':
-        bal = db["users"].get(uid, {}).get("balance", 0)
-        bot.reply_to(m, f"💳 رصيدك الحالي هو: {bal} ليرة")
-
-    elif m.text == '/admin' and int(uid) == ADMIN_ID:
-        bot.send_message(uid, "🔓 دخلت لوحة التحكم الإمبراطورية", reply_markup=admin_markup())
-
-    elif m.text == '➕ إضافة رصيد' and int(uid) == ADMIN_ID:
-        msg = bot.send_message(uid, "أرسل (الآيدي:المبلغ) لإضافته")
-        bot.register_next_step_handler(msg, add_bal_func)
-
-    elif m.text == '🔙 العودة':
-        bot.send_message(uid, "القائمة الرئيسية", reply_markup=main_markup())
-
-def add_bal_func(message):
+def is_subscribed(user_id):
     try:
-        target, amount = message.text.split(':')
-        db = load_db()
-        if target in db["users"]:
-            db["users"][target]["balance"] += int(amount)
-            save_db(db)
-            bot.send_message(message.chat.id, "✅ تم الشحن بنجاح")
-            bot.send_message(target, f"💰 تم إضافة {amount} ليرة لرصيدك!")
-    except: bot.send_message(message.chat.id, "❌ خطأ بالتنسيق")
+        status = bot.get_chat_member(CHANNEL_ID, user_id).status
+        return status in ['member', 'administrator', 'creator']
+    except: return False
+
+def main_kb():
+    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup.add(types.KeyboardButton('⚽ ايشانسي | Ichancy ⚽'))
+    markup.add(types.KeyboardButton('🔽 الشحن في البوت 🔽'), types.KeyboardButton('🔼 السحب من البوت 🔼'))
+    markup.add(types.KeyboardButton('💵 الرصيد 💵'), types.KeyboardButton('💰 دعوة الأصدقاء 💰'))
+    markup.add(types.KeyboardButton('💬 التواصل مع الدعم 💬'), types.KeyboardButton('📄 الشروط والأحكام 📄'))
+    return markup
+
+@bot.message_handler(commands=['start'])
+def start(message):
+    uid = message.from_user.id
+    if is_subscribed(uid):
+        msg = (f"🎯 أهلاً بك في بوت **Matar** المطور\n\n"
+               f"عزيزي {message.from_user.first_name}، يمكنك الآن البدء باستخدام كافة الخدمات.\n"
+               "موقعنا الرسمي: [ichancy.com](https://ichancy.com)")
+        bot.send_message(message.chat.id, msg, reply_markup=main_kb(), parse_mode="Markdown")
+    else:
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("🔗 اشترك في القناة أولاً", url=CHANNEL_LINK))
+        markup.add(types.InlineKeyboardButton("✅ تم الاشتراك", callback_data="check_sub"))
+        bot.send_message(message.chat.id, "⚠️ **عذراً، يجب الاشتراك في القناة لاستخدام البوت.**", reply_markup=markup, parse_mode="Markdown")
+
+# --- منطق السحب والعمولة 10% (بناءً على الصورة الأخيرة) ---
+@bot.message_handler(func=lambda message: message.text == '🔼 السحب من البوت 🔼')
+def withdraw_start(message):
+    msg = bot.send_message(message.chat.id, "💰 **أدخل المبلغ المراد سحبه بالليرة السورية:**")
+    bot.register_next_step_handler(msg, process_amount)
+
+def process_amount(message):
+    try:
+        amount = int(message.text)
+        if amount < 10000:
+            bot.reply_to(message, "❌ الحد الأدنى للسحب هو 10,000 ليرة.")
+            return
+        user_data[message.chat.id] = {'amount': amount}
+        msg = bot.send_message(message.chat.id, "📱 **أدخل رقم حسابك أو محفظتك (سيريتل كاش / شام كاش):**")
+        bot.register_next_step_handler(msg, process_account)
+    except:
+        bot.reply_to(message, "⚠️ يرجى إدخال مبلغ صحيح (أرقام فقط).")
+
+def process_account(message):
+    chat_id = message.chat.id
+    account = message.text
+    amount = user_data[chat_id]['amount']
+    fee = amount * 0.10
+    net = amount - fee
+
+    confirm_text = (
+        "📊 **تأكيد طلب السحب**\n"
+        "━━━━━━━━━━━━━━\n"
+        f"💰 المبلغ المطلوب: {amount:,} ل.س\n"
+        f"🏷 رسوم التحويل (10%): {fee:,} ل.س\n"
+        "━━━━━━━━━━━━━━\n"
+        f"✅ **صافي المبلغ الذي سيصلك: {net:,} ل.س**\n"
+        f"📱 الحساب: `{account}`\n"
+        "━━━━━━━━━━━━━━\n"
+        "هل تريد تأكيد الطلب؟"
+    )
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("✅ تأكيد", callback_data="confirm_w"), 
+               types.InlineKeyboardButton("❌ إلغاء", callback_data="cancel"))
+    bot.send_message(chat_id, confirm_text, reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback_query(call):
+    if call.data == "check_sub":
+        if is_subscribed(call.from_user.id):
+            bot.answer_callback_query(call.id, "✅ تم التفعيل!")
+            start(call.message)
+        else:
+            bot.answer_callback_query(call.id, "❌ لم تشترك بعد!", show_alert=True)
+    elif call.data == "confirm_w":
+        bot.edit_message_text("✅ تم إرسال طلبك للإدارة، سيتم التنفيذ خلال 12 ساعة.", call.message.chat.id, call.message.message_id)
+    elif call.data == "cancel":
+        bot.edit_message_text("❌ تم إلغاء العملية.", call.message.chat.id, call.message.message_id)
 
 bot.polling(none_stop=True)
