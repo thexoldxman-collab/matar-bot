@@ -1,187 +1,77 @@
-import re
 import telebot
-import json
+from telebot import types
+from flask import Flask
+from threading import Thread
 import os
-from telebot import TeleBot, types
 
-# =======================
-# إعدادات البوت والإدمن
-# =======================
+# 1. إعداد سيرفر صغير لإبقاء البوت مستيقظاً
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "I am alive!"
+
+def run():
+    # Render بيعطي منفذ (Port) تلقائي، لازم نستخدمه
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+# 2. إعداد البوت (حط التوكن تبعك هون)
 TOKEN = '8581064983:AAE43_TNTx8Fnww6-vs8MVlb97ahTzCvNhM'
-bot = TeleBot(TOKEN)
-ADMIN_ID = 846938470
-CHANNEL_USERNAME = "Matar_ichancy"
-DB_FILE = 'database.json'
+bot = telebot.TeleBot(TOKEN)
 
-# =======================
-# وظائف قاعدة البيانات (JSON)
-# =======================
-def load_data():
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def save_data():
-    with open(DB_FILE, 'w', encoding='utf-8') as f:
-        json.dump(USERS, f, ensure_ascii=False, indent=4)
-
-# تحميل البيانات عند البدء
-USERS = load_data()
-USER_STATE = {}
-
-# =======================
-# لوحات المفاتيح (القوائم)
-# =======================
-def main_keyboard():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add('⚽ ايشانسي | Ichancy')
-    markup.add('➕ شحن رصيد', '➖ سحب أرباح')
-    markup.add('💰 رصيدي', '📢 القناة الرسمية')
-    markup.add('🛠 الدعم الفني', '🎁 إهداء رصيد')
-    markup.add('🎟 كود هدية', 'انضم كوكيل معتمد')
-    return markup
-
-def back_keyboard():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add('🔙 العودة للقائمة الرئيسية')
-    return markup
-
-# =======================
-# التحقق من المدخلات
-# =======================
-def is_valid_input(text):
-    return bool(re.match(r'^[A-Za-z0-9]+$', text))
-
-# =======================
-# أوامر البداية
-# =======================
 @bot.message_handler(commands=['start'])
 def start(message):
-    user_id = str(message.from_user.id)
-    USER_STATE[user_id] = None
+    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    btn1 = types.KeyboardButton('🆔 إنشاء حساب iChancy')
+    btn2 = types.KeyboardButton('💰 شحن رصيد')
+    btn3 = types.KeyboardButton('📥 سحب أرباح')
+    btn4 = types.KeyboardButton('📊 حسابي الشخصي')
+    btn5 = types.KeyboardButton('🛠️ خدمات أخرى')
+    btn6 = types.KeyboardButton('📞 الدعم الفني')
+    markup.add(btn1, btn2, btn3, btn4, btn5, btn6)
     
-    if user_id not in USERS:
-        USERS[user_id] = {
-            "account_name": None,
-            "password": None,
-            "bot_balance": 0,
-            "game_balance": 0,
-            "banned": False,
-            "deleted": False
-        }
-        save_data()
-        
-    bot.send_message(
-        message.chat.id,
-        f"أهلاً بك {message.from_user.first_name} في بوت مطر 🎯\nوسيطك المعتمد لمنصة iChancy.\n\n🔗 تابعنا هنا: https://t.me/{CHANNEL_USERNAME}",
-        reply_markup=main_keyboard()
-    )
+    welcome_text = (f"مرحباً بك {message.from_user.first_name} في بوت مطر الرسمي 🌧️\n\n"
+                    "نحن هنا لتسهيل عملياتك المالية على منصة iChancy بكل سرعة وأمان.\n"
+                    "الرجاء اختيار الخدمة المطلوبة من القائمة أدناه:")
+    bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
 
-# =======================
-# معالجة إنشاء الحساب (الخطوات)
-# =======================
-def process_username(message):
-    user_id = str(message.from_user.id)
-    if message.text == '🔙 العودة للقائمة الرئيسية':
-        start(message)
-        return
-
-    if not is_valid_input(message.text):
-        msg = bot.send_message(user_id, "❌ الاسم غير صالح! استخدم أحرف إنجليزية وأرقام فقط:")
-        bot.register_next_step_handler(msg, process_username)
-        return
-        
-    USERS[user_id]["account_name"] = message.text
-    save_data()
-    msg = bot.send_message(user_id, "🔒 ممتاز، الآن اختر كلمة مرور قوية (أحرف وأرقام فقط):")
-    bot.register_next_step_handler(msg, process_password)
-
-def process_password(message):
-    user_id = str(message.from_user.id)
-    if message.text == '🔙 العودة للقائمة الرئيسية':
-        start(message)
-        return
-
-    if not is_valid_input(message.text):
-        msg = bot.send_message(user_id, "❌ كلمة المرور غير صالحة! استخدم أحرف إنجليزية وأرقام فقط:")
-        bot.register_next_step_handler(msg, process_password)
-        return
-        
-    USERS[user_id]["password"] = message.text
-    USERS[user_id]["deleted"] = False
-    save_data()
-    bot.send_message(user_id, "✅ تم إنشاء حسابك بنجاح! يمكنك الآن الشحن واللعب.", reply_markup=main_keyboard())
-
-# =======================
-# التعامل مع الرسائل والأزرار
-# =======================
-@bot.message_handler(func=lambda m: True)
+@bot.message_handler(func=lambda message: True)
 def handle_msg(message):
-    user_id = str(message.from_user.id)
-    text = message.text
+    if message.text == '🆔 إنشاء حساب iChancy':
+        bot.reply_to(message, "✅ لفتح حساب جديد، يرجى إرسال الاسم الثلاثي + رقم الهاتف.\nسيقوم الموظف المختص بتجهيز حسابك فوراً.")
+    
+    elif message.text == '💰 شحن رصيد':
+        payment_markup = types.InlineKeyboardMarkup()
+        p1 = types.InlineKeyboardButton("Syriatel Cash 📱", callback_data="pay_syriatel")
+        p2 = types.InlineKeyboardButton("Cham Cash 💳", callback_data="pay_cham")
+        payment_markup.add(p1, p2)
+        bot.send_message(message.chat.id, "اختر وسيلة الشحن المناسبة لك:", reply_markup=payment_markup)
+    
+    elif message.text == '📥 سحب أرباح':
+        bot.reply_to(message, "📥 لطلب سحب الأرباح، أرسل ID الحساب والمبلغ المراد سحبه، مع تحديد وسيلة الاستلام (سيرياتل كاش / شام كاش).")
+    
+    elif message.text == '📊 حسابي الشخصي':
+        bot.reply_to(message, "👤 معلومات الحساب:\nالرصيد: 0.00$\nالديون: 0.00$\nالعمليات الناجحة: 0")
+    
+    elif message.text == '📞 الدعم الفني':
+        bot.reply_to(message, "👨‍💻 الإدارة جاهزة للرد على استفساراتكم:\nتواصل هنا: @Your_Username")
 
-    if user_id not in USERS:
-        start(message)
-        return
+@bot.callback_query_handler(func=lambda call: call.data.startswith('pay_'))
+def callback_payment(call):
+    if call.data == "pay_syriatel":
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, "🚀 تم اختيار سيرياتل كاش.\nيرجى تحويل المبلغ للمحفظة: [رقمك هنا]\nثم أرسل صورة الإشعار.")
+    elif call.data == "pay_cham":
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, "🚀 تم اختيار شام كاش.\nيرجى تحويل المبلغ للمحفظة: [رقمك هنا]\nثم أرسل صورة الإشعار.")
 
-    if USERS[user_id].get("banned", False):
-        bot.send_message(user_id, "🚫 حسابك محظور من قِبل الإدارة.")
-        return
-
-    # --- زر ايشانسي ---
-    if text == '⚽ ايشانسي | Ichancy':
-        if not USERS[user_id]["account_name"] or USERS[user_id]["deleted"]:
-            msg = bot.send_message(user_id, "📌 لنبدأ بإنشاء حسابك.\nاختر اسم المستخدم (أحرف إنجليزية وأرقام):", reply_markup=back_keyboard())
-            bot.register_next_step_handler(msg, process_username)
-        else:
-            markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-            markup.add('💳 التعبئة في حسابي', '💸 السحب من حسابي')
-            markup.add('🗑 حذف الحساب', '🔙 العودة للقائمة الرئيسية')
-            bot.send_message(user_id,
-                             f"👤 حسابك النشط: {USERS[user_id]['account_name']}\n"
-                             f"💰 رصيدك المتاح: {USERS[user_id]['game_balance']}$\n"
-                             f"🆔 معرف البوت: {user_id}",
-                             reply_markup=markup)
-
-    # --- الرجوع ---
-    elif text == '🔙 العودة للقائمة الرئيسية':
-        start(message)
-
-    # --- رصيدي ---
-    elif text == '💰 رصيدي':
-        bal = USERS[user_id].get("bot_balance", 0)
-        bot.send_message(user_id, f"💳 رصيدك الحالي في البوت: {bal}$")
-
-    # --- الدعم الفني ---
-    elif text == '🛠 الدعم الفني':
-        bot.send_message(user_id, f"👨‍💻 للتواصل مع الدعم الفني والوكلاء:\n@{CHANNEL_USERNAME}")
-
-    # --- حذف الحساب ---
-    elif text == '🗑 حذف الحساب':
-        USER_STATE[user_id] = "confirm_delete"
-        bot.send_message(user_id, "⚠️ هل أنت متأكد؟ سيتم تعطيل حسابك. أرسل كلمة (حذف) للتأكيد:")
-
-    elif USER_STATE.get(user_id) == "confirm_delete":
-        if text == "حذف":
-            USERS[user_id]["deleted"] = True
-            USERS[user_id]["account_name"] = None
-            save_data()
-            bot.send_message(user_id, "✅ تم حذف بيانات الحساب. يمكنك إنشاء واحد جديد في أي وقت.", reply_markup=main_keyboard())
-        else:
-            bot.send_message(user_id, "❌ تم إلغاء عملية الحذف.", reply_markup=main_keyboard())
-        USER_STATE[user_id] = None
-
-    # --- أزرار تحت التطوير ---
-    elif text in ['➕ شحن رصيد', '➖ سحب أرباح', '🎁 إهداء رصيد', '🎟 كود هدية']:
-        bot.send_message(user_id, "🚧 هذه الميزة قيد التجهيز من قبل الإدارة، سيتم تفعيلها قريباً.")
-
-# =======================
-# تشغيل البوت
-# =======================
-if __name__ == '__main__':
-    print("--- بوت مطر يعمل الآن بكفاءة ---")
-    bot.infinity_polling()
+# 3. تشغيل البوت مع ميزة الـ Keep Alive
+if __name__ == "__main__":
+    keep_alive()  # تشغيل السيرفر المساعد
+    print("بوت مطر يعمل الآن مع ميزة عدم النوم...")
+    bot.polling(none_stop=True)
