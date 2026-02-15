@@ -7,7 +7,7 @@ import sqlite3
 from datetime import datetime
 
 # ==========================================
-# 1. إعدادات البوت والسيرفر (تصحيح خطأ الصورة)
+# 1. إعدادات البوت والسيرفر الأساسية
 # ==========================================
 TOKEN = os.environ.get('TOKEN')
 bot = telebot.TeleBot(TOKEN)
@@ -19,283 +19,273 @@ app = Flask('')
 
 @app.route('/')
 def home():
-    return "Matar Pro System is Online and Stable!"
+    # رسالة الحالة للسيرفر لضمان العمل على Render
+    return "Matar Pro System: Status Online - Port Active"
 
-def run():
-    # حل مشكلة Port 10000 في Render الظاهرة بالصورة
+def run_server():
+    # حل مشكلة Port 10000 وتجنب الـ Conflict
     port = int(os.environ.get("PORT", 10000))
     try:
         app.run(host='0.0.0.0', port=port)
     except Exception as e:
-        print(f"Server Error: {e}")
+        print(f"Server Startup Error: {e}")
 
 def keep_alive():
-    t = Thread(target=run)
+    # تشغيل السيرفر في خلفية البوت
+    t = Thread(target=run_server)
     t.daemon = True
     t.start()
 
 # ==========================================
-# 2. قاعدة البيانات (الهيكل العملاق الشامل)
+# 2. نظام قاعدة البيانات (التفصيلي)
 # ==========================================
-conn = sqlite3.connect("matar_main_system_v3.db", check_same_thread=False)
-cursor = conn.cursor()
+def setup_database():
+    conn = sqlite3.connect("matar_pro_v301.db", check_same_thread=False)
+    cursor = conn.cursor()
+    
+    # جدول المستخدمين الشامل
+    cursor.execute("""CREATE TABLE IF NOT EXISTS users(
+        user_id INTEGER PRIMARY KEY, 
+        acc_name TEXT, 
+        balance REAL DEFAULT 0, 
+        site_balance REAL DEFAULT 0, 
+        status TEXT DEFAULT 'active', 
+        created_at TEXT)""")
 
-# جدول المستخدمين
-cursor.execute("""CREATE TABLE IF NOT EXISTS users(
-    user_id INTEGER PRIMARY KEY, 
-    acc_name TEXT, 
-    balance REAL DEFAULT 0, 
-    site_balance REAL DEFAULT 0, 
-    status TEXT DEFAULT 'active', 
-    created_at TEXT)""")
+    # جدول الأكواد والهدايا
+    cursor.execute("""CREATE TABLE IF NOT EXISTS gifts(
+        code TEXT PRIMARY KEY, 
+        value REAL, 
+        limit_count INTEGER, 
+        used_count INTEGER DEFAULT 0)""")
 
-# جدول الهدايا
-cursor.execute("""CREATE TABLE IF NOT EXISTS gifts(
-    code TEXT PRIMARY KEY, 
-    value REAL, 
-    limit_count INTEGER, 
-    used_count INTEGER DEFAULT 0)""")
+    # سجل استخدام الهدايا لمنع التكرار
+    cursor.execute("CREATE TABLE IF NOT EXISTS gift_usage(user_id INTEGER, code TEXT)")
+    
+    # جدول الإعدادات العامة (أرقام الكاش)
+    cursor.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
+    
+    # تعبئة البيانات الافتراضية
+    cursor.execute("INSERT OR IGNORE INTO settings VALUES ('syriatel_num', '74205110')")
+    cursor.execute("INSERT OR IGNORE INTO settings VALUES ('sham_num', 'SHAM-12345')")
+    
+    conn.commit()
+    return conn, cursor
 
-# جدول استخدام الهدايا
-cursor.execute("CREATE TABLE IF NOT EXISTS gift_usage(user_id INTEGER, code TEXT)")
-
-# جدول الإعدادات
-cursor.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
-
-# إدخال القيم الافتراضية إذا لم تكن موجودة
-cursor.execute("INSERT OR IGNORE INTO settings VALUES ('syriatel_num', '74205110')")
-cursor.execute("INSERT OR IGNORE INTO settings VALUES ('sham_num', 'SHAM-12345')")
-conn.commit()
+conn, cursor = setup_database()
 
 # ==========================================
-# 3. الدوال المساعدة (منع التعليق والاشتراك)
+# 3. محرك التحقق والوظائف المساعدة
 # ==========================================
-def get_setting(key):
-    cursor.execute("SELECT value FROM settings WHERE key=?", (key,))
-    res = cursor.fetchone()
-    return res[0] if res else "غير مضبوط"
-
-def is_sub(uid):
+def check_subscription(uid):
+    # التحقق من الاشتراك الإجباري في القناة
     try:
-        st = bot.get_chat_member(CHANNEL_ID, uid).status
-        return st in ['member', 'administrator', 'creator']
+        member = bot.get_chat_member(CHANNEL_ID, uid)
+        return member.status in ['member', 'administrator', 'creator']
     except:
-        return True # لتجنب التوقف في حال عطل التليجرام
+        return False
 
-def clear_steps(uid):
+def get_db_setting(key_name):
+    # جلب الإعدادات من القاعدة
+    cursor.execute("SELECT value FROM settings WHERE key=?", (key_name,))
+    result = cursor.fetchone()
+    return result[0] if result else "غير متوفر"
+
+def reset_user_steps(uid):
+    # حل مشكلة التعليق: تصفير أي خطوة سابقة
     bot.clear_step_handler_by_chat_id(chat_id=uid)
 
 # ==========================================
-# 4. لوحات المفاتيح (Keyboards)
+# 4. بناء القوائم (Keyboards)
 # ==========================================
-def main_kb(uid):
+def get_main_keyboard(uid):
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    btn1 = types.KeyboardButton('⚽ Ichancy ⚽')
-    btn2 = types.KeyboardButton('🔽 الشحن في البوت')
-    btn3 = types.KeyboardButton('🔼 السحب من البوت')
-    btn4 = types.KeyboardButton('🎁 اهداء صديق')
-    btn5 = types.KeyboardButton('🎫 كود هدية')
-    btn6 = types.KeyboardButton('💵 الرصيد')
-    btn7 = types.KeyboardButton('💬 التواصل مع الدعم')
-    markup.add(btn1)
-    markup.add(btn2, btn3)
-    markup.add(btn4, btn5)
-    markup.add(btn6, btn7)
+    markup.add(types.KeyboardButton('⚽ Ichancy ⚽'))
+    markup.add(types.KeyboardButton('🔽 الشحن في البوت'), types.KeyboardButton('🔼 السحب من البوت'))
+    markup.add(types.KeyboardButton('🎁 اهداء صديق'), types.KeyboardButton('🎫 كود هدية'))
+    markup.add(types.KeyboardButton('💵 الرصيد'), types.KeyboardButton('💬 التواصل مع الدعم'))
     if uid == ADMIN_ID:
         markup.add(types.KeyboardButton('🔐 إدارة البوت'))
     return markup
 
-def ichancy_kb():
+def get_ichancy_keyboard():
+    # قائمة Ichancy الفرعية
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    markup.add(types.KeyboardButton('➕ التعبئة في حسابي'))
-    markup.add(types.KeyboardButton('➖ السحب من حسابي'))
+    markup.add(types.KeyboardButton('💰 معلومات الحساب 💰'))
+    markup.add(types.KeyboardButton('➕ التعبئة في حسابي'), types.KeyboardButton('➖ السحب من حسابي'))
     markup.add(types.KeyboardButton('🔄 تحديث المعلومات'))
     markup.add(types.KeyboardButton('🔙 العودة للقائمة الرئيسية'))
     return markup
 
 # ==========================================
-# 5. معالجة الرسائل والمنطق البرمجي
+# 5. معالجة الأوامر والرسائل الترحيبية
 # ==========================================
 @bot.message_handler(commands=['start'])
-def start_cmd(message):
+def handle_start(message):
     uid = message.from_user.id
-    clear_steps(uid) # تصفير الخطوات لمنع التعليق
-    if not is_sub(uid):
-        m = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("اضغط هنا للاشتراك", url=CHANNEL_URL))
-        bot.send_message(message.chat.id, "⚠️ يجب الاشتراك في القناة أولاً لتتمكن من استخدام البوت!", reply_markup=m)
+    reset_user_steps(uid)
+    
+    # فحص الاشتراك قبل الترحيب
+    if not check_subscription(uid):
+        btn = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("انضم للقناة لتفعيل البوت ✅", url=CHANNEL_URL))
+        bot.send_message(message.chat.id, "⚠️ توقف! البوت يتطلب الاشتراك في القناة الرسمية أولاً.", reply_markup=btn)
         return
-    bot.send_message(message.chat.id, "أهلاً بك في نظام مطر الاحترافي 🌧️\nيرجى اختيار أحد الخيارات من القائمة أدناه:", reply_markup=main_kb(uid))
+        
+    welcome_text = (f"🎯 أهلاً بك في نظام مطر (Matar) المتكامل 🌧️\n\n"
+                    f"الخيار الأسرع والأكثر أماناً لشحن وسحب رصيد Ichancy في سوريا.\n"
+                    f"استخدم الأزرار بالأسفل لبدء العمليات.")
+    bot.send_message(message.chat.id, welcome_text, reply_markup=get_main_keyboard(uid))
 
 @bot.message_handler(func=lambda m: True)
-def handle_text(m):
+def main_router(m):
     uid = m.from_user.id
     text = m.text
     
-    # التحقق من حالة الحساب
+    # فحص الحظر
     cursor.execute("SELECT status FROM users WHERE user_id=?", (uid,))
-    res = cursor.fetchone()
-    if res and res[0] == 'banned':
-        bot.send_message(uid, "❌ نعتذر، حسابك محظور من استخدام البوت حالياً.")
+    user_status = cursor.fetchone()
+    if user_status and user_status[0] == 'banned':
+        bot.send_message(uid, "❌ نعتذر، حسابك محظور من استخدام النظام.")
         return
 
-    # --- قسم Ichancy (التعديلات المطلوبة) ---
+    # --- منطق قسم Ichancy ---
     if text == '⚽ Ichancy ⚽':
-        cursor.execute("SELECT acc_name, site_balance, user_id, created_at FROM users WHERE user_id=?", (uid,))
-        u = cursor.fetchone()
-        if not u or not u[0]:
-            msg = bot.send_message(m.chat.id, "لم نجد حساباً مسجلاً باسمك.\nيرجى إدخال اسم المستخدم الخاص بك (EN) لإنشاء الحساب:")
-            bot.register_next_step_handler(msg, register_new_user)
+        reset_user_steps(uid)
+        cursor.execute("SELECT acc_name FROM users WHERE user_id=?", (uid,))
+        user_data = cursor.fetchone()
+        
+        if not user_data or not user_data[0]:
+            prompt = bot.send_message(m.chat.id, "لم نجد حساباً مسجلاً.\nيرجى كتابة اسم المستخدم (باللغة الإنجليزية) لإنشاء حسابك:")
+            bot.register_next_step_handler(prompt, process_registration)
         else:
-            info_msg = (f"🌐 **معلومات حسابك في إيشانسي**\n\n"
-                        f"👤 اسم المستخدم: `{u[0]}`\n"
-                        f"💰 رصيدك الحالي: {u[1]} NSP\n"
-                        f"🆔 معرف اللاعب: `{u[2]}`\n"
-                        f"📅 تاريخ التسجيل: {u[3]}\n\n"
-                        f"استخدم الأزرار أدناه للتحكم في رصيد الموقع.")
-            bot.send_message(m.chat.id, info_msg, reply_markup=ichancy_kb(), parse_mode="Markdown")
+            bot.send_message(m.chat.id, "⚽ لوحة تحكم إيشانسي (Matar Mode).\nأقل مبلغ للتعامل هو 100 ليرة.", reply_markup=get_ichancy_keyboard())
 
-    # --- العودة ---
+    # --- بطاقة معلومات الحساب (التفصيلية كما في الصورة) ---
+    elif text == '💰 معلومات الحساب 💰':
+        reset_user_steps(uid)
+        cursor.execute("SELECT acc_name, site_balance, balance, user_id, created_at FROM users WHERE user_id=?", (uid,))
+        u = cursor.fetchone()
+        if u:
+            card = (f"🌐 اسم حسابك على الموقع : {u[0]}\n"
+                    f"🌐 رصيدك على الموقع : {u[1]} NSP\n\n"
+                    f"🤖 اسم حسابك على البوت : {m.from_user.first_name}\n"
+                    f"🤖 رصيدك على البوت : {u[2]} NSP\n\n"
+                    f"⚽ معرف اللاعب: {u[3]}\n"
+                    f"🗓 تاريخ إنشاء الحساب: {u[4]}")
+            bot.send_message(m.chat.id, "🎰") # أيقونة الماكينة المطلوبة
+            bot.send_message(m.chat.id, card, reply_markup=get_ichancy_keyboard())
+
     elif text == '🔙 العودة للقائمة الرئيسية':
-        clear_steps(uid)
-        bot.send_message(uid, "تمت العودة إلى القائمة الرئيسية.", reply_markup=main_kb(uid))
+        reset_user_steps(uid)
+        bot.send_message(uid, "تم العودة للقائمة الرئيسية 🌧️", reply_markup=get_main_keyboard(uid))
 
-    # --- الشحن (الرسالة الكاملة والاحترافية) ---
+    # --- نظام الشحن ---
     elif text == '🔽 الشحن في البوت':
-        m_in = types.InlineKeyboardMarkup(row_width=2)
-        m_in.add(types.InlineKeyboardButton("سيرياتل كاش (فوري) ✅", callback_data="sh_sy"),
-                 types.InlineKeyboardButton("شام كاش (فوري) ✅", callback_data="sh_sh"))
-        m_in.add(types.InlineKeyboardButton("Binance (USDT)", callback_data="sh_no"))
-        bot.send_message(m.chat.id, "💰 يرجى اختيار وسيلة الشحن التي ترغب في استخدامها:", reply_markup=m_in)
+        reset_user_steps(uid)
+        inline_kb = types.InlineKeyboardMarkup(row_width=2)
+        inline_kb.add(types.InlineKeyboardButton("سيرياتل كاش 📱", callback_data="pay_syria"),
+                      types.InlineKeyboardButton("شام كاش 💳", callback_data="pay_sham"))
+        bot.send_message(m.chat.id, "💰 اختر وسيلة الشحن التي تفضلها:", reply_markup=inline_kb)
 
-    # --- لوحة الإدارة (كاملة التفاصيل) ---
+    # --- لوحة الإدارة للأدمن ---
     elif text == '🔐 إدارة البوت' and uid == ADMIN_ID:
-        adm = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-        adm.add('📊 إرسال جماعي', '👤 إدارة حساب محدد')
-        adm.add('🎫 إنشاء كود هدية', '⚙️ تعديل الأرقام والكواد')
-        adm.add('🔙 العودة للقائمة الرئيسية')
-        bot.send_message(uid, "🔓 أهلاً بك يا أدمن. إليك لوحة التحكم الكاملة:", reply_markup=adm)
+        admin_kb = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+        admin_kb.add('📊 إرسال جماعي', '👤 إدارة الحسابات', '🎫 توليد كود هدية', '🔙 العودة للقائمة الرئيسية')
+        bot.send_message(uid, "🔓 أهلاً بك يا مدير النظام. تفضل بالتحكم:", reply_markup=admin_kb)
 
     elif text == '📊 إرسال جماعي' and uid == ADMIN_ID:
-        msg = bot.send_message(uid, "يرجى كتابة الرسالة التي تود إرسالها لجميع مستخدمي البوت:")
-        bot.register_next_step_handler(msg, process_broadcast)
-
-    elif text == '👤 إدارة حساب محدد' and uid == ADMIN_ID:
-        msg = bot.send_message(uid, "يرجى إرسال الـ ID الخاص بالمستخدم الذي تريد إدارته:")
-        bot.register_next_step_handler(msg, process_user_management)
+        msg = bot.send_message(uid, "اكتب الرسالة التي تود إرسالها لجميع الأعضاء:")
+        bot.register_next_step_handler(msg, start_broadcast)
 
     elif text == '🎫 كود هدية':
-        msg = bot.send_message(uid, "يرجى إدخال كود الهدية الذي حصلت عليه:")
-        bot.register_next_step_handler(msg, process_gift_use)
+        msg = bot.send_message(uid, "يرجى إدخال الكود للحصول على المكافأة:")
+        bot.register_next_step_handler(msg, redeem_gift_code)
 
 # ==========================================
-# 6. تفاصيل العمليات (الأتمتة والتحقق)
+# 6. وظائف العمليات (التسجيل والشحن)
 # ==========================================
+def process_registration(message):
+    uid = message.from_user.id
+    username_input = message.text
+    if len(username_input) < 3:
+        bot.send_message(uid, "❌ الاسم قصير جداً. أعد المحاولة من زر إيشانسي.")
+        return
+    
+    reg_date = datetime.now().strftime("%d-%m-%Y %H:%M")
+    cursor.execute("INSERT OR REPLACE INTO users(user_id, acc_name, created_at) VALUES(?,?,?)", (uid, username_input, reg_date))
+    conn.commit()
+    bot.send_message(uid, "✅ تم تسجيل حسابك بنجاح! يمكنك الآن استخدام خدماتنا.", reply_markup=get_main_keyboard(uid))
+
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     uid = call.from_user.id
-    if call.data == "sh_sy":
-        num = get_setting('syriatel_num')
-        txt = (f"أرسل المبلغ المراد شحنه إلى الكود التالي وبطريقة التحويل اليدوي حصراً كما موضح بالصورة 👆\n\n"
-               f"كود السيريتل كاش الخاص بالبوت: `{num}`\n\n"
-               f"وبعد دفع المبلغ...\n"
-               f"قم بإرسال رقم العملية المكون من 12 رقم (مثال: 600000xxxxxx)\n"
-               f"لا تقبل عمليات الشحن من دون رقم العملية!\n"
-               f"الرجاء إرسال المبلغ كرقم صحيح (من دون فواصل عشرية).")
-        msg = bot.send_message(call.message.chat.id, txt, parse_mode="Markdown")
-        bot.register_next_step_handler(msg, deposit_get_op)
+    if call.data == "pay_syria":
+        num = get_db_setting('syriatel_num')
+        instr = (f"يرجى تحويل المبلغ يدوياً للكود التالي: `{num}`\n\n"
+                 f"بعد التحويل، أرسل رقم العملية المكون من 12 خانة.\n"
+                 f"⚠️ لا ترسل أي شيء آخر غير رقم العملية.")
+        msg = bot.send_message(call.message.chat.id, instr, parse_mode="Markdown")
+        bot.register_next_step_handler(msg, capture_transaction_id)
 
-def deposit_get_op(message):
-    op_id = message.text
-    if op_id == '/start': return
-    if len(op_id) < 6:
-        bot.send_message(message.chat.id, "❌ رقم عملية غير صحيح. أعد المحاولة من جديد.")
+def capture_transaction_id(message):
+    trans_id = message.text
+    if len(trans_id) < 8:
+        bot.send_message(message.chat.id, "❌ رقم العملية غير منطقي. حاول مجدداً.")
         return
-    msg = bot.send_message(message.chat.id, "✅ تم استلام رقم العملية. الآن يرجى إدخال المبلغ الذي قمت بإرساله:")
-    bot.register_next_step_handler(msg, deposit_final_step, op_id)
+    msg = bot.send_message(message.chat.id, "✅ رقم العملية مستلم. الآن أدخل المبلغ المحول:")
+    bot.register_next_step_handler(msg, finalize_deposit, trans_id)
 
-def deposit_final_step(message, op_id):
+def finalize_deposit(message, tid):
     amount = message.text
-    bot.send_message(message.chat.id, f"⏳ جاري التحقق من رقم العملية `{op_id}` ومطابقتها مع المبلغ `{amount}`...\nستصلك رسالة تأكيد عند اكتمال الشحن تلقائياً.")
+    bot.send_message(message.chat.id, f"⏳ جاري تدقيق العملية `{tid}` بمبلغ `{amount}`...\nستصلك رسالة عند التأكيد.")
 
 # ==========================================
-# 7. وظائف الإدارة والتحكم (الحظر والشحن)
+# 7. وظائف الإدارة المتقدمة
 # ==========================================
-def process_broadcast(message):
+def start_broadcast(message):
     cursor.execute("SELECT user_id FROM users")
-    users = cursor.fetchall()
-    count = 0
-    for u in users:
+    all_users = cursor.fetchall()
+    sent_count = 0
+    for user in all_users:
         try:
-            bot.send_message(u[0], message.text)
-            count += 1
-        except: pass
-    bot.send_message(ADMIN_ID, f"✅ تمت العملية. تم الإرسال لـ {count} مستخدم.")
+            bot.send_message(user[0], message.text)
+            sent_count += 1
+        except: continue
+    bot.send_message(ADMIN_ID, f"✅ تم الإرسال بنجاح لـ {sent_count} مستخدم.")
 
-def process_user_management(message):
-    target_id = message.text
-    m = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    m.add(f"حظر المستحدم {target_id}", f"إلغاء حظر {target_id}")
-    m.add(f"شحن رصيد {target_id}", f"سحب رصيد {target_id}")
-    m.add("🔙 العودة")
-    bot.send_message(ADMIN_ID, f"قائمة الإدارة للمستخدم `{target_id}`:", reply_markup=m)
-    bot.register_next_step_handler(message, execute_admin_action, target_id)
-
-def execute_admin_action(message, tid):
-    text = message.text
-    if "حظر" in text and "إلغاء" not in text:
-        cursor.execute("UPDATE users SET status='banned' WHERE user_id=?", (tid,))
-        bot.send_message(ADMIN_ID, f"✅ تم حظر المستخدم {tid} بنجاح.")
-    elif "إلغاء حظر" in text:
-        cursor.execute("UPDATE users SET status='active' WHERE user_id=?", (tid,))
-        bot.send_message(ADMIN_ID, f"✅ تم إلغاء حظر المستخدم {tid}.")
-    elif "شحن" in text:
-        msg = bot.send_message(ADMIN_ID, "أدخل المبلغ المراد إضافته:")
-        bot.register_next_step_handler(msg, lambda m: finish_admin_add(m, tid))
-    conn.commit()
-
-def finish_admin_add(message, tid):
-    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (float(message.text), tid))
-    conn.commit()
-    bot.send_message(ADMIN_ID, "✅ تم الشحن يدوياً.")
-    bot.send_message(tid, f"🎁 تم شحن حسابك بـ {message.text} NSP من قبل الإدارة.")
-
-# ==========================================
-# 8. نظام الهدايا والتسجيل
-# ==========================================
-def process_gift_use(message):
+def redeem_gift_code(message):
     uid = message.from_user.id
     code = message.text
     cursor.execute("SELECT value, limit_count, used_count FROM gifts WHERE code=?", (code,))
-    g = cursor.fetchone()
-    if g:
+    gift = cursor.fetchone()
+    
+    if gift:
         cursor.execute("SELECT * FROM gift_usage WHERE user_id=? AND code=?", (uid, code))
         if cursor.fetchone():
-            bot.send_message(uid, "❌ لقد قمت باستخدام هذا الكود مسبقاً! لا يسمح بالتكرار.")
-        elif g[2] < g[1]:
-            cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (g[0], uid))
+            bot.send_message(uid, "❌ لقد حصلت على هذه الهدية سابقاً!")
+        elif gift[2] < gift[1]:
+            cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (gift[0], uid))
             cursor.execute("UPDATE gifts SET used_count = used_count + 1 WHERE code=?", (code,))
             cursor.execute("INSERT INTO gift_usage VALUES (?,?)", (uid, code))
             conn.commit()
-            bot.send_message(uid, f"🎉 مبروك! حصلت على {g[0]} NSP رصيد هدية.")
+            bot.send_message(uid, f"🎉 مبروك! تم إضافة {gift[0]} ليرة لرصيدك.")
         else:
-            bot.send_message(uid, "❌ نعتذر، هذا الكود وصل للحد الأقصى من المستخدمين.")
+            bot.send_message(uid, "❌ نعتذر، انتهت صلاحية هذا الكود.")
     else:
-        bot.send_message(uid, "❌ الكود غير صحيح أو منتهي الصلاحية.")
-
-def register_new_user(message):
-    uid = message.from_user.id
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    cursor.execute("INSERT OR REPLACE INTO users(user_id, acc_name, created_at) VALUES(?,?,?)", (uid, message.text, now))
-    conn.commit()
-    bot.send_message(uid, "✅ تم إنشاء حسابك بنجاح! يرجى الضغط على زر إيشانسي للدخول لوحة التحكم.", reply_markup=main_kb(uid))
+        bot.send_message(uid, "❌ الكود غير صحيح أو غير موجود.")
 
 # ==========================================
-# 9. التشغيل النهائي (حل الـ Conflict)
+# 8. حلقة التشغيل والحماية (Render Stable)
 # ==========================================
 if __name__ == "__main__":
+    # تشغيل السيرفر الجانبي
     keep_alive()
-    # skip_pending=True لحل مشكلة تعليق الرسائل القديمة عند التشغيل
+    
+    # حل مشكلة Conflict 409 القديمة
+    print("Matar Bot is firing up...")
     try:
-        bot.polling(none_stop=True, skip_pending=True, interval=0, timeout=20)
+        # استخدام skip_pending لتجاهل أي رسائل معلقة تسبب تعليق البوت
+        bot.polling(none_stop=True, skip_pending=True, interval=0, timeout=40)
     except Exception as e:
-        print(f"Polling Error: {e}")
+        print(f"Polling Crashed: {e}")
+    
