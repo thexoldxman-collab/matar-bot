@@ -5,13 +5,12 @@ import os
 from flask import Flask
 from threading import Thread
 
-# 1. الإعدادات الأساسية (الآيدي الخاص بك مثبت هنا)
+# 1. الإعدادات (تأكد من وضع التوكن الصحيح هنا)
 TOKEN = os.environ.get('TOKEN')
 bot = telebot.TeleBot(TOKEN)
-ADMIN_ID = 846938470  # الآيدي الصحيح الخاص بك
-CHANNEL_ID = "@Matar_ichancy"
-CHANNEL_URL = "https://t.me/Matar_ichancy"
+ADMIN_ID = 846938470  # آيديك الصحيح
 
+# --- تشغيل الموقع الصغير ليضل البوت شغال ---
 app = Flask('')
 @app.route('/')
 def home(): return "Matar Bot is Online!"
@@ -21,86 +20,74 @@ def keep_alive():
     t = Thread(target=run)
     t.start()
 
-# 2. قاعدة البيانات
-conn = sqlite3.connect("matar_pro.db", check_same_thread=False)
+# 2. قاعدة البيانات (تخزين بسيط)
+conn = sqlite3.connect("matar.db", check_same_thread=False)
 cursor = conn.cursor()
-cursor.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, acc_name TEXT, acc_id TEXT, balance REAL DEFAULT 0, has_account INTEGER DEFAULT 0)")
+cursor.execute("CREATE TABLE IF NOT EXISTS users (uid INTEGER PRIMARY KEY, name TEXT, acc_id TEXT, balance REAL DEFAULT 0, step TEXT)")
 conn.commit()
 
-# --- وظيفة التحقق من الاشتراك ---
-def is_subscribed(user_id):
-    try:
-        status = bot.get_chat_member(CHANNEL_ID, user_id).status
-        return status in ['member', 'administrator', 'creator']
-    except: return False
-
-# 3. القوائم
-def main_kb(user_id):
+# --- القوائم ---
+def main_kb(uid):
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     markup.add(types.KeyboardButton('⚽ ايشانسي | Ichancy ⚽'))
     markup.add(types.KeyboardButton('🔽 الشحن في البوت 🔽'), types.KeyboardButton('🔼 السحب من البوت 🔼'))
     markup.add(types.KeyboardButton('💵 الرصيد 💵'), types.KeyboardButton('🎁 كود هدية'))
     markup.add(types.KeyboardButton('💰 دعوة الأصدقاء 💰'), types.KeyboardButton('💬 التواصل مع الدعم 💬'))
-    if user_id == ADMIN_ID:
+    if uid == ADMIN_ID:
         markup.add(types.KeyboardButton('🔐 إدارة البوت'))
     return markup
 
-def deposit_kb():
-    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    markup.add('🇸🇾 سيريتل كاش', '💎 شام كاش')
-    markup.add('🔙 العودة')
-    return markup
-
-# 4. معالجة الأوامر
+# 3. معالجة الرسائل
 @bot.message_handler(commands=['start'])
 def start(message):
     uid = message.from_user.id
-    if not is_subscribed(uid):
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("اضغط هنا للاشتراك", url=CHANNEL_URL))
-        bot.send_message(message.chat.id, "⚠️ يجب عليك الاشتراك بقناة البوت أولاً!", reply_markup=markup)
-        return
-
-    cursor.execute("SELECT has_account FROM users WHERE user_id=?", (uid,))
-    res = cursor.fetchone()
-    if not res or res[0] == 0:
-        bot.send_message(message.chat.id, "Welcome to MATAR 🎯\nاضغط إنشاء حساب للبدء.", 
-                         reply_markup=types.ReplyKeyboardMarkup(resize_keyboard=True).add('✨ إنشاء حساب'))
-    else:
-        bot.send_message(message.chat.id, "أهلاً بك في مطر 🌧️", reply_markup=main_kb(uid))
+    cursor.execute("INSERT OR IGNORE INTO users (uid) VALUES (?)", (uid,))
+    conn.commit()
+    bot.send_message(message.chat.id, "🎯 أهلاً بك في بوت مطر الشغال.", reply_markup=main_kb(uid))
 
 @bot.message_handler(func=lambda m: True)
-def handle_all(m):
+def handle(m):
     uid = m.from_user.id
-    if not is_subscribed(uid): return
+    text = m.text
 
-    if m.text == '✨ إنشاء حساب':
-        msg = bot.send_message(m.chat.id, "أدخل اسم حسابك في ايشانسي:")
-        bot.register_next_step_handler(msg, save_name)
+    if text == '⚽ ايشانسي | Ichancy ⚽':
+        cursor.execute("SELECT name, acc_id, balance FROM users WHERE uid=?", (uid,))
+        res = cursor.fetchone()
+        name = res[0] if res and res[0] else "لم يتم الضبط"
+        acc_id = res[1] if res and res[1] else "لم يتم الضبط"
+        
+        info = f"👤 اسم الحساب: {name}\n🆔 آيدي الحساب: {acc_id}\n💰 الرصيد: {res[2] if res else 0} NSP"
+        
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(types.InlineKeyboardButton("➕ شحن الحساب", callback_data="dep"),
+                   types.InlineKeyboardButton("➖ سحب من الحساب", callback_data="wit"))
+        markup.add(types.InlineKeyboardButton("❌ حذف الحساب", callback_data="del_confirm"))
+        bot.send_message(m.chat.id, info, reply_markup=markup)
 
-    elif m.text == '🔐 إدارة البوت' and uid == ADMIN_ID:
-        admin_markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-        admin_markup.add('📢 إذاعة عامة', '📊 الإحصائيات', '🔙 العودة')
-        bot.send_message(uid, "🔓 لوحة تحكم الإدارة مفتوحة:", reply_markup=admin_markup)
+    elif text == '🔽 الشحن في البوت 🔽':
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add('🇸🇾 سيريتل كاش', '💎 شام كاش', '🔙 العودة')
+        bot.send_message(m.chat.id, "اختر وسيلة الشحن:", reply_markup=markup)
 
-    elif m.text == '🔽 الشحن في البوت 🔽':
-        bot.send_message(m.chat.id, "اختر وسيلة الشحن:", reply_markup=deposit_kb())
+    elif text == '🇸🇾 سيريتل كاش':
+        bot.send_message(m.chat.id, "💳 حول للرقم: `09xxxxxxx` ثم أرسل الإشعار.")
 
-    elif m.text == '🇸🇾 سيريتل كاش':
-        bot.send_message(m.chat.id, "💳 **سيريتل كاش**\nحول للرقم: `09xxxxxxx` وأرسل الإشعار.")
+    elif text == '🔐 إدارة البوت' and uid == ADMIN_ID:
+        bot.send_message(uid, "🔓 لوحة التحكم:\n1. /broadcast (رسالة) للإذاعة\n2. /set_balance (id) (amount)")
 
-    elif m.text == '💎 شام كاش':
-        bot.send_message(m.chat.id, "💎 **شام كاش**\nحول للعنوان: `SHAM-XXXX` وأرسل الإشعار.")
+    elif text == 'حذف':
+        cursor.execute("UPDATE users SET name=NULL, acc_id=NULL WHERE uid=?", (uid,))
+        conn.commit()
+        bot.send_message(m.chat.id, "✅ تم حذف بيانات حسابك بنجاح.")
 
-    elif m.text == '🔙 العودة':
-        bot.send_message(uid, "العودة للقائمة الرئيسية..", reply_markup=main_kb(uid))
+    elif text == '🔙 العودة':
+        bot.send_message(m.chat.id, "القائمة الرئيسية:", reply_markup=main_kb(uid))
 
-    elif m.text == '⚽ ايشانسي | Ichancy ⚽':
-        cursor.execute("SELECT acc_name, acc_id, balance FROM users WHERE user_id=?", (uid,))
-        user = cursor.fetchone()
-        if user:
-            text = f"👤 الاسم: {user[0]}\n🆔 ID: {user[1]}\n💰 الرصيد: {user[2]} NSP"
-            markup = types.InlineKeyboardMarkup(row_width=2)
-            markup.add(types.InlineKeyboardButton("➕ شحن", callback_data="dep"), types.InlineKeyboardButton("➖ سحب", callback_data="wit"))
-            markup.add(types.InlineKeyboardButton("❌ حذف الحساب", callback_data="confirm_delete"))
-            bot.send_message(m.chat.id, text, reply
+# 4. تشغيل البوت
+if __name__ == "__main__":
+    try:
+        keep_alive()
+        print("جاري التشغيل...")
+        bot.polling(none_stop=True)
+    except Exception as e:
+        print(f"خطأ في التشغيل: {e}")
