@@ -3,6 +3,8 @@ from telebot import types
 from flask import Flask
 from threading import Thread
 import os
+TOKEN = os.environ.get('TOKEN')
+
 
 # 1. إعداد سيرفر صغير لإبقاء البوت مستيقظاً
 app = Flask('')
@@ -21,7 +23,7 @@ def keep_alive():
     t.start()
 
 # 2. إعداد البوت (حط التوكن تبعك هون)
-TOKEN = '8581064983:AAE43_TNTx8Fnww6-vs8MVlb97ahTzCvNhM'
+TOKEN = os.environ.get('TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
 @bot.message_handler(commands=['start'])
