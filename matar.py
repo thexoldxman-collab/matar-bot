@@ -30,6 +30,7 @@ def keep_alive():
 conn = sqlite3.connect("matar.db", check_same_thread=False)
 cursor = conn.cursor()
 
+# جدول المستخدمين
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users(
     user_id INTEGER PRIMARY KEY,
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS users(
 )
 """)
 
+# جدول أكواد الهدايا
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS gift_codes(
     code TEXT PRIMARY KEY,
@@ -48,12 +50,22 @@ CREATE TABLE IF NOT EXISTS gift_codes(
 )
 """)
 
+# جدول رسائل الدعم
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS support_msgs(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    message TEXT
+)
+""")
+
 conn.commit()
 
 # ===========================
-# التحقق من الاشتراك بالقناة
+# إعداد القناة والأدمن
 # ===========================
 CHANNEL_ID = "@Matar_ichancy"
+ADMINS = [123456789]  # ضع ID تيليغرام تبعك هون
 
 def is_subscribed(user_id):
     try:
@@ -62,16 +74,11 @@ def is_subscribed(user_id):
     except:
         return False
 
-# ===========================
-# الأدمن
-# ===========================
-ADMINS = [123456789]  # ضع ID تيليغرام تبعك هون
-
 def is_admin(user_id):
     return user_id in ADMINS
 
 # ===========================
-# لوحة المفاتيح الرئيسية ديناميكياً لكل رسالة
+# لوحة المفاتيح الرئيسية
 # ===========================
 def main_keyboard(user_id):
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
@@ -100,7 +107,6 @@ def main_keyboard(user_id):
 def start(message):
     user_id = message.from_user.id
 
-    # تحقق من الاشتراك بالقناة
     if not is_subscribed(user_id):
         bot.send_message(message.chat.id,
                          f"أهلاً بك! 🌧️\nالرجاء الاشتراك في قناتنا لتتمكن من استخدام البوت: {CHANNEL_ID}")
@@ -122,19 +128,16 @@ def handle_msg(message):
     user_id = message.from_user.id
     text = message.text
 
-    # تحقق الاشتراك بالقناة
     if not is_subscribed(user_id):
         bot.send_message(message.chat.id,
                          f"الرجاء الاشتراك بالقناة لتتمكن من استخدام البوت: {CHANNEL_ID}")
         return
 
-    # ===========================
-    # زر ichancy
-    # ===========================
+    # ======== زر ichancy ========
     if text == 'ichancy':
         cursor.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
         user = cursor.fetchone()
-        if not user or user[4] == 0:  # لا يوجد حساب
+        if not user or user[4] == 0:
             markup = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
             btn = types.KeyboardButton('إنشاء حساب ichancy')
             markup.add(btn)
@@ -142,17 +145,77 @@ def handle_msg(message):
                              "أهلاً بك! لإنشاء حساب، اضغط على الزر أدناه:", reply_markup=markup)
         else:
             bot.send_message(message.chat.id,
-                             f"اسم الحساب: {user[1]}\nID: {user[0]}\nرصيدك على الموقع: {user[3]}")  # لاحقاً API
+                             f"اسم الحساب: {user[1]}\nID: {user[0]}\nرصيدك على الموقع: {user[3]}")
 
-    # ===========================
-    # زر إنشاء الحساب
-    # ===========================
+    # ======== إنشاء حساب ========
     elif text == 'إنشاء حساب ichancy':
         msg = bot.send_message(message.chat.id, "ادخل اسم الحساب بالأحرف الإنكليزية فقط:")
         bot.register_next_step_handler(msg, enter_account_name)
 
+    # ======== الشحن في البوت ========
+    elif text == 'الشحن في البوت':
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton("سيرياتل كاش 📱", callback_data="pay_syriatel"),
+            types.InlineKeyboardButton("شام كاش 💳", callback_data="pay_cham")
+        )
+        markup.add(
+            types.InlineKeyboardButton("USDT", callback_data="pay_usdt"),
+            types.InlineKeyboardButton("بينانس", callback_data="pay_binance")
+        )
+        bot.send_message(message.chat.id, "اختر وسيلة الشحن:", reply_markup=markup)
+
+    # ======== السحب من البوت ========
+    elif text == 'السحب من البوت':
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton("سيرياتل كاش 📱", callback_data="withdraw_syriatel"),
+            types.InlineKeyboardButton("شام كاش 💳", callback_data="withdraw_cham")
+        )
+        markup.add(
+            types.InlineKeyboardButton("USDT", callback_data="withdraw_usdt"),
+            types.InlineKeyboardButton("بينانس", callback_data="withdraw_binance")
+        )
+        bot.send_message(message.chat.id, "اختر وسيلة السحب:", reply_markup=markup)
+
+    # ======== اهداء صديق ========
+    elif text == 'اهداء صديق':
+        msg = bot.send_message(message.chat.id, "ادخل معرف ID الشخص المراد إرسال الرصيد إليه:")
+        bot.register_next_step_handler(msg, enter_gift_id)
+
+    # ======== كود هدية ========
+    elif text == 'كود هدية':
+        msg = bot.send_message(message.chat.id, "ادخل كود الهدية:")
+        bot.register_next_step_handler(msg, enter_gift_code)
+
+    # ======== الرصيد ========
+    elif text == 'الرصيد':
+        cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
+        user = cursor.fetchone()
+        balance = user[0] if user else 0
+        bot.send_message(message.chat.id, f"رصيدك الحالي: {balance}")
+
+    # ======== التواصل مع الدعم ========
+    elif text == 'التواصل مع الدعم':
+        msg = bot.send_message(message.chat.id, "الرجاء كتابة رسالتك وإرسالها:")
+        bot.register_next_step_handler(msg, handle_support_message)
+
+    # ======== إدارة البوت ========
+    elif text == 'إدارة البوت' and is_admin(user_id):
+        markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+        markup.add(
+            types.KeyboardButton('إنشاء كود هدية'),
+            types.KeyboardButton('حظر مستخدم'),
+            types.KeyboardButton('شحن رصيد لمستخدم'),
+            types.KeyboardButton('سحب رصيد لمستخدم'),
+            types.KeyboardButton('إنشاء حساب يدوي'),
+            types.KeyboardButton('سجلات البوت'),
+            types.KeyboardButton('إرسال رسائل جماعية')
+        )
+        bot.send_message(message.chat.id, "خيارات الأدمن:", reply_markup=markup)
+
 # ===========================
-# دوال إنشاء الحساب (محسّنة)
+# دوال إنشاء الحساب
 # ===========================
 def enter_account_name(message):
     name = message.text.strip()
@@ -176,12 +239,23 @@ def enter_password(message, full_name):
                    (user_id, full_name, password, 0, 1))
     conn.commit()
     bot.send_message(message.chat.id, f"تم إنشاء حسابك بنجاح 🌧️\nأهلاً وسهلاً بك في بوت Matar!")
+    bot.send_message(message.chat.id, "اختر الخدمة المطلوبة:", reply_markup=main_keyboard(user_id))
 
 # ===========================
-# باقي الأزرار والوظائف مثل الشحن، السحب، الهدايا، الرصيد، الدعم، وأزرار الأدمن
+# دوال الهدايا والدعم وأزرار callback الخاصة بالشحن والسحب
 # ===========================
-# نفس الكود السابق بدون تغيير
-# ===========================
+def enter_gift_id(message):
+    # هنا ممكن تضيف منطق التحقق من وجود الحساب وتسجيل الرصيد
+    bot.send_message(message.chat.id, "تم تسجيل ID، تابع الخطوات لاحقاً...")
+
+def enter_gift_code(message):
+    bot.send_message(message.chat.id, "تم التحقق من كود الهدية (نماذج)...")
+
+def handle_support_message(message):
+    user_id = message.from_user.id
+    cursor.execute("INSERT INTO support_msgs(user_id, message) VALUES(?,?)", (user_id, message.text))
+    conn.commit()
+    bot.send_message(message.chat.id, "تم استلام رسالتك! سيتم الرد عليك بأقرب وقت.")
 
 # ===========================
 # تشغيل البوت
