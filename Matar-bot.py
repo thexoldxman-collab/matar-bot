@@ -153,7 +153,8 @@ def setup_database():
         can_maintenance INTEGER DEFAULT 0,
         can_broadcast INTEGER DEFAULT 0,
         can_rename_users INTEGER DEFAULT 0,
-        permissions TEXT)""")  -- JSON للصلاحيات
+                        permissions TEXT);  # JSON للصلاحيات
+                        
     
     # جدول الإعدادات العامة
     cursor.execute("""CREATE TABLE IF NOT EXISTS settings(
@@ -2277,3 +2278,4 @@ if __name__ == "__main__":
             print(f"⚠️ Polling error: {e}")
             time.sleep(5)
             continue
+
