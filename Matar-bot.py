@@ -764,7 +764,7 @@ def main_router(m):
 # 7. نظام الإحالات
 # ==========================================
     def show_referral_info(uid):
-      cursor.execute("""SELECT referral_count, current_earnings, total_earnings, ref_code 
+    cursor.execute("""SELECT referral_count, current_earnings, total_earnings, ref_code 
                       FROM users WHERE user_id=?""", (uid,))
     data = cursor.fetchone()
     
@@ -772,6 +772,38 @@ def main_router(m):
         return
     
     ref_count, current_earnings, total_earnings, ref_code = data
+    
+    next_payout = get_db_setting('next_referral_payout')
+    time_left = format_time_remaining(next_payout) if next_payout else "غير محدد"
+    
+    ref_link = f"https://t.me/{(bot.get_me()).username}?start=ref_{ref_code}"
+    
+    referral_text = (
+        f"🌟 نظام احالات Matar bot 🌟\n\n"
+        f"يقدّم لك فرصة لدخل إضافي كل 10 أيام .\n"
+        f"كن وكيلاً معنا بأبسط طريقة\n"
+        f"إحصل على نسبة ثابتة لكل عمليات الشحن والتعبئة القادمة عن طريق رابط احالتك ضمن البوت\n\n"
+        f"1- عند الدخول الى البوت قم بنسخ رابط الاحالة الخاص بك عن طريق الضغط على خيار رابط الاحالة الخاص بي\n"
+        f"2- عندما تقوم بنشر رابط احالتك ويقوم أحد بالتسجيل عن طريقة سنبدأ بحساب نسبة ثابتة لجميع عمليات السحب والتعبئة عن طريقك .\n"
+        f"3- يمكن الاطلاع على عدد الاحالات التي قامت بالتسجيل من خلال الرابط الخاص بك عن طريق الضغط على خيار عدد الاحالات الخاصة بك خلال المسابقة الحالية\n"
+        f"4- يتم حساب الارباح عند وجود 3 إحالات نشطة او أكثر\n"
+        f"ماذا تنتظر...! \n"
+        f"توزيع النسب كل 10 أيام\n\n"
+        f"عدد الاحالات التابعة لك: {ref_count}\n"
+        f"رابط الإحالة الخاص بك:\n"
+        f"{ref_link}\n\n"
+        f"الموعد القادم لتوزيع الاحالات: {next_payout}\n"
+        f"{time_left}"
+    )
+    
+    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup.add(
+        types.KeyboardButton("📋 رابط الإحالة الخاص بي"),
+        types.KeyboardButton("👥 عدد احالاتي"),
+        types.KeyboardButton("🔙 العودة للقائمة الرئيسية")
+    )
+    
+    bot.send_message(uid, referral_text, reply_markup=markup)
     
     next_payout = get_db_setting('next_referral_payout')
     time_left = format_time_remaining(next_payout) if next_payout else "غير محدد"
@@ -2060,6 +2092,7 @@ if __name__ == "__main__":
             print(f"⚠️ Polling error: {e}")
             time.sleep(5)
             continue
+
 
 
 
