@@ -151,7 +151,7 @@ def setup_database():
 conn.commit()
     
 conn.commit()
-    return conn, cursor
+return conn, cursor
 
 conn, cursor = setup_database()
 
@@ -2060,6 +2060,7 @@ if __name__ == "__main__":
             print(f"⚠️ Polling error: {e}")
             time.sleep(5)
             continue
+
 
 
 
