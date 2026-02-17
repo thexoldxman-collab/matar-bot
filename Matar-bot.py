@@ -150,7 +150,7 @@ def setup_database():
                (end.strftime("%Y-%m-%d %H:%M:%S"), 'next_referral_payout'))
 conn.commit()
     
-    conn.commit()
+conn.commit()
     return conn, cursor
 
 conn, cursor = setup_database()
@@ -2060,6 +2060,7 @@ if __name__ == "__main__":
             print(f"⚠️ Polling error: {e}")
             time.sleep(5)
             continue
+
 
 
 
