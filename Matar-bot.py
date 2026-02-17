@@ -146,7 +146,9 @@ def setup_database():
         end = start + timedelta(days=10)
         cursor.execute("INSERT INTO referral_cycles (start_date, end_date, status) VALUES (?,?,?)", 
                       (start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"), 'active'))
-        update_db_setting('next_referral_payout', end.strftime("%Y-%m-%d %H:%M:%S"))
+        cursor.execute("UPDATE settings SET value=? WHERE key=?", 
+               (end.strftime("%Y-%m-%d %H:%M:%S"), 'next_referral_payout'))
+conn.commit()
     
     conn.commit()
     return conn, cursor
@@ -2058,4 +2060,5 @@ if __name__ == "__main__":
             print(f"⚠️ Polling error: {e}")
             time.sleep(5)
             continue
+
 
