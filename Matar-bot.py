@@ -761,7 +761,7 @@ def main_router(m):
 # ==========================================
 # 7. نظام الإحالات
 # ==========================================
-def show_referral_info(uid):
+ def show_referral_info(uid):
     cursor.execute("""SELECT referral_count, current_earnings, total_earnings, ref_code 
                       FROM users WHERE user_id=?""", (uid,))
     data = cursor.fetchone()
@@ -2058,3 +2058,4 @@ if __name__ == "__main__":
             print(f"⚠️ Polling error: {e}")
             time.sleep(5)
             continue
+
