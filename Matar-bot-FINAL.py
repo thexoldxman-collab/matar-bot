@@ -2069,3 +2069,117 @@ if __name__ == "__main__":
             print(f"⚠️ Polling error: {e}")
             time.sleep(5)
             continue
+
+# ==========================================
+# الكود الجديد لإضافة زر 🛑 إدارة البوت بالكامل
+# ==========================================
+import json
+import requests
+import base64
+from telebot import types
+
+# --- بيانات الأزرار الحالية مع جميع الخصائص ---
+buttons_data = [
+    {
+        "name": "زر 1",
+        "message": "رسالة الزر 1",
+        "image": None,
+        "functions": ["وظيفة1", "وظيفة2"],
+        "sub_buttons": []
+    },
+    {
+        "name": "زر 2",
+        "message": "رسالة الزر 2",
+        "image": None,
+        "functions": ["وظيفة1"],
+        "sub_buttons": []
+    },
+]
+
+# --- إضافة زر إدارة البوت بالكامل داخل القائمة الحالية ---
+def add_full_admin_button(admin_buttons):
+    full_admin_button = types.KeyboardButton("🛑 إدارة البوت بالكامل")
+    admin_buttons.append(full_admin_button)
+    admin_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for btn in admin_buttons:
+        admin_keyboard.add(btn)
+    return admin_keyboard
+
+# --- واجهة إدارة البوت بالكامل ---
+def show_full_admin_interface(chat_id):
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    for idx, btn in enumerate(buttons_data):
+        keyboard.add(types.KeyboardButton(f"{idx+1}. {btn['name']}"))
+    keyboard.add(types.KeyboardButton("➕ إضافة زر جديد"))
+    keyboard.add(types.KeyboardButton("💾 حفظ التعديلات على GitHub"))
+    keyboard.add(types.KeyboardButton("❌ خروج"))
+    bot.send_message(chat_id, "واجهة إدارة البوت بالكامل:\nاختر زر لتعديله أو إضافة زر جديد.", reply_markup=keyboard)
+
+# --- الضغط على زر الإدارة الكامل ---
+@bot.message_handler(func=lambda message: message.text == "🛑 إدارة البوت بالكامل")
+def admin_full_panel(message):
+    show_full_admin_interface(message.chat.id)
+
+# --- التعامل مع تعديل أي زر موجود ---
+@bot.message_handler(func=lambda message: message.text.startswith(tuple(str(i+1)+". " for i in range(100))))
+def edit_button(message):
+    idx = int(message.text.split(".")[0]) - 1
+    if 0 <= idx < len(buttons_data):
+        btn = buttons_data[idx]
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add(types.KeyboardButton("✏️ تعديل الاسم"))
+        markup.add(types.KeyboardButton("🖼 تعديل/إضافة صورة"))
+        markup.add(types.KeyboardButton("📝 تعديل الرسالة"))
+        markup.add(types.KeyboardButton("⚙ تعديل الوظائف"))
+        markup.add(types.KeyboardButton("➕ إضافة تشعب"))
+        markup.add(types.KeyboardButton("❌ رجوع"))
+        bot.send_message(message.chat.id, f"تعديل زر: {btn['name']}", reply_markup=markup)
+
+# --- حفظ التعديلات على GitHub ---
+def save_buttons_to_github():
+    content = json.dumps(buttons_data, ensure_ascii=False, indent=4)
+    url = f"https://api.github.com/repos/yourusername/yourrepo/contents/Matar-bot-FINAL.py"
+    headers = {
+        "Authorization": f"token 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",
+        "Accept": "application/vnd.github+json"
+    }
+    r = requests.get(url + f"?ref=main", headers=headers).json()
+    sha = r.get("sha", None)
+    if not sha:
+        return False
+    data = {
+        "message": "تحديث بيانات الأزرار عبر البوت",
+        "content": base64.b64encode(content.encode()).decode(),
+        "branch": "main",
+        "sha": sha
+    }
+    r = requests.put(url, headers=headers, json=data)
+    return r.status_code in [200, 201]
+
+# --- التعامل مع حفظ التعديلات ---
+@bot.message_handler(func=lambda message: message.text == "💾 حفظ التعديلات على GitHub")
+def handle_save_github(message):
+    success = save_buttons_to_github()
+    if success:
+        bot.send_message(message.chat.id, "✅ تم حفظ التعديلات على GitHub بنجاح!")
+    else:
+        bot.send_message(message.chat.id, "❌ حدث خطأ أثناء الحفظ!")
+
+# --- الخروج من واجهة الإدارة ---
+@bot.message_handler(func=lambda message: message.text == "❌ خروج")
+def handle_exit(message):
+    bot.send_message(message.chat.id, "تم الخروج من واجهة الإدارة.", reply_markup=types.ReplyKeyboardRemove())
+
+# --- إضافة زر جديد ---
+@bot.message_handler(func=lambda message: message.text == "➕ إضافة زر جديد")
+def add_new_button(message):
+    new_button = {
+        "name": "زر جديد",
+        "message": "رسالة جديدة",
+        "image": None,
+        "functions": [],
+        "sub_buttons": []
+    }
+    buttons_data.append(new_button)
+    bot.send_message(message.chat.id, "✅ تم إضافة زر جديد!", reply_markup=types.ReplyKeyboardRemove())
+    show_full_admin_interface(message.chat.id)
