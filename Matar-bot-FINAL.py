@@ -11,6 +11,7 @@ import time
 import hashlib
 import json
 
+GITHUB_TOKEN = "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"
 def update_db_setting(key, value):
     # هذه الدالة مجرد مثال لتحديث إعدادات البوت
     print(f"تم تحديث الإعداد: {key} = {value}")
