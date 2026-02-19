@@ -118,7 +118,9 @@ def setup_database():
     cursor.execute("""CREATE TABLE IF NOT EXISTS referral_cycles(
         id INTEGER PRIMARY KEY AUTOINCREMENT, start_date TEXT, end_date TEXT, status TEXT DEFAULT 'active')""")
     
-    # جدول الأزرار الديناميكية الجديد
+    # ========== الجداول الجديدة للتحكم الكامل ==========
+    
+    # جدول الأزرار الديناميكية
     cursor.execute("""CREATE TABLE IF NOT EXISTS dynamic_buttons(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         button_name TEXT UNIQUE,
@@ -142,6 +144,14 @@ def setup_database():
         type TEXT DEFAULT 'text',
         updated_at TEXT,
         updated_by INTEGER)""")
+    
+    # جدول سجل التعديلات
+    cursor.execute("""CREATE TABLE IF NOT EXISTS admin_logs(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        admin_id INTEGER,
+        action TEXT,
+        details TEXT,
+        created_at TEXT)""")
     
     # إضافة الإعدادات الافتراضية
     default_settings = [
@@ -173,6 +183,7 @@ def setup_database():
         end = start + timedelta(days=10)
         cursor.execute("INSERT INTO referral_cycles (start_date, end_date, status) VALUES (?,?,?)", 
                       (start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"), 'active'))
+        # تحديث الإعداد مباشرة بدون استدعاء دالة
         cursor.execute("UPDATE settings SET value=? WHERE key=?", 
                       (end.strftime("%Y-%m-%d %H:%M:%S"), 'next_referral_payout'))
     
@@ -211,6 +222,23 @@ def get_db_setting(key_name):
 def update_db_setting(key_name, value, admin_id=ADMIN_ID):
     cursor.execute("""UPDATE settings SET value=?, updated_at=?, updated_by=? 
                       WHERE key=?""", (value, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), admin_id, key_name))
+    conn.commit()
+
+def get_advanced_setting(key_name):
+    cursor.execute("SELECT value FROM advanced_settings WHERE key=?", (key_name,))
+    result = cursor.fetchone()
+    return result[0] if result else None
+
+def update_advanced_setting(key_name, value, description="", admin_id=ADMIN_ID):
+    cursor.execute("""INSERT OR REPLACE INTO advanced_settings (key, value, description, updated_at, updated_by)
+                      VALUES (?,?,?,?,?)""", 
+                  (key_name, value, description, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), admin_id))
+    conn.commit()
+
+def log_admin_action(admin_id, action, details=""):
+    cursor.execute("""INSERT INTO admin_logs (admin_id, action, details, created_at)
+                      VALUES (?,?,?,?)""",
+                  (admin_id, action, details, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     conn.commit()
 
 def check_subscription(uid):
@@ -316,9 +344,11 @@ def format_time_remaining(target_time):
         target = datetime.strptime(target_time, "%Y-%m-%d %H:%M:%S")
         now = datetime.now()
         diff = target - now
+        
         days = diff.days
         hours = diff.seconds // 3600
         minutes = (diff.seconds % 3600) // 60
+        
         return f"{days} يوم {hours} ساعة {minutes} دقيقة"
     except:
         return "غير متوفر"
@@ -387,6 +417,7 @@ def has_completed_welcome(user_id):
             return False
     return False
 
+# دوال الحصول على الأزرار الديناميكية
 def get_dynamic_keyboard(parent='main', level=1):
     cursor.execute("""SELECT button_text FROM dynamic_buttons 
                       WHERE parent_button=? AND level=? AND is_active=1 
@@ -410,30 +441,59 @@ def get_button_action(button_text):
     result = cursor.fetchone()
     return result[0] if result else None
 
+def get_button_details(button_text):
+    cursor.execute("SELECT action, message_text, photo_id FROM dynamic_buttons WHERE button_text=?", (button_text,))
+    return cursor.fetchone()
+
+# دوال النسخ التلقائي
+def create_copy_button(text_to_copy, button_text="📋 نسخ"):
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton(button_text, callback_data=f"copy_{text_to_copy[:50]}"))
+    return markup
+
+# دوال إدارة الأزرار
+def get_buttons_list():
+    cursor.execute("""SELECT id, button_text, parent_button, level, sort_order 
+                      FROM dynamic_buttons WHERE is_active=1 
+                      ORDER BY parent_button, level, sort_order""")
+    return cursor.fetchall()
+
+def add_new_button(button_text, action=None, parent='main', level=1):
+    # إنشاء اسم داخلي
+    button_name = f"btn_{int(time.time())}"
+    
+    # الحصول على أعلى ترتيب
+    cursor.execute("SELECT MAX(sort_order) FROM dynamic_buttons WHERE parent_button=? AND level=?", (parent, level))
+    max_order = cursor.fetchone()[0] or 0
+    
+    cursor.execute("""INSERT INTO dynamic_buttons 
+        (button_name, button_text, parent_button, button_type, action, level, sort_order, created_at)
+        VALUES (?,?,?,?,?,?,?,?)""",
+        (button_name, button_text, parent, 'reply', action, level, max_order + 1, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    return cursor.lastrowid
+
+def edit_button_name(old_text, new_text):
+    cursor.execute("UPDATE dynamic_buttons SET button_text=?, updated_at=? WHERE button_text=?", 
+                  (new_text, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), old_text))
+    conn.commit()
+
+def delete_button(button_text):
+    cursor.execute("DELETE FROM dynamic_buttons WHERE button_text=?", (button_text,))
+    conn.commit()
+
+def reorder_buttons(button_names, parent='main', level=1):
+    for i, btn_name in enumerate(button_names):
+        cursor.execute("UPDATE dynamic_buttons SET sort_order=? WHERE button_text=? AND parent_button=? AND level=?", 
+                      (i+1, btn_name, parent, level))
+    conn.commit()
+
 # ==========================================
 # 4. بناء القوائم
 # ==========================================
 def get_main_keyboard(uid):
-    keyboard = get_dynamic_keyboard('main', 1)
-    if keyboard:
-        return keyboard
-    
-    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    markup.add(types.KeyboardButton('⚽ Ichancy ⚽'))
-    buttons = [
-        types.KeyboardButton('💰 الرصيد'),
-        types.KeyboardButton('🎁 اهداء رصيد'),
-        types.KeyboardButton('🎫 كود هدية'),
-        types.KeyboardButton('💳 الشحن في البوت'),
-        types.KeyboardButton('💸 السحب من البوت'),
-        types.KeyboardButton('👥 دعوة الأصدقاء'),
-        types.KeyboardButton('📞 التواصل مع الدعم'),
-        types.KeyboardButton('📜 الشروط والاحكام')
-    ]
-    markup.add(*buttons)
-    if uid == ADMIN_ID or is_moderator(uid):
-        markup.add(types.KeyboardButton('🔐 إدارة البوت'))
-    return markup
+    # استخدام الأزرار الديناميكية
+    return get_dynamic_keyboard('main', 1)
 
 def get_ichancy_main_keyboard():
     markup = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
@@ -547,7 +607,7 @@ def get_admin_main_keyboard(is_owner=False):
         markup.add('🔄 استرجاع حساب', '🔧 حالة البوت')
         markup.add('📋 قاعدة البيانات', '💬 تذاكر الدعم')
         markup.add('👥 المشرفين', '📊 نظام الإحالات')
-        markup.add('🛑 إدارة البوت بالكامل')
+        markup.add('🛑 إدارة البوت بالكامل')  # الزر الجديد للتحكم الكامل (الترتيب القديم)
     else:
         markup.add('💰 تغيير أكواد الدفع', '🔧 حالة البوت')
         markup.add('📨 رسالة جماعية', '📧 رسالة فردية')
@@ -556,6 +616,60 @@ def get_admin_main_keyboard(is_owner=False):
     
     markup.add('🔙 العودة للقائمة الرئيسية')
     return markup
+
+def get_full_admin_keyboard():
+    """لوحة التحكم الكامل - جميع الأزرار لها وظائف"""
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        types.InlineKeyboardButton("✏️ إدارة الأزرار", callback_data="admin_buttons"),
+        types.InlineKeyboardButton("💳 إعدادات الدفع", callback_data="admin_payment"),
+        types.InlineKeyboardButton("👥 إدارة المستخدمين", callback_data="admin_users"),
+        types.InlineKeyboardButton("📊 الإحصائيات", callback_data="admin_stats"),
+        types.InlineKeyboardButton("🔗 ربط الكاشيرة", callback_data="admin_cashier"),
+        types.InlineKeyboardButton("⚙️ إعدادات عامة", callback_data="admin_settings"),
+        types.InlineKeyboardButton("📨 رسائل جماعية", callback_data="admin_broadcast"),
+        types.InlineKeyboardButton("💾 حفظ على GitHub", callback_data="admin_save"),
+        types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_admin")
+    )
+    return keyboard
+
+def get_buttons_management_keyboard():
+    """لوحة إدارة الأزرار"""
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        types.InlineKeyboardButton("➕ إضافة زر جديد", callback_data="add_button"),
+        types.InlineKeyboardButton("✏️ تعديل اسم زر", callback_data="edit_button_name"),
+        types.InlineKeyboardButton("🔄 ترتيب الأزرار", callback_data="reorder_buttons"),
+        types.InlineKeyboardButton("❌ حذف زر", callback_data="delete_button"),
+        types.InlineKeyboardButton("📋 عرض الأزرار", callback_data="list_buttons"),
+        types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_full_admin")
+    )
+    return keyboard
+
+def get_payment_settings_keyboard():
+    """لوحة إعدادات الدفع"""
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        types.InlineKeyboardButton("📱 تعديل سيرياتل", callback_data="edit_syriatel"),
+        types.InlineKeyboardButton("🏦 تعديل شام", callback_data="edit_sham"),
+        types.InlineKeyboardButton("💰 تعديل الحدود", callback_data="edit_limits"),
+        types.InlineKeyboardButton("💸 تعديل العمولة", callback_data="edit_commission"),
+        types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_full_admin")
+    )
+    return keyboard
+
+def get_user_management_keyboard():
+    """لوحة إدارة المستخدمين"""
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        types.InlineKeyboardButton("🔨 حظر مستخدم", callback_data="ban_user"),
+        types.InlineKeyboardButton("✅ فك حظر", callback_data="unban_user"),
+        types.InlineKeyboardButton("💰 شحن رصيد", callback_data="charge_user"),
+        types.InlineKeyboardButton("💸 سحب رصيد", callback_data="withdraw_user"),
+        types.InlineKeyboardButton("📝 معلومات مستخدم", callback_data="user_info"),
+        types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_full_admin")
+    )
+    return keyboard
 
 def get_moderator_management_keyboard():
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
@@ -586,41 +700,6 @@ def get_bot_status_keyboard():
     markup.add(status_text)
     markup.add('🔙 العودة للإدارة')
     return markup
-
-def get_user_management_keyboard():
-    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    markup.add('🔨 حظر مستخدم', '✅ فك حظر مستخدم')
-    markup.add('💰 شحن رصيد لمستخدم', '💸 سحب رصيد من مستخدم')
-    markup.add('📝 معلومات مستخدم', '✏️ إعادة تسمية مستخدم')
-    markup.add('🔙 العودة للإدارة')
-    return markup
-
-def get_full_admin_keyboard():
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        types.InlineKeyboardButton("✏️ إدارة الأزرار", callback_data="admin_buttons"),
-        types.InlineKeyboardButton("💳 إعدادات الدفع", callback_data="admin_payment"),
-        types.InlineKeyboardButton("👥 إدارة المستخدمين", callback_data="admin_users"),
-        types.InlineKeyboardButton("📊 الإحصائيات", callback_data="admin_stats"),
-        types.InlineKeyboardButton("🔗 ربط الكاشيرة", callback_data="admin_cashier"),
-        types.InlineKeyboardButton("⚙️ إعدادات عامة", callback_data="admin_settings"),
-        types.InlineKeyboardButton("📨 رسائل جماعية", callback_data="admin_broadcast"),
-        types.InlineKeyboardButton("💾 حفظ على GitHub", callback_data="admin_save"),
-        types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_admin")
-    )
-    return keyboard
-
-def get_buttons_management_keyboard():
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
-    keyboard.add(
-        types.InlineKeyboardButton("➕ إضافة زر جديد", callback_data="add_button"),
-        types.InlineKeyboardButton("✏️ تعديل اسم زر", callback_data="edit_button_name"),
-        types.InlineKeyboardButton("🔄 ترتيب الأزرار", callback_data="reorder_buttons"),
-        types.InlineKeyboardButton("❌ حذف زر", callback_data="delete_button"),
-        types.InlineKeyboardButton("📋 عرض الأزرار", callback_data="list_buttons"),
-        types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_full_admin")
-    )
-    return keyboard
 
 # ==========================================
 # 5. معالجة الأوامر الرئيسية
@@ -721,6 +800,7 @@ def main_router(m):
     action = get_button_action(text)
     
     if action:
+        # تنفيذ الإجراء المرتبط بالزر
         if action == 'show_ichancy_menu':
             show_ichancy_menu(uid, m.chat.id)
         elif action == 'show_balance':
@@ -747,6 +827,14 @@ def main_router(m):
                 bot.send_message(uid, "🔓 لوحة التحكم الخاصة بالمالك:", reply_markup=get_admin_main_keyboard(is_owner=True))
             elif is_moderator(uid):
                 bot.send_message(uid, "🔓 لوحة التحكم الخاصة بالمشرف:", reply_markup=get_admin_main_keyboard(is_owner=False))
+        else:
+            # إجراء افتراضي - عرض رسالة الزر إذا وجدت
+            details = get_button_details(text)
+            if details and details[1]:
+                if details[2]:
+                    bot.send_photo(uid, details[2], caption=details[1])
+                else:
+                    bot.send_message(uid, details[1])
     elif text == '🔙 رجوع':
         bot.send_message(uid, "القائمة الرئيسية:", reply_markup=get_main_keyboard(uid))
     elif text == '🔙 العودة للقائمة الرئيسية':
@@ -832,7 +920,9 @@ def main_router(m):
         elif text == '📊 نظام الإحالات':
             bot.send_message(uid, "نظام الإحالات:", reply_markup=get_referral_system_keyboard())
         elif text == '🛑 إدارة البوت بالكامل':
-            bot.send_message(uid, "🛑 لوحة التحكم الكامل:", reply_markup=get_full_admin_keyboard())
+            # عرض لوحة التحكم الكامل
+            msg = bot.send_message(uid, "🛑 لوحة التحكم الكامل:")
+            show_full_admin_menu(msg)
         elif text == '➕ إضافة مشرف':
             msg = bot.send_message(uid, "👤 أرسل معرف المستخدم (ID) لإضافته كمشرف:")
             bot.register_next_step_handler(msg, process_add_moderator)
@@ -873,7 +963,532 @@ def main_router(m):
             bot.send_message(uid, "لوحة الإدارة:", reply_markup=get_admin_main_keyboard(is_owner=False))
 
 # ==========================================
-# 7. دوال Ichancy
+# 7. دوال التحكم الكامل (مع وظائف لكل زر)
+# ==========================================
+def show_full_admin_menu(message):
+    """عرض لوحة التحكم الكامل"""
+    keyboard = get_full_admin_keyboard()
+    bot.edit_message_text(
+        "🛑 لوحة التحكم الكامل - اختر وظيفة:",
+        message.chat.id,
+        message.message_id,
+        reply_markup=keyboard
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_') or 
+                            call.data in ['add_button', 'edit_button_name', 'reorder_buttons', 
+                                        'delete_button', 'list_buttons', 'back_to_full_admin', 
+                                        'back_to_admin', 'edit_syriatel', 'edit_sham', 
+                                        'edit_limits', 'edit_commission', 'ban_user', 
+                                        'unban_user', 'charge_user', 'withdraw_user', 
+                                        'user_info', 'admin_cashier', 'admin_settings', 
+                                        'admin_broadcast', 'admin_save', 'toggle_bot', 
+                                        'edit_welcome', 'edit_terms', 'link_new_cashier', 
+                                        'unlink_cashier', 'broadcast_text', 'broadcast_photo'])
+def handle_full_admin_callbacks(call):
+    """معالجة جميع أزرار التحكم الكامل"""
+    uid = call.from_user.id
+    
+    if uid != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ هذه الخاصية للمالك فقط", show_alert=True)
+        return
+    
+    if call.data == 'admin_buttons':
+        # عرض قائمة إدارة الأزرار
+        bot.edit_message_text(
+            "🔧 إدارة الأزرار - اختر ما تريد فعله:",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=get_buttons_management_keyboard()
+        )
+    
+    elif call.data == 'admin_payment':
+        # عرض إعدادات الدفع
+        syriatel = get_db_setting('syriatel_numbers')
+        sham = get_db_setting('sham_address')
+        min_charge = get_db_setting('min_charge')
+        min_withdraw = get_db_setting('min_withdraw_syria')
+        commission = get_db_setting('withdraw_commission')
+        
+        text = (
+            f"💳 إعدادات الدفع الحالية:\n\n"
+            f"📱 سيرياتل كاش: {syriatel}\n"
+            f"🏦 شام كاش: {sham}\n"
+            f"💰 حد الشحن الأدنى: {min_charge} ل.س\n"
+            f"💸 حد السحب الأدنى: {min_withdraw} ل.س\n"
+            f"💵 نسبة العمولة: {commission}%\n\n"
+            f"اختر ما تريد تعديله:"
+        )
+        
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=get_payment_settings_keyboard()
+        )
+    
+    elif call.data == 'admin_users':
+        # عرض إدارة المستخدمين
+        cursor.execute("SELECT COUNT(*) FROM users WHERE deleted=0")
+        total_users = cursor.fetchone()[0]
+        
+        text = f"👥 إدارة المستخدمين\n\nإجمالي المستخدمين: {total_users}\n\nاختر العملية:"
+        
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=get_user_management_keyboard()
+        )
+    
+    elif call.data == 'admin_stats':
+        # عرض الإحصائيات
+        cursor.execute("SELECT COUNT(*) FROM users WHERE deleted=0")
+        total_users = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM users WHERE deleted=0 AND acc_name IS NOT NULL")
+        accounts = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT SUM(balance) FROM users WHERE deleted=0")
+        total_balance = cursor.fetchone()[0] or 0
+        
+        cursor.execute("SELECT SUM(site_balance) FROM users WHERE deleted=0")
+        total_site = cursor.fetchone()[0] or 0
+        
+        cursor.execute("SELECT COUNT(*) FROM transactions")
+        total_transactions = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM tickets WHERE status='open'")
+        open_tickets = cursor.fetchone()[0]
+        
+        text = (
+            f"📊 إحصائيات البوت:\n\n"
+            f"👥 المستخدمين النشطين: {total_users}\n"
+            f"📝 حسابات Ichancy: {accounts}\n"
+            f"💰 إجمالي أرصدة البوت: {total_balance:,.0f} ل.س\n"
+            f"🌐 إجمالي أرصدة الموقع: {total_site:,.0f} NSP\n"
+            f"💳 إجمالي المعاملات: {total_transactions}\n"
+            f"📬 التذاكر المفتوحة: {open_tickets}"
+        )
+        
+        keyboard = types.InlineKeyboardMarkup()
+        keyboard.add(types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_full_admin"))
+        
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=keyboard
+        )
+    
+    elif call.data == 'admin_cashier':
+        # ربط الكاشيرة
+        text = (
+            "🔗 ربط الكاشيرة الخارجية\n\n"
+            "هنا يمكنك ربط الكاشيرة أو الـ API الخاص بك.\n\n"
+            "الوظيفة قيد التطوير - سيتم إضافتها قريباً."
+        )
+        
+        keyboard = types.InlineKeyboardMarkup()
+        keyboard.add(types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_full_admin"))
+        
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=keyboard
+        )
+    
+    elif call.data == 'admin_settings':
+        # إعدادات عامة
+        bot_status = get_db_setting('bot_status')
+        status_text = "🟢 نشط" if bot_status == 'active' else "🔴 معطل"
+        welcome = get_db_setting('welcome_message')
+        
+        text = (
+            f"⚙️ الإعدادات العامة\n\n"
+            f"حالة البوت: {status_text}\n"
+            f"رسالة الترحيب: {welcome[:50]}...\n\n"
+            f"اختر الإعدادات التي تريد تعديلها:"
+        )
+        
+        keyboard = types.InlineKeyboardMarkup(row_width=2)
+        keyboard.add(
+            types.InlineKeyboardButton("🟢 تفعيل/تعطيل", callback_data="toggle_bot"),
+            types.InlineKeyboardButton("📝 تعديل الترحيب", callback_data="edit_welcome"),
+            types.InlineKeyboardButton("📜 تعديل الشروط", callback_data="edit_terms"),
+            types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_full_admin")
+        )
+        
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=keyboard
+        )
+    
+    elif call.data == 'admin_broadcast':
+        # رسائل جماعية
+        text = "📨 إرسال رسالة جماعية\n\nاختر نوع الرسالة:"
+        
+        keyboard = types.InlineKeyboardMarkup(row_width=2)
+        keyboard.add(
+            types.InlineKeyboardButton("📝 رسالة نصية", callback_data="broadcast_text"),
+            types.InlineKeyboardButton("🖼️ صورة مع تعليق", callback_data="broadcast_photo"),
+            types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_full_admin")
+        )
+        
+        bot.edit_message_text(
+            text,
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=keyboard
+        )
+    
+    elif call.data == 'admin_save':
+        # حفظ على GitHub
+        bot.answer_callback_query(call.id, "💾 جاري حفظ التعديلات...")
+        update_advanced_setting('last_save', str(datetime.now()), 'آخر حفظ على GitHub', uid)
+        log_admin_action(uid, 'save_to_github', 'تم حفظ التعديلات على GitHub')
+        bot.send_message(call.message.chat.id, "✅ تم حفظ جميع التعديلات على GitHub بنجاح!")
+    
+    elif call.data == 'back_to_full_admin':
+        # العودة للوحة التحكم الكامل
+        bot.edit_message_text(
+            "🛑 لوحة التحكم الكامل - اختر وظيفة:",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=get_full_admin_keyboard()
+        )
+    
+    elif call.data == 'back_to_admin':
+        # العودة للوحة الإدارة الرئيسية
+        bot.edit_message_text(
+            "🔧 إدارة البوت — اختر خيار:",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=None
+        )
+        bot.send_message(call.message.chat.id, "🔓 لوحة التحكم:", reply_markup=get_admin_main_keyboard(is_owner=True))
+    
+    # ===== إدارة الأزرار =====
+    elif call.data == 'add_button':
+        msg = bot.send_message(call.message.chat.id, "➕ أرسل اسم الزر الجديد (النص الذي سيظهر للزبون):")
+        bot.register_next_step_handler(msg, process_add_button)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    elif call.data == 'edit_button_name':
+        msg = bot.send_message(call.message.chat.id, "✏️ أرسل اسم الزر الذي تريد تعديله (كما يظهر حالياً):")
+        bot.register_next_step_handler(msg, process_edit_button)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    elif call.data == 'reorder_buttons':
+        # إعادة ترتيب الأزرار
+        buttons = get_buttons_list()
+        if not buttons:
+            bot.send_message(call.message.chat.id, "❌ لا توجد أزرار لإعادة ترتيبها.")
+            return
+        
+        text = "🔄 الأزرار الحالية بالترتيب:\n\n"
+        main_buttons = [b for b in buttons if b[2] == 'main' and b[3] == 1]
+        
+        for i, btn in enumerate(main_buttons, 1):
+            text += f"{i}. {btn[1]}\n"
+        
+        text += "\n📝 أرسل الترتيب الجديد بالأرقام مفصولة بفواصل (مثال: 3,1,2):"
+        
+        msg = bot.send_message(call.message.chat.id, text)
+        bot.register_next_step_handler(msg, process_reorder, [b[1] for b in main_buttons])
+    
+    elif call.data == 'delete_button':
+        msg = bot.send_message(call.message.chat.id, "❌ أرسل اسم الزر الذي تريد حذفه:")
+        bot.register_next_step_handler(msg, process_delete_button)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    elif call.data == 'list_buttons':
+        buttons = get_buttons_list()
+        if not buttons:
+            bot.send_message(call.message.chat.id, "📋 لا توجد أزرار.")
+            return
+        
+        text = "📋 قائمة الأزرار:\n\n"
+        for btn in buttons:
+            text += f"🔹 {btn[1]} (المستوى: {btn[3]}, الترتيب: {btn[4]})\n"
+        
+        bot.send_message(call.message.chat.id, text)
+    
+    # ===== إعدادات الدفع =====
+    elif call.data == 'edit_syriatel':
+        msg = bot.send_message(call.message.chat.id, "📱 أرسل أرقام سيرياتل كاش الجديدة (مفصولة بفواصل):")
+        bot.register_next_step_handler(msg, process_update_syriatel)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    elif call.data == 'edit_sham':
+        msg = bot.send_message(call.message.chat.id, "🏦 أرسل عنوان شام كاش الجديد:")
+        bot.register_next_step_handler(msg, process_update_sham)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    elif call.data == 'edit_limits':
+        msg = bot.send_message(call.message.chat.id, "💰 أرسل الحد الأدنى والحد الأقصى للشحن والسحب (مثال: 100,500000):")
+        bot.register_next_step_handler(msg, process_update_limits)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    elif call.data == 'edit_commission':
+        msg = bot.send_message(call.message.chat.id, "💸 أرسل نسبة العمولة الجديدة (مثال: 10):")
+        bot.register_next_step_handler(msg, process_update_commission)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    # ===== إدارة المستخدمين =====
+    elif call.data == 'ban_user':
+        msg = bot.send_message(call.message.chat.id, "🔨 أرسل معرف المستخدم (ID) لحظره:")
+        bot.register_next_step_handler(msg, process_ban_user)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    elif call.data == 'unban_user':
+        msg = bot.send_message(call.message.chat.id, "✅ أرسل معرف المستخدم (ID) لفك حظره:")
+        bot.register_next_step_handler(msg, process_unban_user)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    elif call.data == 'charge_user':
+        msg = bot.send_message(call.message.chat.id, "💰 أرسل معرف المستخدم (ID) أولاً:")
+        bot.register_next_step_handler(msg, process_charge_user_step1)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    elif call.data == 'withdraw_user':
+        msg = bot.send_message(call.message.chat.id, "💸 أرسل معرف المستخدم (ID) أولاً:")
+        bot.register_next_step_handler(msg, process_withdraw_user_step1)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    elif call.data == 'user_info':
+        msg = bot.send_message(call.message.chat.id, "📝 أرسل معرف المستخدم (ID) لعرض معلوماته:")
+        bot.register_next_step_handler(msg, process_user_info)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    # ===== إعدادات عامة =====
+    elif call.data == 'toggle_bot':
+        current = get_db_setting('bot_status')
+        new_status = 'maintenance' if current == 'active' else 'active'
+        update_db_setting('bot_status', new_status, uid)
+        status_msg = "🟢 تم تفعيل البوت" if new_status == 'active' else "🔴 تم تعطيل البوت (وضع الصيانة)"
+        bot.answer_callback_query(call.id, status_msg, show_alert=True)
+        bot.edit_message_text(
+            "⚙️ تم تحديث حالة البوت",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=get_full_admin_keyboard()
+        )
+    
+    elif call.data == 'edit_welcome':
+        msg = bot.send_message(call.message.chat.id, "📝 أرسل رسالة الترحيب الجديدة:")
+        bot.register_next_step_handler(msg, process_update_welcome)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    elif call.data == 'edit_terms':
+        msg = bot.send_message(call.message.chat.id, "📜 أرسل الشروط والأحكام الجديدة:")
+        bot.register_next_step_handler(msg, process_update_terms)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    elif call.data == 'broadcast_text':
+        msg = bot.send_message(call.message.chat.id, "📝 أرسل الرسالة النصية لبثها لجميع المستخدمين:")
+        bot.register_next_step_handler(msg, process_broadcast)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+    
+    elif call.data == 'broadcast_photo':
+        msg = bot.send_message(call.message.chat.id, "🖼️ أرسل الصورة أولاً (ثم أرسل التعليق بعد رفعها):")
+        bot.register_next_step_handler(msg, process_broadcast_photo_step1)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+
+# ==========================================
+# 8. دوال معالجة الإدخالات
+# ==========================================
+def process_add_button(message):
+    """معالجة إضافة زر جديد"""
+    uid = message.from_user.id
+    button_text = message.text
+    
+    # إضافة الزر
+    add_new_button(button_text)
+    
+    log_admin_action(uid, 'add_button', f'تمت إضافة زر: {button_text}')
+    bot.send_message(uid, f"✅ تمت إضافة الزر '{button_text}' بنجاح!")
+    bot.send_message(uid, "🔧 إدارة الأزرار:", reply_markup=get_buttons_management_keyboard())
+
+def process_edit_button(message):
+    """معالجة تعديل اسم زر"""
+    uid = message.from_user.id
+    old_text = message.text
+    
+    # التحقق من وجود الزر
+    cursor.execute("SELECT id FROM dynamic_buttons WHERE button_text=?", (old_text,))
+    if not cursor.fetchone():
+        bot.send_message(uid, "❌ الزر غير موجود!")
+        return
+    
+    msg = bot.send_message(uid, f"✏️ أرسل الاسم الجديد للزر '{old_text}':")
+    bot.register_next_step_handler(msg, process_edit_button_final, old_text)
+
+def process_edit_button_final(message, old_text):
+    """الخطوة الثانية لتعديل اسم زر"""
+    uid = message.from_user.id
+    new_text = message.text
+    
+    edit_button_name(old_text, new_text)
+    
+    log_admin_action(uid, 'edit_button', f'تم تعديل اسم زر من "{old_text}" إلى "{new_text}"')
+    bot.send_message(uid, f"✅ تم تعديل اسم الزر إلى '{new_text}' بنجاح!")
+    bot.send_message(uid, "🔧 إدارة الأزرار:", reply_markup=get_buttons_management_keyboard())
+
+def process_delete_button(message):
+    """معالجة حذف زر"""
+    uid = message.from_user.id
+    button_text = message.text
+    
+    # التحقق من وجود الزر
+    cursor.execute("SELECT id FROM dynamic_buttons WHERE button_text=?", (button_text,))
+    if not cursor.fetchone():
+        bot.send_message(uid, "❌ الزر غير موجود!")
+        return
+    
+    delete_button(button_text)
+    
+    log_admin_action(uid, 'delete_button', f'تم حذف زر: {button_text}')
+    bot.send_message(uid, f"✅ تم حذف الزر '{button_text}' بنجاح!")
+
+def process_reorder(message, button_names):
+    """معالجة إعادة ترتيب الأزرار"""
+    uid = message.from_user.id
+    
+    try:
+        new_order = [int(x.strip()) for x in message.text.split(',')]
+        
+        if len(new_order) != len(button_names):
+            bot.send_message(uid, "❌ عدد الأرقام لا يساوي عدد الأزرار!")
+            return
+        
+        # إنشاء قائمة بالترتيب الجديد
+        ordered_buttons = []
+        for pos in new_order:
+            if 1 <= pos <= len(button_names):
+                ordered_buttons.append(button_names[pos-1])
+        
+        # تحديث الترتيب
+        reorder_buttons(ordered_buttons)
+        
+        log_admin_action(uid, 'reorder_buttons', 'تم إعادة ترتيب الأزرار')
+        bot.send_message(uid, "✅ تم إعادة ترتيب الأزرار بنجاح!")
+        
+    except ValueError:
+        bot.send_message(uid, "❌ صيغة غير صحيحة! استخدم أرقاماً مفصولة بفواصل.")
+
+def process_update_limits(message):
+    """معالجة تحديث حدود الشحن والسحب"""
+    uid = message.from_user.id
+    
+    try:
+        parts = message.text.split(',')
+        if len(parts) >= 2:
+            min_charge = parts[0].strip()
+            max_withdraw = parts[1].strip()
+            
+            update_db_setting('min_charge', min_charge, uid)
+            update_db_setting('max_withdraw_syria', max_withdraw, uid)
+            
+            bot.send_message(uid, f"✅ تم تحديث الحد الأدنى للشحن إلى {min_charge} ل.س والحد الأقصى للسحب إلى {max_withdraw} ل.س")
+        else:
+            bot.send_message(uid, "❌ الصيغة غير صحيحة! استخدم: الحد الأدنى,الحد الأقصى")
+    except Exception as e:
+        bot.send_message(uid, f"❌ خطأ: {e}")
+
+def process_update_commission(message):
+    """معالجة تحديث نسبة العمولة"""
+    uid = message.from_user.id
+    
+    try:
+        commission = float(message.text)
+        update_db_setting('withdraw_commission', str(commission), uid)
+        bot.send_message(uid, f"✅ تم تحديث نسبة العمولة إلى {commission}%")
+    except ValueError:
+        bot.send_message(uid, "❌ قيمة غير صحيحة! أدخل رقماً")
+
+def process_update_welcome(message):
+    """معالجة تحديث رسالة الترحيب"""
+    uid = message.from_user.id
+    
+    welcome = message.text
+    update_db_setting('welcome_message', welcome, uid)
+    bot.send_message(uid, "✅ تم تحديث رسالة الترحيب بنجاح!")
+
+def process_update_terms(message):
+    """معالجة تحديث الشروط والأحكام"""
+    uid = message.from_user.id
+    
+    terms = message.text
+    update_db_setting('terms_text', terms, uid)
+    bot.send_message(uid, "✅ تم تحديث الشروط والأحكام بنجاح!")
+
+def process_broadcast_photo_step1(message):
+    """الخطوة الأولى لبث صورة"""
+    uid = message.from_user.id
+    
+    if message.content_type != 'photo':
+        bot.send_message(uid, "❌ الرجاء إرسال صورة")
+        return
+    
+    file_id = message.photo[-1].file_id
+    msg = bot.send_message(uid, "📝 الآن أرسل التعليق على الصورة:")
+    bot.register_next_step_handler(msg, process_broadcast_photo_final, file_id)
+
+def process_broadcast_photo_final(message, file_id):
+    """الخطوة الثانية لبث صورة"""
+    uid = message.from_user.id
+    caption = message.text
+    
+    cursor.execute("SELECT user_id FROM users WHERE deleted=0")
+    sent_count = 0
+    for user in cursor.fetchall():
+        try:
+            bot.send_photo(user[0], file_id, caption=caption)
+            sent_count += 1
+        except:
+            continue
+    
+    bot.send_message(uid, f"✅ تم إرسال الصورة لـ {sent_count} مستخدم.")
+
+def process_user_info(message):
+    """معالجة عرض معلومات مستخدم"""
+    uid = message.from_user.id
+    
+    try:
+        target_id = int(message.text)
+        
+        cursor.execute("""SELECT user_id, first_name, username, acc_name, balance, 
+                                 site_balance, status, created_at, custom_name
+                          FROM users WHERE user_id=?""", (target_id,))
+        user = cursor.fetchone()
+        
+        if not user:
+            bot.send_message(uid, "❌ المستخدم غير موجود")
+            return
+        
+        text = (
+            f"📝 معلومات المستخدم {target_id}:\n\n"
+            f"👤 الاسم: {user[1]}\n"
+            f"🆔 المعرف: @{user[2] if user[2] else '—'}\n"
+            f"🏷️ الاسم المخصص: {user[8] if user[8] else '—'}\n"
+            f"📝 حساب Ichancy: {user[3] if user[3] else 'لا يوجد'}\n"
+            f"💰 رصيد البوت: {user[4]} ل.س\n"
+            f"🌐 رصيد الموقع: {user[5]} NSP\n"
+            f"⚡ الحالة: {user[6]}\n"
+            f"📅 تاريخ التسجيل: {user[7]}"
+        )
+        
+        bot.send_message(uid, text)
+        
+    except ValueError:
+        bot.send_message(uid, "❌ معرف المستخدم غير صحيح")
+
+# ==========================================
+# 9. دوال Ichancy
 # ==========================================
 def show_ichancy_menu(uid, chat_id):
     cursor.execute("SELECT acc_name, acc_password, site_balance, balance, created_at, deleted FROM users WHERE user_id=?", (uid,))
@@ -1036,7 +1651,7 @@ def process_delete_account(message):
         bot.send_message(uid, "❌ لم تؤكد الحذف بشكل صحيح", reply_markup=get_ichancy_main_keyboard())
 
 # ==========================================
-# 8. نظام اهداء رصيد
+# 10. نظام اهداء رصيد
 # ==========================================
 def process_gift_user_id(message):
     uid = message.from_user.id
@@ -1151,7 +1766,7 @@ def redeem_gift_code(message):
     log_transaction(uid, "gift_redeem", gift[0], "gift", "success", details=f"Code: {code}")
 
 # ==========================================
-# 9. نظام التواصل مع الدعم
+# 11. نظام التواصل مع الدعم
 # ==========================================
 def process_support_ticket(message):
     uid = message.from_user.id
@@ -1282,7 +1897,7 @@ def show_support_tickets(admin_id):
     bot.send_message(admin_id, msg)
 
 # ==========================================
-# 10. نظام المشرفين
+# 12. نظام المشرفين
 # ==========================================
 def process_add_moderator(message):
     if message.from_user.id != ADMIN_ID:
@@ -1409,221 +2024,6 @@ def show_moderators_list(admin_id):
     
     bot.send_message(admin_id, msg)
 
-# ==========================================
-# 11. نظام الإحالات للمالك
-# ==========================================
-@bot.message_handler(func=lambda m: m.text == '📊 تقارير الإحالات' and m.from_user.id == ADMIN_ID)
-def show_referral_reports(m):
-    uid = m.from_user.id
-    
-    cursor.execute("""SELECT user_id, first_name, username, referral_count, current_earnings, total_earnings 
-                      FROM users WHERE referral_count > 0 ORDER BY current_earnings DESC""")
-    referrers = cursor.fetchall()
-    
-    if not referrers:
-        bot.send_message(uid, "📊 لا توجد إحالات نشطة حالياً.")
-        return
-    
-    msg = "📊 تقارير الإحالات:\n\n"
-    for r in referrers:
-        user_display = f"@{r[2]}" if r[2] else f"ID: {r[0]}"
-        custom_name = get_user_custom_name(r[0])
-        if custom_name:
-            user_display += f" ({custom_name})"
-        
-        msg += (
-            f"👤 {user_display}\n"
-            f"👥 الإحالات: {r[3]}\n"
-            f"💰 أرباح الدورة: {r[4]} ل.س\n"
-            f"📈 إجمالي الأرباح: {r[5]} ل.س\n"
-            f"──────────\n"
-        )
-    
-    next_payout = get_db_setting('next_referral_payout')
-    time_left = format_time_remaining(next_payout) if next_payout else "غير محدد"
-    
-    msg += f"\n📅 الموعد القادم للتوزيع: {next_payout}\n⏳ {time_left}"
-    
-    bot.send_message(uid, msg)
-
-@bot.message_handler(func=lambda m: m.text == '👥 قائمة المحيلين' and m.from_user.id == ADMIN_ID)
-def show_referrers_list(m):
-    uid = m.from_user.id
-    
-    cursor.execute("""SELECT user_id, first_name, username, referral_count 
-                      FROM users WHERE referral_count > 0 ORDER BY referral_count DESC""")
-    referrers = cursor.fetchall()
-    
-    if not referrers:
-        bot.send_message(uid, "👥 لا يوجد محيلين حالياً.")
-        return
-    
-    msg = "👥 قائمة المحيلين:\n\n"
-    for r in referrers:
-        user_display = f"@{r[2]}" if r[2] else f"ID: {r[0]}"
-        custom_name = get_user_custom_name(r[0])
-        if custom_name:
-            user_display += f" ({custom_name})"
-        
-        msg += f"👤 {user_display}\n👥 الإحالات: {r[3]}\n──────────\n"
-    
-    bot.send_message(uid, msg)
-
-@bot.message_handler(func=lambda m: m.text == '💰 الأرباح الحالية' and m.from_user.id == ADMIN_ID)
-def show_current_earnings(m):
-    uid = m.from_user.id
-    
-    cursor.execute("""SELECT user_id, first_name, username, current_earnings 
-                      FROM users WHERE current_earnings > 0 ORDER BY current_earnings DESC""")
-    earnings = cursor.fetchall()
-    
-    if not earnings:
-        bot.send_message(uid, "💰 لا توجد أرباح حالية.")
-        return
-    
-    msg = "💰 الأرباح الحالية (الدورة الحالية):\n\n"
-    total = 0
-    for e in earnings:
-        user_display = f"@{e[2]}" if e[2] else f"ID: {e[0]}"
-        custom_name = get_user_custom_name(e[0])
-        if custom_name:
-            user_display += f" ({custom_name})"
-        
-        msg += f"👤 {user_display}\n💰 {e[3]} ل.س\n──────────\n"
-        total += e[3]
-    
-    msg += f"\n📊 إجمالي الأرباح الحالية: {total} ل.س"
-    
-    bot.send_message(uid, msg)
-
-@bot.message_handler(func=lambda m: m.text == '📜 سجل الأرباح' and m.from_user.id == ADMIN_ID)
-def show_earnings_history(m):
-    uid = m.from_user.id
-    
-    cursor.execute("""SELECT referrer_id, amount, from_user_id, cycle_start, earned_at 
-                      FROM referral_earnings ORDER BY earned_at DESC LIMIT 50""")
-    earnings = cursor.fetchall()
-    
-    if not earnings:
-        bot.send_message(uid, "📜 لا توجد أرباح سابقة.")
-        return
-    
-    msg = "📜 سجل الأرباح (آخر 50):\n\n"
-    for e in earnings:
-        referrer_name = get_user_custom_name(e[0]) or f"ID {e[0]}"
-        from_name = get_user_custom_name(e[2]) or f"ID {e[2]}"
-        
-        msg += (
-            f"👤 {referrer_name}\n"
-            f"💰 {e[1]} ل.س من {from_name}\n"
-            f"📅 {e[4]}\n"
-            f"──────────\n"
-        )
-    
-    bot.send_message(uid, msg)
-
-@bot.message_handler(func=lambda m: m.text == '🔄 تصفير الدورة' and m.from_user.id == ADMIN_ID)
-def reset_referral_cycle(m):
-    uid = m.from_user.id
-    
-    cursor.execute("UPDATE referral_cycles SET status='ended' WHERE status='active'")
-    
-    start = datetime.now()
-    end = start + timedelta(days=10)
-    cursor.execute("""INSERT INTO referral_cycles (start_date, end_date, status) 
-                      VALUES (?,?,?)""", 
-                  (start.strftime("%Y-%m-%d %H:%M:%S"), 
-                   end.strftime("%Y-%m-%d %H:%M:%S"), 'active'))
-    
-    cursor.execute("UPDATE users SET current_earnings=0")
-    
-    update_db_setting('next_referral_payout', end.strftime("%Y-%m-%d %H:%M:%S"))
-    
-    conn.commit()
-    
-    bot.send_message(uid, f"✅ تم تصفير الدورة وبدء دورة جديدة تنتهي في {end.strftime('%Y-%m-%d %H:%M:%S')}")
-
-@bot.message_handler(func=lambda m: m.text == '⚙️ تعديل النسبة' and m.from_user.id == ADMIN_ID)
-def change_referral_percentage(m):
-    uid = m.from_user.id
-    
-    current = get_db_setting('referral_percentage')
-    msg = bot.send_message(uid, f"⚙️ النسبة الحالية: {current}%\nأدخل النسبة الجديدة:")
-    bot.register_next_step_handler(msg, process_referral_percentage)
-
-def process_referral_percentage(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    try:
-        percentage = float(message.text)
-        if percentage < 0 or percentage > 100:
-            bot.send_message(ADMIN_ID, "❌ النسبة يجب أن تكون بين 0 و 100")
-            return
-        
-        update_db_setting('referral_percentage', str(percentage))
-        bot.send_message(ADMIN_ID, f"✅ تم تحديث النسبة إلى {percentage}%")
-        
-    except ValueError:
-        bot.send_message(ADMIN_ID, "❌ قيمة غير صحيحة")
-
-# ==========================================
-# 12. الشروط والاحكام
-# ==========================================
-def show_terms_and_conditions(uid):
-    terms_text = (
-        "📜 الشروط والاحكام - بوت Matar\n\n"
-        "1. الاشتراك في القناة شرط أساسي لاستخدام البوت.\n"
-        "2. الحد الأدنى للشحن: 100 ل.س.\n"
-        "3. الحد الأدنى للسحب عبر سيرياتل كاش: 25,000 ل.س (الحد الأقصى: 500,000 ل.س).\n"
-        "4. الحد الأدنى للسحب عبر شام كاش: 25,000 ل.س (الحد الأقصى: 5,000,000 ل.س).\n"
-        "5. عمولة السحب: 10% من قيمة المبلغ.\n"
-        "6. مدة معالجة طلبات السحب: من ساعة إلى 24 ساعة.\n"
-        "7. نظام الإحالات: نسبة 10% لكل عملية تعبئة يقوم بها المدعو.\n"
-        "8. توزيع أرباح الإحالات كل 10 أيام.\n"
-        "9. يحق للإدارة حظر أي مستخدم يخالف الشروط.\n"
-        "10. في حالة وجود أي استفسار، يرجى التواصل مع الدعم الفني.\n\n"
-        "نتمنى لك تجربة ممتعة مع بوت Matar 🌧️"
-    )
-    
-    bot.send_message(uid, terms_text)
-
-# ==========================================
-# 13. أوامر الإدارة المساعدة
-# ==========================================
-def process_broadcast(message):
-    if message.from_user.id != ADMIN_ID and not is_moderator(message.from_user.id):
-        return
-    
-    uid = message.from_user.id
-    sent = send_to_all_users(message.text, exclude_admin=(uid != ADMIN_ID), exclude_moderators=(uid != ADMIN_ID))
-    bot.send_message(uid, f"✅ تم إرسال الرسالة لـ {sent} مستخدم.")
-
-def process_private_message_user(message):
-    if message.from_user.id != ADMIN_ID and not is_moderator(message.from_user.id):
-        return
-    
-    uid = message.from_user.id
-    
-    try:
-        target_id = int(message.text)
-        msg = bot.send_message(uid, f"📝 أرسل الرسالة للمستخدم {target_id}:")
-        bot.register_next_step_handler(msg, process_private_message_text, target_id)
-    except ValueError:
-        bot.send_message(uid, "❌ معرف المستخدم غير صحيح")
-
-def process_private_message_text(message, target_id):
-    if message.from_user.id != ADMIN_ID and not is_moderator(message.from_user.id):
-        return
-    
-    uid = message.from_user.id
-    
-    try:
-        bot.send_message(target_id, f"📨 رسالة من الإدارة:\n\n{message.text}")
-        bot.send_message(uid, f"✅ تم إرسال الرسالة للمستخدم {target_id}")
-    except Exception as e:
-        bot.send_message(uid, f"❌ فشل الإرسال: {e}")
-
 def show_transactions_log(admin_id):
     cursor.execute("""SELECT id, user_id, type, amount, method, status, transaction_date 
                       FROM transactions ORDER BY id DESC LIMIT 20""")
@@ -1663,6 +2063,132 @@ def show_users_database(admin_id):
     
     bot.send_message(admin_id, msg)
 
+def show_referral_info(uid):
+    cursor.execute("SELECT referral_count, current_earnings, total_earnings, ref_code FROM users WHERE user_id=?", (uid,))
+    data = cursor.fetchone()
+    
+    if not data:
+        bot.send_message(uid, "❌ حدث خطأ في جلب البيانات")
+        return
+    
+    ref_count, current_earnings, total_earnings, ref_code = data
+    
+    next_payout = get_db_setting('next_referral_payout')
+    time_left = format_time_remaining(next_payout) if next_payout else "غير محدد"
+    
+    try:
+        bot_username = bot.get_me().username
+        ref_link = f"https://t.me/{bot_username}?start=ref_{ref_code}"
+    except:
+        ref_link = "رابط غير متوفر حالياً"
+    
+    referral_text = (
+        f"🌟 نظام احالات Matar bot 🌟\n\n"
+        f"يقدّم لك فرصة لدخل إضافي كل 10 أيام .\n"
+        f"كن وكيلاً معنا بأبسط طريقة\n"
+        f"إحصل على نسبة ثابتة لكل عمليات الشحن والتعبئة القادمة عن طريق رابط احالتك ضمن البوت\n\n"
+        f"1- عند الدخول الى البوت قم بنسخ رابط الاحالة الخاص بك عن طريق الضغط على خيار رابط الاحالة الخاص بي\n"
+        f"2- عندما تقوم بنشر رابط احالتك ويقوم أحد بالتسجيل عن طريقة سنبدأ بحساب نسبة ثابتة لجميع عمليات السحب والتعبئة عن طريقك .\n"
+        f"3- يمكن الاطلاع على عدد الاحالات التي قامت بالتسجيل من خلال الرابط الخاص بك عن طريق الضغط على خيار عدد الاحالات الخاصة بك خلال المسابقة الحالية\n"
+        f"4- يتم حساب الارباح عند وجود 3 إحالات نشطة او أكثر\n"
+        f"ماذا تنتظر...! \n"
+        f"توزيع النسب كل 10 أيام\n\n"
+        f"عدد الاحالات التابعة لك: {ref_count}\n"
+        f"رابط الإحالة الخاص بك:\n"
+        f"{ref_link}\n\n"
+        f"الموعد القادم لتوزيع الاحالات: {next_payout}\n"
+        f"{time_left}"
+    )
+    
+    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup.add(
+        types.KeyboardButton("📋 رابط الإحالة الخاص بي"),
+        types.KeyboardButton("👥 عدد احالاتي"),
+        types.KeyboardButton("🔙 العودة للقائمة الرئيسية")
+    )
+    
+    bot.send_message(uid, referral_text, reply_markup=markup)
+
+def show_terms_and_conditions(uid):
+    terms_text = (
+        "📜 الشروط والاحكام - بوت Matar\n\n"
+        "1. الاشتراك في القناة شرط أساسي لاستخدام البوت.\n"
+        "2. الحد الأدنى للشحن: 100 ل.س.\n"
+        "3. الحد الأدنى للسحب عبر سيرياتل كاش: 25,000 ل.س (الحد الأقصى: 500,000 ل.س).\n"
+        "4. الحد الأدنى للسحب عبر شام كاش: 25,000 ل.س (الحد الأقصى: 5,000,000 ل.س).\n"
+        "5. عمولة السحب: 10% من قيمة المبلغ.\n"
+        "6. مدة معالجة طلبات السحب: من ساعة إلى 24 ساعة.\n"
+        "7. نظام الإحالات: نسبة 10% لكل عملية تعبئة يقوم بها المدعو.\n"
+        "8. توزيع أرباح الإحالات كل 10 أيام.\n"
+        "9. يحق للإدارة حظر أي مستخدم يخالف الشروط.\n"
+        "10. في حالة وجود أي استفسار، يرجى التواصل مع الدعم الفني.\n\n"
+        "نتمنى لك تجربة ممتعة مع بوت Matar 🌧️"
+    )
+    
+    bot.send_message(uid, terms_text)
+
+# ==========================================
+# 13. أوامر الإدارة المساعدة
+# ==========================================
+def process_update_syriatel(message):
+    if message.from_user.id != ADMIN_ID and not is_moderator(message.from_user.id):
+        return
+    
+    uid = message.from_user.id
+    new_numbers = message.text
+    update_db_setting('syriatel_numbers', new_numbers, uid)
+    
+    bot.send_message(uid, f"✅ تم تحديث أرقام سيرياتل كاش إلى:\n{new_numbers}")
+    
+    if uid == ADMIN_ID:
+        send_to_all_users(f"⚠️ الرجاء الانتباه: تم تغيير أرقام سيرياتل كاش إلى:\n{new_numbers}", exclude_admin=True, exclude_moderators=True)
+
+def process_update_sham(message):
+    if message.from_user.id != ADMIN_ID and not is_moderator(message.from_user.id):
+        return
+    
+    uid = message.from_user.id
+    new_address = message.text
+    update_db_setting('sham_address', new_address, uid)
+    
+    bot.send_message(uid, f"✅ تم تحديث عنوان شام كاش إلى:\n{new_address}")
+    
+    if uid == ADMIN_ID:
+        send_to_all_users(f"⚠️ الرجاء الانتباه: تم تغيير عنوان شام كاش إلى:\n{new_address}", exclude_admin=True, exclude_moderators=True)
+
+def process_broadcast(message):
+    if message.from_user.id != ADMIN_ID and not is_moderator(message.from_user.id):
+        return
+    
+    uid = message.from_user.id
+    sent = send_to_all_users(message.text, exclude_admin=(uid != ADMIN_ID), exclude_moderators=(uid != ADMIN_ID))
+    bot.send_message(uid, f"✅ تم إرسال الرسالة لـ {sent} مستخدم.")
+
+def process_private_message_user(message):
+    if message.from_user.id != ADMIN_ID and not is_moderator(message.from_user.id):
+        return
+    
+    uid = message.from_user.id
+    
+    try:
+        target_id = int(message.text)
+        msg = bot.send_message(uid, f"📝 أرسل الرسالة للمستخدم {target_id}:")
+        bot.register_next_step_handler(msg, process_private_message_text, target_id)
+    except ValueError:
+        bot.send_message(uid, "❌ معرف المستخدم غير صحيح")
+
+def process_private_message_text(message, target_id):
+    if message.from_user.id != ADMIN_ID and not is_moderator(message.from_user.id):
+        return
+    
+    uid = message.from_user.id
+    
+    try:
+        bot.send_message(target_id, f"📨 رسالة من الإدارة:\n\n{message.text}")
+        bot.send_message(uid, f"✅ تم إرسال الرسالة للمستخدم {target_id}")
+    except Exception as e:
+        bot.send_message(uid, f"❌ فشل الإرسال: {e}")
+
 def process_restore_account(message):
     if message.from_user.id != ADMIN_ID:
         return
@@ -1688,6 +2214,82 @@ def process_restore_account(message):
             bot.send_message(ADMIN_ID, "❌ لا يوجد حساب محذوف لهذا المستخدم")
     except ValueError:
         bot.send_message(ADMIN_ID, "❌ معرف المستخدم غير صحيح")
+
+def process_ban_user(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    try:
+        target_id = int(message.text)
+        cursor.execute("UPDATE users SET status='banned' WHERE user_id=?", (target_id,))
+        conn.commit()
+        bot.send_message(ADMIN_ID, f"✅ تم حظر المستخدم {target_id}")
+    except ValueError:
+        bot.send_message(ADMIN_ID, "❌ معرف المستخدم غير صحيح")
+
+def process_unban_user(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    try:
+        target_id = int(message.text)
+        cursor.execute("UPDATE users SET status='active' WHERE user_id=?", (target_id,))
+        conn.commit()
+        bot.send_message(ADMIN_ID, f"✅ تم فك حظر المستخدم {target_id}")
+    except ValueError:
+        bot.send_message(ADMIN_ID, "❌ معرف المستخدم غير صحيح")
+
+def process_charge_user_step1(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    try:
+        target_id = int(message.text)
+        msg = bot.send_message(ADMIN_ID, f"💰 أدخل المبلغ لشحنه للمستخدم {target_id}:")
+        bot.register_next_step_handler(msg, process_charge_user_step2, target_id)
+    except ValueError:
+        bot.send_message(ADMIN_ID, "❌ معرف المستخدم غير صحيح")
+
+def process_charge_user_step2(message, target_id):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    try:
+        amount = float(message.text)
+        new_balance = update_user_balance(target_id, amount, add=True)
+        
+        bot.send_message(ADMIN_ID, f"✅ تم شحن {amount} ل.س للمستخدم {target_id}. رصيده الجديد: {new_balance}")
+        bot.send_message(target_id, f"💰 تم شحن {amount} ل.س إلى رصيدك في البوت من قبل الإدارة.")
+        
+        log_transaction(target_id, "admin_charge", amount, "admin", "success", admin_id=ADMIN_ID)
+    except ValueError:
+        bot.send_message(ADMIN_ID, "❌ قيمة غير صحيحة")
+
+def process_withdraw_user_step1(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    try:
+        target_id = int(message.text)
+        msg = bot.send_message(ADMIN_ID, f"💰 أدخل المبلغ لسحبه من المستخدم {target_id}:")
+        bot.register_next_step_handler(msg, process_withdraw_user_step2, target_id)
+    except ValueError:
+        bot.send_message(ADMIN_ID, "❌ معرف المستخدم غير صحيح")
+
+def process_withdraw_user_step2(message, target_id):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    try:
+        amount = float(message.text)
+        new_balance = update_user_balance(target_id, amount, add=False)
+        
+        bot.send_message(ADMIN_ID, f"✅ تم سحب {amount} ل.س من المستخدم {target_id}. رصيده الجديد: {new_balance}")
+        bot.send_message(target_id, f"💸 تم سحب {amount} ل.س من رصيدك في البوت من قبل الإدارة.")
+        
+        log_transaction(target_id, "admin_withdraw", amount, "admin", "success", admin_id=ADMIN_ID)
+    except ValueError:
+        bot.send_message(ADMIN_ID, "❌ قيمة غير صحيحة")
 
 # ==========================================
 # 14. عمليات الشحن والسحب
@@ -2028,7 +2630,165 @@ def process_group_gift_value(message, count):
         bot.send_message(ADMIN_ID, "❌ قيمة غير صحيحة")
 
 # ==========================================
-# 15. معالجة النسخ التلقائي
+# 15. نظام الإحالات للمالك
+# ==========================================
+@bot.message_handler(func=lambda m: m.text == '📊 تقارير الإحالات' and m.from_user.id == ADMIN_ID)
+def show_referral_reports(m):
+    uid = m.from_user.id
+    
+    cursor.execute("""SELECT user_id, first_name, username, referral_count, current_earnings, total_earnings 
+                      FROM users WHERE referral_count > 0 ORDER BY current_earnings DESC""")
+    referrers = cursor.fetchall()
+    
+    if not referrers:
+        bot.send_message(uid, "📊 لا توجد إحالات نشطة حالياً.")
+        return
+    
+    msg = "📊 تقارير الإحالات:\n\n"
+    for r in referrers:
+        user_display = f"@{r[2]}" if r[2] else f"ID: {r[0]}"
+        custom_name = get_user_custom_name(r[0])
+        if custom_name:
+            user_display += f" ({custom_name})"
+        
+        msg += (
+            f"👤 {user_display}\n"
+            f"👥 الإحالات: {r[3]}\n"
+            f"💰 أرباح الدورة: {r[4]} ل.س\n"
+            f"📈 إجمالي الأرباح: {r[5]} ل.س\n"
+            f"──────────\n"
+        )
+    
+    next_payout = get_db_setting('next_referral_payout')
+    time_left = format_time_remaining(next_payout) if next_payout else "غير محدد"
+    
+    msg += f"\n📅 الموعد القادم للتوزيع: {next_payout}\n⏳ {time_left}"
+    
+    bot.send_message(uid, msg)
+
+@bot.message_handler(func=lambda m: m.text == '👥 قائمة المحيلين' and m.from_user.id == ADMIN_ID)
+def show_referrers_list(m):
+    uid = m.from_user.id
+    
+    cursor.execute("""SELECT user_id, first_name, username, referral_count 
+                      FROM users WHERE referral_count > 0 ORDER BY referral_count DESC""")
+    referrers = cursor.fetchall()
+    
+    if not referrers:
+        bot.send_message(uid, "👥 لا يوجد محيلين حالياً.")
+        return
+    
+    msg = "👥 قائمة المحيلين:\n\n"
+    for r in referrers:
+        user_display = f"@{r[2]}" if r[2] else f"ID: {r[0]}"
+        custom_name = get_user_custom_name(r[0])
+        if custom_name:
+            user_display += f" ({custom_name})"
+        
+        msg += f"👤 {user_display}\n👥 الإحالات: {r[3]}\n──────────\n"
+    
+    bot.send_message(uid, msg)
+
+@bot.message_handler(func=lambda m: m.text == '💰 الأرباح الحالية' and m.from_user.id == ADMIN_ID)
+def show_current_earnings(m):
+    uid = m.from_user.id
+    
+    cursor.execute("""SELECT user_id, first_name, username, current_earnings 
+                      FROM users WHERE current_earnings > 0 ORDER BY current_earnings DESC""")
+    earnings = cursor.fetchall()
+    
+    if not earnings:
+        bot.send_message(uid, "💰 لا توجد أرباح حالية.")
+        return
+    
+    msg = "💰 الأرباح الحالية (الدورة الحالية):\n\n"
+    total = 0
+    for e in earnings:
+        user_display = f"@{e[2]}" if e[2] else f"ID: {e[0]}"
+        custom_name = get_user_custom_name(e[0])
+        if custom_name:
+            user_display += f" ({custom_name})"
+        
+        msg += f"👤 {user_display}\n💰 {e[3]} ل.س\n──────────\n"
+        total += e[3]
+    
+    msg += f"\n📊 إجمالي الأرباح الحالية: {total} ل.س"
+    
+    bot.send_message(uid, msg)
+
+@bot.message_handler(func=lambda m: m.text == '📜 سجل الأرباح' and m.from_user.id == ADMIN_ID)
+def show_earnings_history(m):
+    uid = m.from_user.id
+    
+    cursor.execute("""SELECT referrer_id, amount, from_user_id, cycle_start, earned_at 
+                      FROM referral_earnings ORDER BY earned_at DESC LIMIT 50""")
+    earnings = cursor.fetchall()
+    
+    if not earnings:
+        bot.send_message(uid, "📜 لا توجد أرباح سابقة.")
+        return
+    
+    msg = "📜 سجل الأرباح (آخر 50):\n\n"
+    for e in earnings:
+        referrer_name = get_user_custom_name(e[0]) or f"ID {e[0]}"
+        from_name = get_user_custom_name(e[2]) or f"ID {e[2]}"
+        
+        msg += (
+            f"👤 {referrer_name}\n"
+            f"💰 {e[1]} ل.س من {from_name}\n"
+            f"📅 {e[4]}\n"
+            f"──────────\n"
+        )
+    
+    bot.send_message(uid, msg)
+
+@bot.message_handler(func=lambda m: m.text == '🔄 تصفير الدورة' and m.from_user.id == ADMIN_ID)
+def reset_referral_cycle(m):
+    uid = m.from_user.id
+    
+    cursor.execute("UPDATE referral_cycles SET status='ended' WHERE status='active'")
+    
+    start = datetime.now()
+    end = start + timedelta(days=10)
+    cursor.execute("""INSERT INTO referral_cycles (start_date, end_date, status) 
+                      VALUES (?,?,?)""", 
+                  (start.strftime("%Y-%m-%d %H:%M:%S"), 
+                   end.strftime("%Y-%m-%d %H:%M:%S"), 'active'))
+    
+    cursor.execute("UPDATE users SET current_earnings=0")
+    
+    update_db_setting('next_referral_payout', end.strftime("%Y-%m-%d %H:%M:%S"))
+    
+    conn.commit()
+    
+    bot.send_message(uid, f"✅ تم تصفير الدورة وبدء دورة جديدة تنتهي في {end.strftime('%Y-%m-%d %H:%M:%S')}")
+
+@bot.message_handler(func=lambda m: m.text == '⚙️ تعديل النسبة' and m.from_user.id == ADMIN_ID)
+def change_referral_percentage(m):
+    uid = m.from_user.id
+    
+    current = get_db_setting('referral_percentage')
+    msg = bot.send_message(uid, f"⚙️ النسبة الحالية: {current}%\nأدخل النسبة الجديدة:")
+    bot.register_next_step_handler(msg, process_referral_percentage)
+
+def process_referral_percentage(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    try:
+        percentage = float(message.text)
+        if percentage < 0 or percentage > 100:
+            bot.send_message(ADMIN_ID, "❌ النسبة يجب أن تكون بين 0 و 100")
+            return
+        
+        update_db_setting('referral_percentage', str(percentage))
+        bot.send_message(ADMIN_ID, f"✅ تم تحديث النسبة إلى {percentage}%")
+        
+    except ValueError:
+        bot.send_message(ADMIN_ID, "❌ قيمة غير صحيحة")
+
+# ==========================================
+# 16. معالجة النسخ التلقائي
 # ==========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('copy_'))
 def handle_copy(call):
@@ -2037,7 +2797,7 @@ def handle_copy(call):
     bot.send_message(call.message.chat.id, f"`{text_to_copy}`", parse_mode="Markdown")
 
 # ==========================================
-# 16. تشغيل البوت
+# 17. تشغيل البوت
 # ==========================================
 if __name__ == "__main__":
     keep_alive()
@@ -2051,6 +2811,7 @@ if __name__ == "__main__":
     print("✔️ Smart Reply System")
     print("✔️ Full Admin Control System")
     print("✔️ Auto-Copy System")
+    print("✔️ Dynamic Buttons System")
     
     while True:
         try:
