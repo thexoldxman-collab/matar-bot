@@ -492,8 +492,27 @@ def reorder_buttons(button_names, parent='main', level=1):
 # 4. بناء القوائم
 # ==========================================
 def get_main_keyboard(uid):
-    # استخدام الأزرار الديناميكية
-    return get_dynamic_keyboard('main', 1)
+    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    
+    buttons = [
+        '⚽ Ichancy ⚽',
+        '💰 الرصيد',
+        '🎁 اهداء رصيد',
+        '🎫 كود هدية',
+        '💳 الشحن في البوت',
+        '💸 السحب من البوت',
+        '👥 دعوة الأصدقاء',
+        '📞 التواصل مع الدعم',
+        '📜 الشروط والاحكام'
+    ]
+    
+    for btn in buttons:
+        markup.add(types.KeyboardButton(btn))
+    
+    if uid == ADMIN_ID or is_moderator(uid):
+        markup.add(types.KeyboardButton('🔐 إدارة البوت'))
+    
+    return markup
 
 def get_ichancy_main_keyboard():
     markup = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
