@@ -39,7 +39,20 @@ def keep_alive():
     t.start()
 
 # ==========================================
-# 2. نظام قاعدة البيانات المتكامل مع الجداول الجديدة
+# 2. تعريف الدوال المساعدة الأساسية
+# ==========================================
+def get_db_setting(key_name):
+    cursor.execute("SELECT value FROM settings WHERE key=?", (key_name,))
+    result = cursor.fetchone()
+    return result[0] if result else None
+
+def update_db_setting(key_name, value, admin_id=ADMIN_ID):
+    cursor.execute("""UPDATE settings SET value=?, updated_at=?, updated_by=? 
+                      WHERE key=?""", (value, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), admin_id, key_name))
+    conn.commit()
+
+# ==========================================
+# 3. نظام قاعدة البيانات المتكامل مع الجداول الجديدة
 # ==========================================
 def setup_database():
     conn = sqlite3.connect("matar_pro_final.db", check_same_thread=False)
@@ -183,6 +196,7 @@ def setup_database():
         end = start + timedelta(days=10)
         cursor.execute("INSERT INTO referral_cycles (start_date, end_date, status) VALUES (?,?,?)", 
                       (start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"), 'active'))
+        # هنا تم استدعاء الدالة وهي معرفة الآن
         update_db_setting('next_referral_payout', end.strftime("%Y-%m-%d %H:%M:%S"))
     
     # إضافة الأزرار الافتراضية
@@ -207,6 +221,7 @@ def setup_database():
     conn.commit()
     return conn, cursor
 
+# تهيئة قاعدة البيانات
 conn, cursor = setup_database()
 
 # جلسات السحب المؤقتة لكل مستخدم
@@ -215,7 +230,7 @@ withdraw_sessions = {}
 adding_button_session = {}
 
 # ==========================================
-# 3. الوظائف المساعدة (مع إضافات جديدة)
+# 4. باقي الوظائف المساعدة
 # ==========================================
 def check_subscription(uid):
     try:
@@ -224,20 +239,10 @@ def check_subscription(uid):
     except:
         return False
 
-def get_db_setting(key_name):
-    cursor.execute("SELECT value FROM settings WHERE key=?", (key_name,))
-    result = cursor.fetchone()
-    return result[0] if result else None
-
 def get_advanced_setting(key_name):
     cursor.execute("SELECT value FROM advanced_settings WHERE key=?", (key_name,))
     result = cursor.fetchone()
     return result[0] if result else None
-
-def update_db_setting(key_name, value, admin_id=ADMIN_ID):
-    cursor.execute("""UPDATE settings SET value=?, updated_at=?, updated_by=? 
-                      WHERE key=?""", (value, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), admin_id, key_name))
-    conn.commit()
 
 def update_advanced_setting(key_name, value, description="", admin_id=ADMIN_ID):
     cursor.execute("""INSERT OR REPLACE INTO advanced_settings (key, value, description, updated_at, updated_by)
@@ -443,7 +448,8 @@ def get_dynamic_keyboard(parent='main', level=1):
         return None
     
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    for btn in buttons:
+    row = []
+    for i, btn in enumerate(buttons):
         markup.add(types.KeyboardButton(btn[1]))
     
     # إضافة زر العودة إذا لم يكن في المستوى الرئيسي
@@ -459,7 +465,7 @@ def get_button_action(button_text):
     return result if result else (None, None, None)
 
 # ==========================================
-# 4. بناء القوائم (مع التحكم الكامل)
+# 5. بناء القوائم
 # ==========================================
 def get_main_keyboard(uid):
     # استخدام الأزرار الديناميكية
@@ -619,8 +625,46 @@ def get_buttons_management_keyboard():
     )
     return keyboard
 
+def get_moderator_management_keyboard():
+    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup.add('➕ إضافة مشرف', '➖ إزالة مشرف')
+    markup.add('✏️ إعادة تسمية مشرف', '🔒 صلاحيات مشرف')
+    markup.add('📋 قائمة المشرفين')
+    markup.add('🔙 العودة للإدارة')
+    return markup
+
+def get_referral_system_keyboard():
+    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup.add('📊 تقارير الإحالات', '👥 قائمة المحيلين')
+    markup.add('💰 الأرباح الحالية', '📜 سجل الأرباح')
+    markup.add('🔄 تصفير الدورة', '⚙️ تعديل النسبة')
+    markup.add('🔙 العودة للإدارة')
+    return markup
+
+def get_payment_codes_keyboard():
+    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup.add('📱 تغيير كود سيرياتل', '💳 تغيير عنوان شام كاش')
+    markup.add('🔙 العودة للإدارة')
+    return markup
+
+def get_bot_status_keyboard():
+    current_status = get_db_setting('bot_status')
+    status_text = "🟢 تفعيل البوت" if current_status != 'active' else "🔴 تعطيل البوت (صيانة)"
+    markup = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
+    markup.add(status_text)
+    markup.add('🔙 العودة للإدارة')
+    return markup
+
+def get_user_management_keyboard():
+    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    markup.add('🔨 حظر مستخدم', '✅ فك حظر مستخدم')
+    markup.add('💰 شحن رصيد لمستخدم', '💸 سحب رصيد من مستخدم')
+    markup.add('📝 معلومات مستخدم', '✏️ إعادة تسمية مستخدم')
+    markup.add('🔙 العودة للإدارة')
+    return markup
+
 # ==========================================
-# 5. معالجة الأوامر الرئيسية
+# 6. معالجة الأوامر الرئيسية
 # ==========================================
 @bot.message_handler(commands=['start'])
 def handle_start(message):
@@ -698,7 +742,7 @@ def check_sub_callback(call):
         bot.answer_callback_query(call.id, "❌ لم تشترك بعد! اشترك ثم حاول مرة أخرى", show_alert=True)
 
 # ==========================================
-# 6. الراوتر الرئيسي للرسائل (مع الأزرار الديناميكية)
+# 7. الراوتر الرئيسي للرسائل (مع الأزرار الديناميكية)
 # ==========================================
 @bot.message_handler(func=lambda m: True)
 def main_router(m):
@@ -870,7 +914,7 @@ def main_router(m):
             bot.register_next_step_handler(msg, process_rename_user_step1)
 
 # ==========================================
-# 7. دوال إدارة الأزرار والتحكم الكامل
+# 8. دوال إدارة الأزرار والتحكم الكامل
 # ==========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('admin_') or call.data in ['add_button', 'edit_button_name', 'reorder_buttons', 'delete_button', 'list_buttons', 'back_to_full_admin', 'back_to_admin'])
 def handle_full_admin_callbacks(call):
@@ -1251,7 +1295,7 @@ def process_reorder_buttons(message, button_names):
         bot.send_message(uid, "❌ صيغة غير صحيحة! استخدم أرقاماً مفصولة بفواصل.")
 
 # ==========================================
-# 8. دوال Ichancy الجديدة
+# 9. دوال Ichancy الجديدة
 # ==========================================
 def show_ichancy_menu(uid, chat_id):
     """عرض قائمة Ichancy بالشكل الجديد"""
@@ -1287,7 +1331,7 @@ def start_gift_redeem(uid, chat_id):
     bot.register_next_step_handler(msg, redeem_gift_code)
 
 # ==========================================
-# 9. معالجة النسخ التلقائي
+# 10. معالجة النسخ التلقائي
 # ==========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('copy_'))
 def handle_copy(call):
@@ -1299,7 +1343,7 @@ def handle_copy(call):
     bot.send_message(call.message.chat.id, f"`{text_to_copy}`", parse_mode="Markdown")
 
 # ==========================================
-# باقي الدوال الأساسية (من الكود الأصلي)
+# 11. باقي الدوال الأساسية
 # ==========================================
 def process_registration_name(message):
     uid = message.from_user.id
@@ -1970,7 +2014,7 @@ def process_restore_account(message):
         bot.send_message(ADMIN_ID, "❌ معرف المستخدم غير صحيح")
 
 # ==========================================
-# 10. معالجة أوامر الشحن والسحب (من الكود الأصلي)
+# 12. معالجة أوامر الشحن والسحب
 # ==========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith('charge_'))
 def handle_charge_methods(call):
@@ -2311,7 +2355,7 @@ def process_group_gift_value(message, count):
         bot.send_message(ADMIN_ID, "❌ قيمة غير صحيحة")
 
 # ==========================================
-# 11. نظام الإحالات للمالك
+# 13. نظام الإحالات للمالك
 # ==========================================
 @bot.message_handler(func=lambda m: m.text == '📊 تقارير الإحالات' and m.from_user.id == ADMIN_ID)
 def show_referral_reports(m):
@@ -2469,7 +2513,7 @@ def process_referral_percentage(message):
         bot.send_message(ADMIN_ID, "❌ قيمة غير صحيحة")
 
 # ==========================================
-# 12. تشغيل البوت
+# 14. تشغيل البوت
 # ==========================================
 if __name__ == "__main__":
     keep_alive()
