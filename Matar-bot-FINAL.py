@@ -3935,10 +3935,10 @@ def handle_all_callbacks(call):
                       'search_by_type', 'search_by_amount', 'search_by_user', 'back_to_logs']
     
     is_admin_callback = any(data.startswith(ac) for ac in admin_callbacks if isinstance(ac, str)) or data in admin_callbacks
-    
+
     # تم تعطيل التحقق مؤقتاً لحل المشكلة
-pass
-    
+    pass
+
     # ===== إدارة الأزرار =====
     if data == 'admin_buttons':
         bot.edit_message_text("🔧 **إدارة الأزرار - اختر ما تريد فعله:**", 
@@ -5030,4 +5030,5 @@ if __name__ == "__main__":
 # نهاية الكود - Matar Ultimate Bot v5.0 (FIXED)
 
 # =============================================================================
+
 
