@@ -1869,9 +1869,9 @@ class ActionSystem:
     def show_admin_panel(uid, chat_id):
         """عرض لوحة الإدارة الرئيسية"""
         if uid == ADMIN_ID:
-            bot.send_message(chat_id, "🔐 **لوحة تحكم المالك**", reply_markup=get_admin_main_keyboard(is_owner=True), parse_mode="Markdown")
+            bot.send_message(chat_id, "🔐 **لوحة تحكم المالك**", reply_markup=get_admin_main_keyboard(is_owner=True, uid=uid), parse_mode="Markdown")
         elif is_moderator(uid):
-            bot.send_message(chat_id, "🔐 **لوحة تحكم المشرف**", reply_markup=get_admin_main_keyboard(is_owner=False), parse_mode="Markdown")
+            bot.send_message(chat_id, "🔐 **لوحة تحكم المشرف**", reply_markup=get_admin_main_keyboard(is_owner=False, uid=uid), parse_mode="Markdown")
         else:
             bot.send_message(chat_id, "❌ **ليس لديك صلاحية للدخول إلى هذه القائمة**", parse_mode="Markdown")
     
@@ -1899,16 +1899,16 @@ class ActionSystem:
         if uid != ADMIN_ID and not check_permission(uid, 'can_manage_buttons'):
             bot.send_message(chat_id, "❌ **ليس لديك صلاحية لإدارة الأزرار**", parse_mode="Markdown")
             return
-        
+
         # تفعيل وضع إدارة الأزرار
         user_mode[uid] = 'button_management'
         user_section[uid] = 'button_management'
-        
-        bot.send_message(chat_id, "🔧 **وضع إدارة الأزرار مفعل**\n\nاضغط على أي زر لتعديله، أو /start للخروج", parse_mode="Markdown")
-        
-        # عرض القائمة الرئيسية (لتعديلها)
-        bot.send_message(chat_id, "📋 **القائمة الحالية (اضغط على أي زر للتعديل):**", 
-                        reply_markup=get_main_keyboard(uid), parse_mode="Markdown")
+
+        bot.send_message(chat_id,
+                         "🔧 **لوحة إدارة الأزرار الكاملة**\n\n"
+                         "اختر ما تريد فعله من الأزرار أدناه:",
+                         reply_markup=get_buttons_management_keyboard(),
+                         parse_mode="Markdown")
     
     @staticmethod
     def manage_users(uid, chat_id):
@@ -2133,8 +2133,8 @@ class ActionSystem:
         )
         
         bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
-        
-        # =============================================================================
+
+# =============================================================================
 # 10. نظام النسخ الفوري والوضع الليلي
 # =============================================================================
 
@@ -2465,7 +2465,7 @@ def toggle_button_status(button_text, admin_id=ADMIN_ID):
 # 13. لوحات التحكم والإدارة
 # =============================================================================
 
-def get_admin_main_keyboard(is_owner=False):
+def get_admin_main_keyboard(is_owner=False, uid=None):
     """لوحة المفاتيح الرئيسية للإدارة"""
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
 
@@ -2481,8 +2481,8 @@ def get_admin_main_keyboard(is_owner=False):
         markup.add('🔙 العودة للقائمة الرئيسية')
     else:
         # عرض الأزرار حسب صلاحيات المشرف
-        perms = get_moderator_permissions(markup.from_user.id) if hasattr(markup, 'from_user') else {}
-        
+        perms = get_moderator_permissions(uid) if uid else {}
+
         if perms.get('can_handle_charges', 0):
             markup.add('💰 تغيير أكواد الدفع')
         if perms.get('can_handle_withdraws', 0):
@@ -2495,7 +2495,7 @@ def get_admin_main_keyboard(is_owner=False):
             markup.add('👥 إدارة المستخدمين')
         if perms.get('can_view_stats', 0):
             markup.add('📊 الإحصائيات')
-        
+
         markup.add('🔙 العودة للقائمة الرئيسية')
 
     return markup
@@ -3100,7 +3100,7 @@ def process_charge_user_type(message, target):
     charge_type = message.text
     
     if charge_type == '🔙 إلغاء':
-        bot.send_message(message.chat.id, "✅ **تم الإلغاء**", reply_markup=get_admin_main_keyboard(uid == ADMIN_ID))
+        bot.send_message(message.chat.id, "✅ **تم الإلغاء**", reply_markup=get_admin_main_keyboard(uid == ADMIN_ID, uid=uid))
         return
     
     msg = bot.send_message(message.chat.id, f"💰 **أدخل المبلغ لشحنه للمستخدم** `{target}`**:**", parse_mode="Markdown")
@@ -3141,7 +3141,7 @@ def process_withdraw_user_step1(message):
         markup.row('💰 سحب من البوت', '🌐 سحب من الموقع')
         markup.row('🔙 إلغاء')
         
-        msg = bot.send_message(message.chat.id, f"💸 **اختر نوع السحب للمستخدم** `{target}`:**", reply_markup=markup, parse_mode="Markdown")
+        msg = bot.send_message(message.chat.id, f"💸 **اختر نوع السحب للمستخدم** `{target}`:", reply_markup=markup, parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_withdraw_user_type, target)
     except ValueError:
         bot.send_message(message.chat.id, "❌ **معرف غير صالح**", parse_mode="Markdown")
@@ -3152,7 +3152,7 @@ def process_withdraw_user_type(message, target):
     withdraw_type = message.text
     
     if withdraw_type == '🔙 إلغاء':
-        bot.send_message(message.chat.id, "✅ **تم الإلغاء**", reply_markup=get_admin_main_keyboard(uid == ADMIN_ID))
+        bot.send_message(message.chat.id, "✅ **تم الإلغاء**", reply_markup=get_admin_main_keyboard(uid == ADMIN_ID, uid=uid))
         return
     
     msg = bot.send_message(message.chat.id, f"💸 **أدخل المبلغ لسحبه من المستخدم** `{target}`**:**", parse_mode="Markdown")
@@ -4285,7 +4285,7 @@ def handle_all_callbacks(call):
         return
 
     if data == 'back_to_admin':
-        bot.send_message(call.message.chat.id, "🔐 **لوحة التحكم:**", reply_markup=get_admin_main_keyboard(is_owner=(uid == ADMIN_ID)))
+        bot.send_message(call.message.chat.id, "🔐 **لوحة التحكم:**", reply_markup=get_admin_main_keyboard(is_owner=(uid == ADMIN_ID), uid=uid))
         bot.delete_message(call.message.chat.id, call.message.message_id)
         return
 
@@ -4499,6 +4499,145 @@ def handle_all_callbacks(call):
         return
 
     # سجل البحث المتقدم
+    if data == 'restore_user':
+        bot.edit_message_text("🔄 **أرسل معرف المستخدم (ID) لاسترجاع حسابه:**", call.message.chat.id, call.message.message_id)
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_restore_user)
+        return
+
+    if data == 'create_user':
+        bot.edit_message_text("➕ **أرسل اسم الحساب الجديد:**", call.message.chat.id, call.message.message_id)
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_admin_create_user_step1)
+        return
+
+    if data == 'advanced_user_search':
+        bot.edit_message_text("🔍 **أرسل كلمة البحث (اسم / ID / يوزر):**", call.message.chat.id, call.message.message_id)
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_advanced_user_search)
+        return
+
+    if data == 'back_to_user_management':
+        cursor.execute("SELECT COUNT(*) FROM users WHERE deleted=0")
+        total = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM users WHERE status='banned'")
+        banned = cursor.fetchone()[0]
+        text = f"👥 **إدارة المستخدمين**\n\n📊 **الإجمالي:** {total}\n🔨 **المحظورين:** {banned}\n\nاختر العملية:"
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=get_user_management_keyboard(), parse_mode="Markdown")
+        return
+
+    if data == 'rename_moderator':
+        bot.edit_message_text("✏️ **أرسل معرف المشرف (ID) لإعادة تسميته:**", call.message.chat.id, call.message.message_id)
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_rename_moderator_step1)
+        return
+
+    if data == 'moderator_permissions':
+        bot.edit_message_text("🔒 **أرسل معرف المشرف (ID) لتعديل صلاحياته:**", call.message.chat.id, call.message.message_id)
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_moderator_permissions_step1)
+        return
+
+    if data == 'reorder_buttons':
+        buttons = get_buttons_list()
+        if not buttons:
+            bot.send_message(call.message.chat.id, "📋 **لا توجد أزرار لإعادة ترتيبها**", parse_mode="Markdown")
+            return
+        text = "🔄 **قائمة الأزرار الحالية:**\n\n"
+        for i, b in enumerate(buttons[:15]):
+            text += f"{i+1}. `{b[1]}`\n"
+        text += "\n📝 **أرسل الأرقام بالترتيب الجديد مفصولة بفواصل:**\nمثال: `3,1,2,4`"
+        msg_obj = bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
+        bot.register_next_step_handler(msg_obj, process_reorder, [b[1] for b in buttons[:15]])
+        return
+
+    if data == 'payment_status':
+        syriatel_api = get_db_setting('syriatel_api_enabled') or '0'
+        sham_api = get_db_setting('sham_api_enabled') or '0'
+        auto_verify = get_db_setting('auto_verify_charges') or '1'
+        usdt_status = get_db_setting('usdt_status') or 'متوقف'
+        binance_status = get_db_setting('binance_status') or 'متوقف'
+        text = f"""💳 **حالة خدمات الدفع:**
+
+📱 **سيرياتل API:** {'🟢 مفعل' if syriatel_api == '1' else '🔴 معطل'}
+🏦 **شام API:** {'🟢 مفعل' if sham_api == '1' else '🔴 معطل'}
+⚡ **التحقق التلقائي:** {'🟢 مفعل' if auto_verify == '1' else '🔴 معطل'}
+🔷 **USDT:** {usdt_status}
+💱 **Binance:** {binance_status}"""
+        bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
+        return
+
+    if data == 'toggle_api':
+        syriatel_api = get_db_setting('syriatel_api_enabled') or '0'
+        new_val = '0' if syriatel_api == '1' else '1'
+        update_db_setting('syriatel_api_enabled', new_val, uid)
+        status = "مفعل ✅" if new_val == '1' else "معطل ❌"
+        bot.answer_callback_query(call.id, f"سيرياتل API: {status}", show_alert=True)
+        return
+
+    if data == 'edit_retry':
+        bot.send_message(call.message.chat.id,
+                         "🔄 **أرسل إعدادات إعادة المحاولة (عدد المحاولات, المدة بالدقائق):**\nمثال: `3,5`",
+                         parse_mode="Markdown")
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_edit_retry)
+        return
+
+    if data == 'backup_now':
+        import shutil
+        backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+        try:
+            shutil.copy2('matar_ultimate.db', backup_name)
+            bot.send_document(call.message.chat.id, open(backup_name, 'rb'),
+                              caption=f"✅ **نسخة احتياطية:**\n📁 `{backup_name}`",
+                              parse_mode="Markdown")
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"❌ **فشل إنشاء النسخة الاحتياطية:** {e}")
+        return
+
+    if data == 'export_db':
+        try:
+            with open('matar_ultimate.db', 'rb') as f:
+                bot.send_document(call.message.chat.id, f,
+                                  caption="📤 **قاعدة البيانات الحالية**",
+                                  parse_mode="Markdown")
+        except Exception as e:
+            bot.send_message(call.message.chat.id, f"❌ **فشل التصدير:** {e}")
+        return
+
+    if data in ('import_db', 'restore_backup', 'list_backups', 'auto_backup_settings'):
+        bot.answer_callback_query(call.id, "هذه الميزة قيد التطوير", show_alert=True)
+        return
+
+    if data == 'admin_backup':
+        ActionSystem.backup_system(uid, call.message.chat.id)
+        return
+
+    if data == 'admin_notifications':
+        ActionSystem.notification_settings(uid, call.message.chat.id)
+        return
+
+    # أزرار سريعة من معلومات المستخدم
+    if data.startswith('ban_') and data[4:].isdigit():
+        target = int(data[4:])
+        cursor.execute("UPDATE users SET status='banned' WHERE user_id=?", (target,))
+        conn.commit()
+        bot.answer_callback_query(call.id, f"✅ تم حظر المستخدم {target}", show_alert=True)
+        log_admin_action(uid, "حظر مستخدم", f"حظر {target}", target_user=target)
+        return
+
+    if data.startswith('charge_') and data[7:].isdigit():
+        target = int(data[7:])
+        msg_obj = bot.send_message(call.message.chat.id, f"💰 **أدخل المبلغ لشحنه للمستخدم** `{target}`**:**", parse_mode="Markdown")
+        bot.register_next_step_handler(msg_obj, process_charge_user_amount, target, '💰 شحن في البوت')
+        return
+
+    if data.startswith('withdraw_') and data[9:].isdigit():
+        target = int(data[9:])
+        msg_obj = bot.send_message(call.message.chat.id, f"💸 **أدخل المبلغ لسحبه من المستخدم** `{target}`**:**", parse_mode="Markdown")
+        bot.register_next_step_handler(msg_obj, process_withdraw_user_amount, target, '💰 سحب من البوت')
+        return
+
+    if data.startswith('change_pass_') and data[12:].isdigit():
+        target = int(data[12:])
+        msg_obj = bot.send_message(call.message.chat.id, f"🔑 **أرسل كلمة السر الجديدة للمستخدم** `{target}`**:**", parse_mode="Markdown")
+        bot.register_next_step_handler(msg_obj, process_change_user_password, target)
+        return
+
     if data == 'admin_search_logs':
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
@@ -4905,6 +5044,37 @@ def main_router(message):
         else:
             bot.send_message(message.chat.id, "❌ هذه القائمة للمالك فقط.")
 
+    elif text == '📊 نظام الإحالات':
+        if uid == ADMIN_ID or check_permission(uid, 'can_view_stats'):
+            ActionSystem.show_referral_stats(uid, message.chat.id)
+        else:
+            bot.send_message(message.chat.id, "❌ هذه الخاصية للمالك فقط.")
+
+    elif text == '📋 سجل الإجراءات':
+        if uid == ADMIN_ID or check_permission(uid, 'can_view_stats'):
+            ActionSystem.show_admin_logs(uid, message.chat.id)
+        else:
+            bot.send_message(message.chat.id, "❌ ليس لديك صلاحية لعرض سجل الإجراءات.")
+
+    elif text == '🔔 إعدادات الإشعارات':
+        if uid == ADMIN_ID:
+            ActionSystem.notification_settings(uid, message.chat.id)
+        else:
+            bot.send_message(message.chat.id, "❌ هذه الخاصية للمالك فقط.")
+
+    elif text == '📨 رسالة جماعية':
+        if uid == ADMIN_ID or check_permission(uid, 'can_send_broadcast'):
+            keyboard = types.InlineKeyboardMarkup(row_width=2)
+            keyboard.add(
+                types.InlineKeyboardButton("📝 رسالة نصية", callback_data="broadcast_text"),
+                types.InlineKeyboardButton("🖼️ صورة مع تعليق", callback_data="broadcast_photo"),
+                types.InlineKeyboardButton("👥 للمشرفين فقط", callback_data="broadcast_moderators")
+            )
+            bot.send_message(message.chat.id, "📨 **اختر نوع الرسالة الجماعية:**",
+                             reply_markup=keyboard, parse_mode="Markdown")
+        else:
+            bot.send_message(message.chat.id, "❌ ليس لديك صلاحية لإرسال رسائل جماعية.")
+
     elif text == '📧 رسالة فردية':
         if uid == ADMIN_ID or check_permission(uid, 'can_send_broadcast'):
             msg = bot.send_message(message.chat.id, "📧 أرسل معرف المستخدم (ID) أولاً:")
@@ -4976,49 +5146,86 @@ def main_router(message):
 # دوال معالجة الشحن والسحب المفقودة (إضافة ضرورية)
 # =============================================================================
 
-def process_syria_charge(message, chat_id):
+def process_syria_charge(message, orig_chat_id=None):
     """معالجة طلب شحن سيرياتل كاش"""
     uid = message.from_user.id
-    receipt = message.text.strip()
-    
-    # التحقق من صحة الإدخال (يمكنك إضافة المزيد من التحقق)
-    if not receipt:
-        bot.send_message(chat_id, "❌ الرجاء إدخال رقم الفاتورة بشكل صحيح.")
-        return
-    
-    # هنا يتم حفظ الطلب في قاعدة البيانات أو إرسال إشعار للمشرف
-    bot.send_message(chat_id, f"✅ تم استلام طلب شحن سيرياتل كاش. رقم الفاتورة: `{receipt}`\nسيتم مراجعة طلبك من قبل الإدارة قريباً.")
-    
-    # إرسال إشعار للمالك (اختياري)
-    notifier.send_to_admin("💰 طلب شحن سيرياتل جديد", f"المستخدم: {uid}\nرقم الفاتورة: {receipt}")
-    
-    # العودة للقائمة الرئيسية أو قائمة الشحن
-    bot.send_message(chat_id, "🔙 يمكنك العودة للقائمة الرئيسية.", reply_markup=get_main_keyboard(uid))
+    chat_id = message.chat.id
+    receipt = message.text.strip() if message.text else ""
 
-def process_sham_charge(message, chat_id):
+    if not receipt or receipt == '🔙 العودة للقائمة الرئيسية':
+        bot.send_message(chat_id, "❌ تم الإلغاء.", reply_markup=get_main_keyboard(uid))
+        return
+
+    # التحقق من الرقم
+    cursor.execute("SELECT receipt_number FROM processed_transactions WHERE receipt_number=?", (receipt,))
+    if cursor.fetchone():
+        bot.send_message(chat_id, "❌ **رقم العملية هذا تم معالجته مسبقاً!**", parse_mode="Markdown")
+        return
+
+    # حفظ الطلب
+    txn_receipt = log_transaction(uid, "charge_request", 0, "syriatel", "pending", details=f"فاتورة: {receipt}")
+
+    bot.send_message(chat_id,
+                     f"✅ **تم استلام طلب الشحن عبر سيرياتل كاش**\n\n"
+                     f"🧾 رقم الفاتورة: `{receipt}`\n"
+                     f"📋 رقم الطلب: `{txn_receipt}`\n\n"
+                     f"⏳ سيتم مراجعة طلبك وشحن رصيدك خلال 1-24 ساعة.",
+                     parse_mode="Markdown",
+                     reply_markup=get_main_keyboard(uid))
+
+    notifier.send_to_admin("💰 طلب شحن سيرياتل جديد",
+                           f"المستخدم: {uid}\nرقم الفاتورة: {receipt}\nرقم الطلب: {txn_receipt}")
+
+def process_sham_charge(message, orig_chat_id=None):
     """معالجة طلب شحن شام كاش"""
     uid = message.from_user.id
-    receipt = message.text.strip()
-    
-    if not receipt:
-        bot.send_message(chat_id, "❌ الرجاء إدخال رقم الفاتورة بشكل صحيح.")
+    chat_id = message.chat.id
+    receipt = message.text.strip() if message.text else ""
+
+    if not receipt or receipt == '🔙 العودة للقائمة الرئيسية':
+        bot.send_message(chat_id, "❌ تم الإلغاء.", reply_markup=get_main_keyboard(uid))
         return
-    
-    bot.send_message(chat_id, f"✅ تم استلام طلب شحن شام كاش. رقم الفاتورة: `{receipt}`\nسيتم مراجعة طلبك من قبل الإدارة قريباً.")
-    notifier.send_to_admin("💰 طلب شحن شام جديد", f"المستخدم: {uid}\nرقم الفاتورة: {receipt}")
-    bot.send_message(chat_id, "🔙 يمكنك العودة للقائمة الرئيسية.", reply_markup=get_main_keyboard(uid))
+
+    cursor.execute("SELECT receipt_number FROM processed_transactions WHERE receipt_number=?", (receipt,))
+    if cursor.fetchone():
+        bot.send_message(chat_id, "❌ **رقم العملية هذا تم معالجته مسبقاً!**", parse_mode="Markdown")
+        return
+
+    txn_receipt = log_transaction(uid, "charge_request", 0, "sham", "pending", details=f"فاتورة: {receipt}")
+
+    bot.send_message(chat_id,
+                     f"✅ **تم استلام طلب الشحن عبر شام كاش**\n\n"
+                     f"🧾 رقم الفاتورة: `{receipt}`\n"
+                     f"📋 رقم الطلب: `{txn_receipt}`\n\n"
+                     f"⏳ سيتم مراجعة طلبك وشحن رصيدك خلال 1-24 ساعة.",
+                     parse_mode="Markdown",
+                     reply_markup=get_main_keyboard(uid))
+
+    notifier.send_to_admin("💰 طلب شحن شام جديد",
+                           f"المستخدم: {uid}\nرقم الفاتورة: {receipt}\nرقم الطلب: {txn_receipt}")
 
 def process_syria_withdraw_account(message):
     """معالجة طلب سحب سيرياتل كاش (استلام رقم المحفظة)"""
     uid = message.from_user.id
-    account = message.text.strip()
-    
-    if not account:
-        bot.send_message(message.chat.id, "❌ الرجاء إدخال رقم المحفظة بشكل صحيح.")
+    account = message.text.strip() if message.text else ""
+
+    if not account or account == '🔙 العودة للقائمة الرئيسية':
+        bot.send_message(message.chat.id, "❌ تم الإلغاء.", reply_markup=get_main_keyboard(uid))
         return
-    
-    # هنا تبدأ خطوة إدخال المبلغ
-    msg = bot.send_message(message.chat.id, "💰 **أدخل المبلغ الذي تريد سحبه:**", parse_mode="Markdown")
+
+    min_withdraw = float(get_db_setting('min_withdraw_syria') or '25000')
+    max_withdraw = float(get_db_setting('max_withdraw_syria') or '500000')
+
+    cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
+    bal = cursor.fetchone()
+    balance = bal[0] if bal else 0
+
+    msg = bot.send_message(message.chat.id,
+                           f"💰 **رصيدك الحالي:** `{balance:,.0f}` ل.س\n\n"
+                           f"📉 الحد الأدنى: `{min_withdraw:,.0f}` ل.س\n"
+                           f"📈 الحد الأقصى: `{max_withdraw:,.0f}` ل.س\n\n"
+                           f"💵 **أدخل المبلغ الذي تريد سحبه:**",
+                           parse_mode="Markdown")
     bot.register_next_step_handler(msg, process_syria_withdraw_amount, account)
 
 def process_syria_withdraw_amount(message, account):
@@ -5026,34 +5233,118 @@ def process_syria_withdraw_amount(message, account):
     uid = message.from_user.id
     try:
         amount = float(message.text.strip())
-        # التحقق من الرصيد والحدود...
-        bot.send_message(message.chat.id, f"✅ تم استلام طلب سحب سيرياتل كاش.\nالمحفظة: `{account}`\nالمبلغ: {amount:,.0f} ل.س\nسيتم مراجعة طلبك من قبل الإدارة قريباً.")
-        notifier.send_to_admin("💸 طلب سحب سيرياتل جديد", f"المستخدم: {uid}\nالمحفظة: {account}\nالمبلغ: {amount:,.0f}")
-        bot.send_message(message.chat.id, "🔙 يمكنك العودة للقائمة الرئيسية.", reply_markup=get_main_keyboard(uid))
+
+        min_withdraw = float(get_db_setting('min_withdraw_syria') or '25000')
+        max_withdraw = float(get_db_setting('max_withdraw_syria') or '500000')
+        commission_pct = float(get_db_setting('withdraw_commission') or '10')
+
+        cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
+        bal = cursor.fetchone()
+        balance = bal[0] if bal else 0
+
+        if amount < min_withdraw:
+            bot.send_message(message.chat.id, f"❌ **الحد الأدنى للسحب:** `{min_withdraw:,.0f}` ل.س", parse_mode="Markdown")
+            return
+        if amount > max_withdraw:
+            bot.send_message(message.chat.id, f"❌ **الحد الأقصى للسحب:** `{max_withdraw:,.0f}` ل.س", parse_mode="Markdown")
+            return
+        if amount > balance:
+            bot.send_message(message.chat.id, f"❌ **رصيدك غير كافٍ!**\n💰 رصيدك: `{balance:,.0f}` ل.س", parse_mode="Markdown")
+            return
+
+        commission = amount * commission_pct / 100
+        net_amount = amount - commission
+
+        txn_receipt = log_transaction(uid, "withdraw_request", amount, "syriatel", "pending",
+                                      commission=commission, net_amount=net_amount,
+                                      details=f"محفظة: {account}")
+
+        bot.send_message(message.chat.id,
+                         f"✅ **تم استلام طلب السحب عبر سيرياتل كاش**\n\n"
+                         f"📱 المحفظة: `{account}`\n"
+                         f"💵 المبلغ المطلوب: `{amount:,.0f}` ل.س\n"
+                         f"💸 العمولة ({commission_pct}%): `{commission:,.0f}` ل.س\n"
+                         f"💰 الصافي: `{net_amount:,.0f}` ل.س\n"
+                         f"📋 رقم الطلب: `{txn_receipt}`\n\n"
+                         f"⏳ سيتم معالجة طلبك خلال 1-24 ساعة.",
+                         parse_mode="Markdown",
+                         reply_markup=get_main_keyboard(uid))
+
+        notifier.notify_withdraw_request(uid, amount, net_amount, "syriatel", account)
+
     except ValueError:
         bot.send_message(message.chat.id, "❌ الرجاء إدخال مبلغ صحيح (أرقام فقط).")
 
 def process_sham_withdraw_account(message, currency):
     """معالجة طلب سحب شام كاش (استلام عنوان المحفظة)"""
     uid = message.from_user.id
-    account = message.text.strip()
-    
-    if not account:
-        bot.send_message(message.chat.id, "❌ الرجاء إدخال عنوان المحفظة بشكل صحيح.")
+    account = message.text.strip() if message.text else ""
+
+    if not account or account == '🔙 العودة للقائمة الرئيسية':
+        bot.send_message(message.chat.id, "❌ تم الإلغاء.", reply_markup=get_main_keyboard(uid))
         return
-    
-    # هنا تبدأ خطوة إدخال المبلغ
-    msg = bot.send_message(message.chat.id, f"💰 **أدخل المبلغ الذي تريد سحبه (بـ {currency}):**", parse_mode="Markdown")
+
+    min_withdraw = float(get_db_setting('min_withdraw_sham') or '25000')
+    max_withdraw = float(get_db_setting('max_withdraw_sham') or '5000000')
+
+    cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
+    bal = cursor.fetchone()
+    balance = bal[0] if bal else 0
+
+    msg = bot.send_message(message.chat.id,
+                           f"💰 **رصيدك الحالي:** `{balance:,.0f}` ل.س\n\n"
+                           f"📉 الحد الأدنى: `{min_withdraw:,.0f}`\n"
+                           f"📈 الحد الأقصى: `{max_withdraw:,.0f}`\n\n"
+                           f"💵 **أدخل المبلغ الذي تريد سحبه (بـ {currency}):**",
+                           parse_mode="Markdown")
     bot.register_next_step_handler(msg, process_sham_withdraw_amount, account, currency)
+
 
 def process_sham_withdraw_amount(message, account, currency):
     """معالجة مبلغ سحب شام كاش"""
     uid = message.from_user.id
     try:
         amount = float(message.text.strip())
-        bot.send_message(message.chat.id, f"✅ تم استلام طلب سحب شام كاش.\nالعنوان: `{account}`\nالعملة: {currency}\nالمبلغ: {amount:,.0f}\nسيتم مراجعة طلبك من قبل الإدارة قريباً.")
-        notifier.send_to_admin("💸 طلب سحب شام جديد", f"المستخدم: {uid}\nالعنوان: {account}\nالعملة: {currency}\nالمبلغ: {amount:,.0f}")
-        bot.send_message(message.chat.id, "🔙 يمكنك العودة للقائمة الرئيسية.", reply_markup=get_main_keyboard(uid))
+
+        min_withdraw = float(get_db_setting('min_withdraw_sham') or '25000')
+        max_withdraw = float(get_db_setting('max_withdraw_sham') or '5000000')
+        commission_pct = float(get_db_setting('withdraw_commission') or '10')
+
+        cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
+        bal = cursor.fetchone()
+        balance = bal[0] if bal else 0
+
+        if amount < min_withdraw:
+            bot.send_message(message.chat.id, f"❌ **الحد الأدنى للسحب:** `{min_withdraw:,.0f}`", parse_mode="Markdown")
+            return
+        if amount > max_withdraw:
+            bot.send_message(message.chat.id, f"❌ **الحد الأقصى للسحب:** `{max_withdraw:,.0f}`", parse_mode="Markdown")
+            return
+        if amount > balance:
+            bot.send_message(message.chat.id, f"❌ **رصيدك غير كافٍ!**\n💰 رصيدك: `{balance:,.0f}` ل.س", parse_mode="Markdown")
+            return
+
+        commission = amount * commission_pct / 100
+        net_amount = amount - commission
+
+        txn_receipt = log_transaction(uid, "withdraw_request", amount, "sham", "pending",
+                                      commission=commission, net_amount=net_amount,
+                                      details=f"عنوان: {account} | عملة: {currency}")
+
+        bot.send_message(message.chat.id,
+                         f"✅ **تم استلام طلب السحب عبر شام كاش**\n\n"
+                         f"🏦 العنوان: `{account}`\n"
+                         f"💱 العملة: {currency}\n"
+                         f"💵 المبلغ المطلوب: `{amount:,.0f}`\n"
+                         f"💸 العمولة ({commission_pct}%): `{commission:,.0f}` ل.س\n"
+                         f"💰 الصافي: `{net_amount:,.0f}`\n"
+                         f"📋 رقم الطلب: `{txn_receipt}`\n\n"
+                         f"⏳ سيتم معالجة طلبك خلال 1-24 ساعة.",
+                         parse_mode="Markdown",
+                         reply_markup=get_main_keyboard(uid))
+
+        notifier.notify_withdraw_request(uid, amount, net_amount, "sham", account)
+
     except ValueError:
         bot.send_message(message.chat.id, "❌ الرجاء إدخال مبلغ صحيح (أرقام فقط).")
 
@@ -5140,6 +5431,15 @@ def process_edit_payout_date(message):
         bot.send_message(message.chat.id, f"✅ **تم تحديث موعد الدفعة إلى:** `{new_date}`", parse_mode="Markdown")
     except ValueError:
         bot.send_message(message.chat.id, "❌ **صيغة التاريخ غير صحيحة. استخدم:** `YYYY-MM-DD`", parse_mode="Markdown")
+
+def process_change_user_password(message, target):
+    """تغيير كلمة سر مستخدم"""
+    uid = message.from_user.id
+    new_pass = message.text.strip()
+    cursor.execute("UPDATE users SET acc_password=? WHERE user_id=?", (new_pass, target))
+    conn.commit()
+    bot.send_message(message.chat.id, f"✅ **تم تغيير كلمة السر للمستخدم** `{target}` **إلى:** `{new_pass}`", parse_mode="Markdown")
+    log_admin_action(uid, "تغيير كلمة السر", f"تغيير كلمة سر المستخدم {target}", target_user=target)
 
 # =============================================================================
 # 22. تشغيل البوت
