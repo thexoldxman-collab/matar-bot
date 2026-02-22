@@ -400,17 +400,10 @@ admin_logger_system = AdminLogger()
 
 def setup_database():
     """
-    إنشاء جميع جداول قاعدة البيانات مع العلاقات - نظام ثابت ودائم
+    إنشاء جميع جداول قاعدة البيانات مع العلاقات
     """
-    # استخدام WAL mode لضمان سلامة البيانات حتى عند انقطاع الكهرباء
     conn = sqlite3.connect("matar_ultimate.db", check_same_thread=False)
     cursor = conn.cursor()
-    
-    # تفعيل WAL mode لأقصى درجات الأمان
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.execute("PRAGMA wal_autocheckpoint=100")
     
     # ===== جداول المستخدمين الأساسية =====
     cursor.execute("""CREATE TABLE IF NOT EXISTS users(
@@ -671,63 +664,6 @@ def setup_database():
         connection_status TEXT DEFAULT 'disconnected'
     )""")
     
-    # ===== غرفة العمليات الدائمة =====
-    cursor.execute("""CREATE TABLE IF NOT EXISTS operations_room(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        chat_id INTEGER UNIQUE,
-        created_at TEXT
-    )""")
-    
-    # ===== طلبات الشحن المعلقة =====
-    cursor.execute("""CREATE TABLE IF NOT EXISTS pending_charges(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        method TEXT,
-        receipt_number TEXT,
-        amount REAL DEFAULT 0,
-        syriatel_code TEXT,
-        status TEXT DEFAULT 'pending',
-        created_at TEXT,
-        processed_by INTEGER,
-        processed_at TEXT,
-        notification_msg_id INTEGER,
-        txn_receipt TEXT
-    )""")
-    
-    # ===== طلبات السحب المعلقة =====
-    cursor.execute("""CREATE TABLE IF NOT EXISTS pending_withdraws(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        method TEXT,
-        account TEXT,
-        amount REAL,
-        commission REAL,
-        net_amount REAL,
-        currency TEXT DEFAULT 'ليرة سورية',
-        status TEXT DEFAULT 'pending',
-        created_at TEXT,
-        processed_by INTEGER,
-        processed_at TEXT,
-        notification_msg_id INTEGER,
-        txn_receipt TEXT
-    )""")
-    
-    # ===== ربط API متعدد =====
-    cursor.execute("""CREATE TABLE IF NOT EXISTS api_configs(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        provider TEXT,
-        name TEXT,
-        api_key TEXT,
-        api_secret TEXT,
-        endpoint TEXT,
-        extra_config TEXT,
-        is_active INTEGER DEFAULT 0,
-        is_paused INTEGER DEFAULT 0,
-        created_at TEXT,
-        updated_at TEXT,
-        created_by INTEGER
-    )""")
-    
     # ===== نظام النسخ الاحتياطي =====
     cursor.execute("""CREATE TABLE IF NOT EXISTS backups(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -769,9 +705,7 @@ def setup_database():
         ('retry_attempts', '3', 'عدد محاولات إعادة التنفيذ', 'number'),
         ('retry_delay', '3', 'الدقائق بين المحاولات', 'number'),
         ('large_charge_threshold', '1000000', 'حد الشحن الكبير', 'number'),
-        ('large_sham_threshold', '10000', 'حد الشحن الكبير لشام', 'number'),
-        ('operations_room_id', '', 'معرف غرفة العمليات', 'text'),
-        ('referral_cycle_days', '10', 'عدد أيام دورة الإحالات', 'number')
+        ('large_sham_threshold', '10000', 'حد الشحن الكبير لشام', 'number')
     ]
     
     for key, value, desc, typ in default_settings:
@@ -1022,115 +956,6 @@ def check_and_create_ref_code(user_id):
         cursor.execute("UPDATE users SET ref_code=? WHERE user_id=?", (ref_code, user_id))
         conn.commit()
         return ref_code
-
-# =============================================================================
-# دوال غرفة العمليات
-# =============================================================================
-
-def get_operations_room_id():
-    """الحصول على معرف غرفة العمليات"""
-    val = get_db_setting('operations_room_id')
-    return int(val) if val and val.isdigit() else None
-
-def set_operations_room_id(chat_id):
-    """حفظ معرف غرفة العمليات"""
-    update_db_setting('operations_room_id', str(chat_id))
-    cursor.execute("INSERT OR REPLACE INTO operations_room(chat_id, created_at) VALUES (?,?)",
-                   (chat_id, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
-
-def send_to_operations_room(text, markup=None, parse_mode="Markdown"):
-    """إرسال رسالة لغرفة العمليات"""
-    room_id = get_operations_room_id()
-    if room_id:
-        try:
-            return bot.send_message(room_id, text, reply_markup=markup, parse_mode=parse_mode)
-        except Exception as e:
-            logger.error(f"خطأ في إرسال رسالة لغرفة العمليات: {e}")
-    return None
-
-def notify_operations_room_charge(user_id, method, receipt, amount, syriatel_code=None, charge_id=None):
-    """إشعار غرفة العمليات بطلب شحن جديد"""
-    room_id = get_operations_room_id()
-    if not room_id:
-        return
-    
-    cursor.execute("SELECT first_name, username FROM users WHERE user_id=?", (user_id,))
-    user = cursor.fetchone()
-    name = user[0] if user and user[0] else str(user_id)
-    uname = f"@{user[1]}" if user and user[1] else "لا يوجد"
-    
-    code_text = f"\n💎 كود سيرياتل المستخدم: `{syriatel_code}`" if syriatel_code else ""
-    
-    text = (f"💰 **طلب شحن جديد**\n\n"
-            f"👤 المستخدم: {name} ({user_id})\n"
-            f"📱 يوزر: {uname}\n"
-            f"💳 الطريقة: {method}\n"
-            f"🧾 رقم العملية: `{receipt}`"
-            f"{code_text}\n"
-            f"⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-            f"⚠️ **يجب التحقق يدوياً ثم اختيار أحد الخيارات:**")
-    
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("✅ تنفيذ الأمر", callback_data=f"ops_execute_charge_{charge_id}"),
-        types.InlineKeyboardButton("❌ إلغاء مع سبب", callback_data=f"ops_cancel_charge_{charge_id}")
-    )
-    markup.add(
-        types.InlineKeyboardButton("💵 إدخال المبلغ ثم شحن", callback_data=f"ops_set_amount_charge_{charge_id}"),
-        types.InlineKeyboardButton("✔️ تم التنفيذ", callback_data=f"ops_done_charge_{charge_id}")
-    )
-    
-    try:
-        msg = bot.send_message(room_id, text, reply_markup=markup, parse_mode="Markdown")
-        if charge_id:
-            cursor.execute("UPDATE pending_charges SET notification_msg_id=? WHERE id=?",
-                          (msg.message_id, charge_id))
-            conn.commit()
-    except Exception as e:
-        logger.error(f"خطأ في إشعار غرفة العمليات بطلب شحن: {e}")
-
-def notify_operations_room_withdraw(user_id, method, account, amount, net_amount, currency, withdraw_id, commission):
-    """إشعار غرفة العمليات بطلب سحب جديد"""
-    room_id = get_operations_room_id()
-    if not room_id:
-        return
-    
-    cursor.execute("SELECT first_name, username FROM users WHERE user_id=?", (user_id,))
-    user = cursor.fetchone()
-    name = user[0] if user and user[0] else str(user_id)
-    uname = f"@{user[1]}" if user and user[1] else "لا يوجد"
-    
-    text = (f"💸 **طلب سحب جديد**\n\n"
-            f"👤 المستخدم: {name} ({user_id})\n"
-            f"📱 يوزر: {uname}\n"
-            f"💳 الطريقة: {method}\n"
-            f"🏦 الحساب/المحفظة: `{account}`\n"
-            f"💵 المبلغ: `{amount:,.0f}` ل.س\n"
-            f"💸 العمولة: `{commission:,.0f}` ل.س\n"
-            f"💰 الصافي: `{net_amount:,.0f}` ل.س\n"
-            f"💱 العملة: {currency}\n"
-            f"⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-            f"⚠️ **اختر الإجراء:**")
-    
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("✅ تنفيذ الأمر", callback_data=f"ops_execute_withdraw_{withdraw_id}"),
-        types.InlineKeyboardButton("❌ إلغاء مع سبب", callback_data=f"ops_cancel_withdraw_{withdraw_id}")
-    )
-    markup.add(
-        types.InlineKeyboardButton("💳 إرسال المبلغ", callback_data=f"ops_send_money_{withdraw_id}"),
-        types.InlineKeyboardButton("✔️ تم التنفيذ", callback_data=f"ops_done_withdraw_{withdraw_id}")
-    )
-    
-    try:
-        msg = bot.send_message(room_id, text, reply_markup=markup, parse_mode="Markdown")
-        if withdraw_id:
-            cursor.execute("UPDATE pending_withdraws SET notification_msg_id=? WHERE id=?",
-                          (msg.message_id, withdraw_id))
-            conn.commit()
-    except Exception as e:
-        logger.error(f"خطأ في إشعار غرفة العمليات بطلب سحب: {e}")
 
 def get_user_by_ref_code(ref_code):
     """الحصول على مستخدم عن طريق كود الإحالة"""
@@ -1847,7 +1672,7 @@ class ActionSystem:
     
     @staticmethod
     def show_referral(uid, chat_id):
-        """عرض نظام الإحالات (للمستخدم العادي) - مع عداد الوقت وعدد الإحالات"""
+        """عرض نظام الإحالات (للمستخدم العادي)"""
         cursor.execute("SELECT ref_code FROM users WHERE user_id=?", (uid,))
         data = cursor.fetchone()
         
@@ -1859,24 +1684,22 @@ class ActionSystem:
         try:
             bot_username = bot.get_me().username
             link = f"https://t.me/{bot_username}?start={code}"
-        except Exception:
+        except:
             link = "⚠️ رابط غير متوفر حالياً"
         
-        # عدد الإحالات التابعة للمستخدم
-        cursor.execute("SELECT COUNT(*) FROM referrals_log WHERE referrer_id=?", (uid,))
-        referral_count = cursor.fetchone()[0]
-        
-        # العداد
         next_payout = get_db_setting('next_referral_payout')
         time_left = format_time_remaining(next_payout) if next_payout else "غير محدد"
         
-        # رسالة الإحالات (الرسالة الدائمة من الإعدادات أو الافتراضية)
-        referral_msg = get_db_setting('referral_message') or "🌟 **احصل على دخل إضافي!**\n\n🎁 احصل على نسبة من كل شخص يدخل عن طريق رابطك."
-        
-        text = (f"{referral_msg}\n\n"
-                f"👥 **عدد أشخاص انضموا عبر رابطك:** `{referral_count}`\n\n"
-                f"🔗 **رابط الإحالة الخاص بك:**\n`{link}`\n\n"
-                f"⏳ **الوقت المتبقي على التوزيع:** {time_left}")
+        text = f"""
+🌟 **احصل على دخل إضافي!**
+
+🎁 احصل على نسبة ثابتة من كل شخص يدخل عن طريق رابط الإحالة الخاص بك.
+
+🔗 **رابط الإحالة الخاص بك:**
+`{link}`
+
+⏳ **موعد التوزيع القادم:** {next_payout or 'غير محدد'} ({time_left})
+"""
         
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("📋 نسخ الرابط", callback_data=f"copy_{link}"))
@@ -2680,10 +2503,6 @@ def get_admin_main_keyboard(is_owner=False, uid=None):
 def get_full_admin_keyboard():
     """لوحة التحكم الكامل (للمالك فقط)"""
     keyboard = types.InlineKeyboardMarkup(row_width=2)
-    
-    room_id = get_db_setting('operations_room_id')
-    room_status = f"✅ غرفة عمليات نشطة" if room_id else "⚠️ لا توجد غرفة عمليات"
-    
     keyboard.add(
         types.InlineKeyboardButton("📝 إدارة الأزرار", callback_data="admin_buttons"),
         types.InlineKeyboardButton("💳 إعدادات الدفع", callback_data="admin_payment"),
@@ -2691,14 +2510,13 @@ def get_full_admin_keyboard():
         types.InlineKeyboardButton("📊 الإحصائيات", callback_data="admin_stats"),
         types.InlineKeyboardButton("⚙️ الإعدادات العامة", callback_data="admin_settings"),
         types.InlineKeyboardButton("📨 رسائل جماعية", callback_data="admin_broadcast"),
-        types.InlineKeyboardButton("🔗 ربط API", callback_data="admin_api_connect"),
+        types.InlineKeyboardButton("🔗 ربط الكاشيرة", callback_data="admin_cashier"),
         types.InlineKeyboardButton("👥 صلاحيات المشرفين", callback_data="admin_moderators"),
         types.InlineKeyboardButton("💾 النسخ الاحتياطي", callback_data="admin_backup"),
         types.InlineKeyboardButton("🔔 إعدادات الإشعارات", callback_data="admin_notifications"),
         types.InlineKeyboardButton("📋 سجل الإجراءات", callback_data="admin_logs"),
         types.InlineKeyboardButton("🎁 نظام الهدايا", callback_data="admin_gifts"),
-        types.InlineKeyboardButton("📊 ادارة الإحالات", callback_data="admin_referrals"),
-        types.InlineKeyboardButton("🏢 غرفة العمليات", callback_data="admin_operations_room"),
+        types.InlineKeyboardButton("📊 نظام الإحالات", callback_data="admin_referrals"),
         types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_admin")
     )
     return keyboard
@@ -3461,47 +3279,6 @@ def process_user_info(message):
     
     bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
 
-def process_add_api_config(message, provider):
-    """إضافة اتصال API جديد"""
-    uid = message.from_user.id
-    text = message.text.strip()
-    
-    try:
-        parts = [p.strip() for p in text.split(',')]
-        if len(parts) < 3:
-            bot.send_message(message.chat.id, "❌ **صيغة خاطئة. استخدم: اسم,مفتاح_API,رابط_Endpoint**", parse_mode="Markdown")
-            return
-        
-        name, api_key, endpoint = parts[0], parts[1], parts[2]
-        
-        cursor.execute("""INSERT INTO api_configs 
-            (provider, name, api_key, endpoint, is_active, is_paused, created_at, updated_at, created_by)
-            VALUES (?,?,?,?,1,0,?,?,?)""",
-            (provider, name, api_key, endpoint,
-             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-             datetime.now().strftime("%Y-%m-%d %H:%M:%S"), uid))
-        conn.commit()
-        
-        bot.send_message(message.chat.id,
-                         f"✅ **تم إضافة اتصال API بنجاح!**\n\n"
-                         f"📌 الاسم: {name}\n"
-                         f"🌐 Endpoint: `{endpoint}`\n"
-                         f"✅ الحالة: نشط",
-                         parse_mode="Markdown")
-        log_admin_action(uid, "إضافة API", f"إضافة {name} لـ {provider}")
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ **خطأ:** {e}", parse_mode="Markdown")
-
-def process_edit_button_photo(message, button_text):
-    """تعديل صورة الزر"""
-    uid = message.from_user.id
-    if message.content_type == 'photo':
-        file_id = message.photo[-1].file_id
-        update_button_full(button_text, new_photo=file_id, admin_id=uid)
-        bot.send_message(message.chat.id, f"✅ **تم تحديث صورة الزر** `{button_text}`", parse_mode="Markdown")
-    else:
-        bot.send_message(message.chat.id, "❌ **الرجاء إرسال صورة**", parse_mode="Markdown")
-
 def process_restore_user(message):
     """استرجاع حساب محذوف"""
     uid = message.from_user.id
@@ -4060,16 +3837,8 @@ def handle_start(message):
             if not result or not result[0]:
                 cursor.execute("UPDATE users SET referred_by=? WHERE user_id=?", (referrer_id, uid))
                 register_referral(referrer_id, uid)
+                # تسجيل الأرباح النظرية للمحيل (سيتم دفعها لاحقاً يدوياً)
                 logger.info(f"إحالة جديدة: {referrer_id} -> {uid}")
-                # إشعار المحيل بأن شخصاً انضم عن طريق رابطه
-                try:
-                    bot.send_message(referrer_id,
-                                     f"🎉 **مبروك! انضم شخص جديد عبر رابط إحالتك**\n\n"
-                                     f"🆔 معرف المنضم: `{uid}`\n"
-                                     f"⏰ وقت الانضمام: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                                     parse_mode="Markdown")
-                except Exception:
-                    pass
     
     # إنشاء كود إحالة للمستخدم
     check_and_create_ref_code(uid)
@@ -4158,54 +3927,32 @@ def handle_all_callbacks(call):
     # ===== 2. معالج أزرار الشحن والسحب =====
     if data == 'charge_syria':
         bot.answer_callback_query(call.id)
-        bot.clear_step_handler_by_chat_id(uid)
+        bot.clear_step_handler_by_chat_id(uid)  # إلغاء أي عملية معلقة سابقة
         syriatel_numbers = get_db_setting('syriatel_numbers') or 'غير محدد'
-        
-        # بناء رسالة مع أكواد قابلة للنسخ
-        nums = [n.strip() for n in syriatel_numbers.split(',') if n.strip()]
-        
-        nums_text = ""
-        for num in nums:
-            nums_text += f"• `{num}`\n"
-        
-        msg_text = (f"📱 **طريقة الشحن عبر سيرياتل كاش:**\n\n"
-                    f"1️⃣ افتح تطبيق سيرياتل كاش\n"
-                    f"2️⃣ أرسل المبلغ إلى أحد الأرقام التالية (اضغط للنسخ):\n\n"
-                    f"{nums_text}\n"
-                    f"⚠️ **تنبيه: لن تُقبل أي عملية شحن بدون رقم عملية التحويل!**\n\n"
-                    f"3️⃣ بعد الإرسال، أدخل رقم عملية التحويل:")
-        
-        # أزرار للأكواد القابلة للنسخ
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        for num in nums:
-            markup.add(types.InlineKeyboardButton(f"📋 نسخ: {num}", callback_data=f"copy_{num}"))
-        
-        bot.send_message(call.message.chat.id, msg_text, reply_markup=markup, parse_mode="Markdown")
-        
-        # طلب رقم العملية
-        msg = bot.send_message(call.message.chat.id, "✏️ **أدخل رقم عملية التحويل الآن:**", parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_syria_charge_receipt)
+        msg = bot.send_message(
+            call.message.chat.id,
+            f"📱 **طريقة الشحن عبر سيرياتل كاش:**\n\n"
+            f"1️⃣ افتح تطبيق سيرياتل كاش\n"
+            f"2️⃣ أرسل المبلغ إلى أحد الأرقام التالية:\n`{syriatel_numbers}`\n"
+            f"3️⃣ أرسل رقم العملية (الفاتورة) هنا:",
+            parse_mode="Markdown"
+        )
+        bot.register_next_step_handler(msg, process_syria_charge, call.message.chat.id)
         return
 
     if data == 'charge_sham':
         bot.answer_callback_query(call.id)
-        bot.clear_step_handler_by_chat_id(uid)
+        bot.clear_step_handler_by_chat_id(uid)  # إلغاء أي عملية معلقة سابقة
         sham_address = get_db_setting('sham_address') or 'غير محدد'
-        
-        msg_text = (f"🏦 **طريقة الشحن عبر شام كاش:**\n\n"
-                    f"1️⃣ افتح تطبيق شام كاش\n"
-                    f"2️⃣ أرسل المبلغ إلى العنوان التالي (اضغط للنسخ):\n\n"
-                    f"• `{sham_address}`\n\n"
-                    f"⚠️ **تنبيه: لن تُقبل أي عملية شحن بدون رقم عملية التحويل!**\n\n"
-                    f"3️⃣ بعد الإرسال، أدخل رقم عملية التحويل:")
-        
-        markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton(f"📋 نسخ العنوان: {sham_address}", callback_data=f"copy_{sham_address}"))
-        
-        bot.send_message(call.message.chat.id, msg_text, reply_markup=markup, parse_mode="Markdown")
-        
-        msg = bot.send_message(call.message.chat.id, "✏️ **أدخل رقم عملية التحويل الآن:**", parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_sham_charge_receipt)
+        msg = bot.send_message(
+            call.message.chat.id,
+            f"🏦 **طريقة الشحن عبر شام كاش:**\n\n"
+            f"1️⃣ افتح تطبيق شام كاش\n"
+            f"2️⃣ أرسل المبلغ إلى العنوان:\n`{sham_address}`\n"
+            f"3️⃣ أرسل رقم العملية (الفاتورة) هنا:",
+            parse_mode="Markdown"
+        )
+        bot.register_next_step_handler(msg, process_sham_charge, call.message.chat.id)
         return
 
     if data == 'withdraw_syria':
@@ -4348,46 +4095,9 @@ def handle_all_callbacks(call):
         handle_gift_expiry(call)
         return
 
-    # إدارة الأزرار الداخلية، تغيير الترتيب، تعديل الصورة
-    if data.startswith('manage_children_'):
-        button_text = data[16:]
-        # عرض الأزرار الفرعية الحالية
-        cursor.execute("SELECT button_text, is_active FROM dynamic_buttons WHERE parent_button=?", (button_text,))
-        children = cursor.fetchall()
-        if not children:
-            bot.answer_callback_query(call.id, f"لا توجد أزرار فرعية تحت '{button_text}'", show_alert=True)
-        else:
-            text = f"📂 **الأزرار الفرعية لـ** `{button_text}`:\n\n"
-            for c in children:
-                status = "✅" if c[1] else "❌"
-                text += f"{status} `{c[0]}`\n"
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("➕ إضافة فرعي", callback_data=f"add_child_{button_text}"))
-            markup.add(types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_button_management"))
-            bot.send_message(call.message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
-        return
-
-    if data.startswith('add_child_'):
-        parent_text = data[10:]
-        msg = bot.send_message(call.message.chat.id, f"📂 **أدخل اسم الزر الفرعي الجديد تحت** `{parent_text}`:", parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_create_submenu_step2, parent_text)
-        return
-
-    if data.startswith('reorder_'):
-        button_text = data[8:]
-        cursor.execute("SELECT button_text FROM dynamic_buttons WHERE parent_button=(SELECT parent_button FROM dynamic_buttons WHERE button_text=?) ORDER BY sort_order", (button_text,))
-        siblings = [r[0] for r in cursor.fetchall()]
-        text = "🔄 **أعد ترتيب الأزرار بإرسال الأرقام مفصولة بفواصل:**\n\n"
-        for i, b in enumerate(siblings, 1):
-            text += f"{i}. `{b}`\n"
-        msg = bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_reorder, siblings)
-        return
-
-    if data.startswith('edit_photo_'):
-        button_text = data[11:]
-        msg = bot.send_message(call.message.chat.id, f"🖼️ **أرسل الصورة الجديدة للزر** `{button_text}`:", parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_edit_button_photo, button_text)
+    # الميزات المتقدمة (إدارة الأزرار الداخلية، تغيير الترتيب، تعديل الصورة)
+    if data.startswith('manage_children_') or data.startswith('reorder_') or data.startswith('edit_photo_'):
+        bot.answer_callback_query(call.id, "هذه الميزة قيد التطوير حالياً", show_alert=True)
         return
 
     # إعدادات الدفع
@@ -4569,284 +4279,7 @@ def handle_all_callbacks(call):
         ActionSystem.show_admin_logs(uid, call.message.chat.id)
         return
 
-    # ===== اختيار كود سيرياتل بعد إدخال رقم العملية =====
-    if data.startswith('syriatel_code_'):
-        # format: syriatel_code_{receipt}_{uid}_{number}
-        parts = data.split('_')
-        # receipt يمكن أن يحتوي على _
-        # لكن uid هو رقم والنمط هو syriatel_code_RECEIPT_UID_NUMBER
-        # نستخدم split من اليمين
-        number = parts[-1]
-        user_id_in_cb = int(parts[-2])
-        receipt = '_'.join(parts[2:-2])
-        
-        if uid != user_id_in_cb:
-            bot.answer_callback_query(call.id, "❌ هذا الزر ليس لك!", show_alert=True)
-            return
-        
-        bot.answer_callback_query(call.id, f"✅ تم اختيار الكود: {number}")
-        
-        # حفظ الطلب في قاعدة البيانات
-        txn_receipt = log_transaction(uid, "charge_request", 0, "syriatel", "pending", 
-                                       details=f"فاتورة: {receipt} | كود: {number}")
-        
-        cursor.execute("""INSERT INTO pending_charges 
-            (user_id, method, receipt_number, syriatel_code, status, created_at, txn_receipt)
-            VALUES (?,?,?,?,?,?,?)""",
-            (uid, 'سيرياتل كاش', receipt, number, 'pending', 
-             datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
-        conn.commit()
-        charge_id = cursor.lastrowid
-        
-        # طلب المبلغ من الزبون
-        msg = bot.send_message(call.message.chat.id,
-                               f"✅ **اخترت الكود:** `{number}`\n\n"
-                               f"💵 **أدخل المبلغ الذي قمت بإرساله:**",
-                               parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_syriatel_charge_amount, charge_id)
-        return
-
-    # ===== معالجة أوامر غرفة العمليات =====
-    if data.startswith('ops_execute_charge_'):
-        charge_id = int(data.split('_')[-1])
-        handle_ops_execute_charge(call, charge_id)
-        return
-    
-    if data.startswith('ops_cancel_charge_'):
-        charge_id = int(data.split('_')[-1])
-        handle_ops_cancel_charge(call, charge_id)
-        return
-    
-    if data.startswith('ops_set_amount_charge_'):
-        charge_id = int(data.split('_')[-1])
-        handle_ops_set_amount_charge(call, charge_id)
-        return
-    
-    if data.startswith('ops_done_charge_'):
-        charge_id = int(data.split('_')[-1])
-        handle_ops_done_charge(call, charge_id)
-        return
-    
-    if data.startswith('ops_execute_withdraw_'):
-        withdraw_id = int(data.split('_')[-1])
-        handle_ops_execute_withdraw(call, withdraw_id)
-        return
-    
-    if data.startswith('ops_cancel_withdraw_'):
-        withdraw_id = int(data.split('_')[-1])
-        handle_ops_cancel_withdraw(call, withdraw_id)
-        return
-    
-    if data.startswith('ops_send_money_'):
-        withdraw_id = int(data.split('_')[-1])
-        handle_ops_send_money(call, withdraw_id)
-        return
-    
-    if data.startswith('ops_done_withdraw_'):
-        withdraw_id = int(data.split('_')[-1])
-        handle_ops_done_withdraw(call, withdraw_id)
-        return
-    
-    if data.startswith('ops_syriatel_code_'):
-        # اختيار كود سيرياتل من قائمة بعد إرسال رقم العملية
-        parts = data.split('_')
-        charge_id = int(parts[-1])
-        code = '_'.join(parts[3:-1])
-        handle_ops_syriatel_code_select(call, charge_id, code)
-        return
-
-    # ===== معالج إنشاء غرفة العمليات =====
-    if data == 'create_operations_room':
-        if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
-            return
-        set_operations_room_id(call.message.chat.id)
-        bot.answer_callback_query(call.id, "✅ تم تعيين هذه المحادثة كغرفة عمليات!", show_alert=True)
-        bot.send_message(call.message.chat.id, 
-                         "🏢 **تم إنشاء غرفة العمليات بنجاح!**\n\n"
-                         "جميع طلبات الشحن والسحب والرسائل ستصل إلى هنا.\n"
-                         "يمكنك إضافة المشرفين إلى هذه المحادثة.", 
-                         parse_mode="Markdown")
-        return
-
-    if data == 'admin_api_connect':
-        if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
-            return
-        keyboard = types.InlineKeyboardMarkup(row_width=1)
-        keyboard.add(
-            types.InlineKeyboardButton("📱 ربط API سيرياتل كاش", callback_data="api_syriatel_menu"),
-            types.InlineKeyboardButton("🏦 ربط API شام كاش", callback_data="api_sham_menu"),
-            types.InlineKeyboardButton("💳 ربط API الكاشيرة", callback_data="api_cashier_menu"),
-            types.InlineKeyboardButton("📋 قائمة الاتصالات النشطة", callback_data="api_list_all"),
-            types.InlineKeyboardButton("🔌 اختبار جميع الاتصالات", callback_data="api_test_all"),
-            types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_full_admin")
-        )
-        bot.edit_message_text("🔗 **إدارة اتصالات API:**\n\nيمكنك إضافة عدة API لكل خدمة ودمجها.",
-                              call.message.chat.id, call.message.message_id,
-                              reply_markup=keyboard, parse_mode="Markdown")
-        return
-
-    if data in ('api_syriatel_menu', 'api_sham_menu', 'api_cashier_menu'):
-        provider_map = {'api_syriatel_menu': 'syriatel', 'api_sham_menu': 'sham', 'api_cashier_menu': 'cashier'}
-        provider_names = {'syriatel': 'سيرياتل كاش', 'sham': 'شام كاش', 'cashier': 'الكاشيرة'}
-        provider = provider_map[data]
-        pname = provider_names[provider]
-        
-        cursor.execute("SELECT id, name, is_active, is_paused, endpoint FROM api_configs WHERE provider=?", (provider,))
-        apis = cursor.fetchall()
-        
-        keyboard = types.InlineKeyboardMarkup(row_width=1)
-        for api in apis:
-            status = "✅" if api[2] and not api[3] else "⏸️" if api[3] else "❌"
-            keyboard.add(types.InlineKeyboardButton(f"{status} {api[1]} | {api[4]}", callback_data=f"api_manage_{api[0]}"))
-        keyboard.add(types.InlineKeyboardButton(f"➕ إضافة API جديد لـ {pname}", callback_data=f"api_add_{provider}"))
-        keyboard.add(types.InlineKeyboardButton("🔙 رجوع", callback_data="admin_api_connect"))
-        
-        bot.edit_message_text(f"🔗 **إدارة API {pname}:**\n\n"
-                              f"عدد الاتصالات: {len(apis)}\n"
-                              f"✅ نشط | ⏸️ موقوف مؤقتاً | ❌ معطل",
-                              call.message.chat.id, call.message.message_id,
-                              reply_markup=keyboard, parse_mode="Markdown")
-        return
-
-    if data.startswith('api_add_'):
-        provider = data[8:]
-        provider_names = {'syriatel': 'سيرياتل كاش', 'sham': 'شام كاش', 'cashier': 'الكاشيرة'}
-        pname = provider_names.get(provider, provider)
-        bot.edit_message_text(f"➕ **إضافة API جديد لـ {pname}**\n\n"
-                              f"أرسل البيانات بالتنسيق:\n`اسم,مفتاح_API,رابط_Endpoint`\n\n"
-                              f"مثال: `SyrCash_Main,sk_live_xxx,https://api.syriatel.cash/v1`",
-                              call.message.chat.id, call.message.message_id, parse_mode="Markdown")
-        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_add_api_config, provider)
-        return
-
-    if data.startswith('api_manage_'):
-        api_id = int(data[11:])
-        cursor.execute("SELECT name, provider, endpoint, is_active, is_paused FROM api_configs WHERE id=?", (api_id,))
-        api = cursor.fetchone()
-        if not api:
-            bot.answer_callback_query(call.id, "❌ لم يعد موجوداً", show_alert=True)
-            return
-        status = "✅ نشط" if api[3] and not api[4] else "⏸️ موقوف" if api[4] else "❌ معطل"
-        keyboard = types.InlineKeyboardMarkup(row_width=2)
-        keyboard.add(
-            types.InlineKeyboardButton("✅ تفعيل", callback_data=f"api_activate_{api_id}"),
-            types.InlineKeyboardButton("⏸️ إيقاف مؤقت", callback_data=f"api_pause_{api_id}"),
-            types.InlineKeyboardButton("❌ تعطيل", callback_data=f"api_deactivate_{api_id}"),
-            types.InlineKeyboardButton("🗑️ حذف", callback_data=f"api_delete_{api_id}"),
-            types.InlineKeyboardButton("🔙 رجوع", callback_data=f"api_{api[1]}_menu")
-        )
-        bot.edit_message_text(f"🔗 **{api[0]}** ({status})\n🌐 Endpoint: `{api[2]}`",
-                              call.message.chat.id, call.message.message_id,
-                              reply_markup=keyboard, parse_mode="Markdown")
-        return
-
-    if data.startswith('api_activate_'):
-        api_id = int(data[13:])
-        cursor.execute("UPDATE api_configs SET is_active=1, is_paused=0 WHERE id=?", (api_id,))
-        conn.commit()
-        bot.answer_callback_query(call.id, "✅ تم تفعيل الاتصال", show_alert=False)
-        return
-
-    if data.startswith('api_pause_'):
-        api_id = int(data[10:])
-        cursor.execute("UPDATE api_configs SET is_paused=1 WHERE id=?", (api_id,))
-        conn.commit()
-        bot.answer_callback_query(call.id, "⏸️ تم إيقاف الاتصال مؤقتاً", show_alert=False)
-        return
-
-    if data.startswith('api_deactivate_'):
-        api_id = int(data[15:])
-        cursor.execute("UPDATE api_configs SET is_active=0 WHERE id=?", (api_id,))
-        conn.commit()
-        bot.answer_callback_query(call.id, "❌ تم تعطيل الاتصال", show_alert=False)
-        return
-
-    if data.startswith('api_delete_'):
-        api_id = int(data[11:])
-        cursor.execute("DELETE FROM api_configs WHERE id=?", (api_id,))
-        conn.commit()
-        bot.answer_callback_query(call.id, "🗑️ تم حذف الاتصال", show_alert=True)
-        return
-
-    if data == 'api_list_all':
-        cursor.execute("SELECT name, provider, endpoint, is_active, is_paused FROM api_configs ORDER BY provider")
-        apis = cursor.fetchall()
-        if not apis:
-            bot.answer_callback_query(call.id, "لا توجد اتصالات API حالياً", show_alert=True)
-            return
-        text = "📋 **جميع اتصالات API:**\n\n"
-        for api in apis:
-            status = "✅" if api[3] and not api[4] else "⏸️" if api[4] else "❌"
-            text += f"{status} {api[0]} | {api[1]}\n🌐 {api[2]}\n\n"
-        bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
-        bot.answer_callback_query(call.id)
-        return
-
-    if data == 'api_test_all':
-        bot.answer_callback_query(call.id, "🔌 جاري اختبار الاتصالات...", show_alert=False)
-        cursor.execute("SELECT name, endpoint, is_active FROM api_configs WHERE is_active=1 AND is_paused=0")
-        apis = cursor.fetchall()
-        results = "🔌 **نتائج اختبار الاتصالات:**\n\n"
-        for api in apis:
-            try:
-                r = requests.get(api[1], timeout=5)
-                results += f"✅ {api[0]}: متصل (كود: {r.status_code})\n"
-            except Exception as e:
-                results += f"❌ {api[0]}: فشل ({str(e)[:30]})\n"
-        bot.send_message(call.message.chat.id, results, parse_mode="Markdown")
-        return
-
-    if data == 'admin_operations_room':
-        if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
-            return
-        room_id = get_db_setting('operations_room_id')
-        keyboard = types.InlineKeyboardMarkup(row_width=1)
-        keyboard.add(
-            types.InlineKeyboardButton("🏢 تعيين هذه المحادثة كغرفة عمليات", callback_data="create_operations_room"),
-            types.InlineKeyboardButton("📊 عرض الطلبات المعلقة", callback_data="ops_show_pending"),
-            types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_full_admin")
-        )
-        status_text = f"✅ غرفة العمليات نشطة\n🆔 المعرف: `{room_id}`" if room_id else "⚠️ لم يتم إنشاء غرفة عمليات بعد"
-        bot.edit_message_text(f"🏢 **إدارة غرفة العمليات:**\n\n{status_text}\n\n"
-                              "لإنشاء غرفة عمليات:\n"
-                              "1. أنشئ مجموعة أو استخدم محادثة موجودة\n"
-                              "2. أضف البوت للمجموعة كمسؤول\n"
-                              "3. اضغط زر 'تعيين غرفة عمليات' في تلك المحادثة\n\n"
-                              "أو اضغط الزر أدناه لتعيين **هذه المحادثة** كغرفة عمليات:",
-                              call.message.chat.id, call.message.message_id,
-                              reply_markup=keyboard, parse_mode="Markdown")
-        return
-
-    if data == 'ops_show_pending':
-        cursor.execute("SELECT COUNT(*) FROM pending_charges WHERE status='pending'")
-        pc = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM pending_withdraws WHERE status='pending'")
-        pw = cursor.fetchone()[0]
-        bot.answer_callback_query(call.id, f"⏳ شحنات معلقة: {pc} | سحوبات معلقة: {pw}", show_alert=True)
-        return
-
-    if data == 'manual_backup':
-        if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
-            return
-        try:
-            import shutil
-            backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-            shutil.copy2('matar_ultimate.db', backup_name)
-            cursor.execute("INSERT INTO backups(backup_name, backup_type, file_path, created_at, created_by) VALUES (?,?,?,?,?)",
-                          (backup_name, 'manual', backup_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), uid))
-            conn.commit()
-            with open(backup_name, 'rb') as f:
-                bot.send_document(call.message.chat.id, f, caption=f"💾 نسخة احتياطية: {backup_name}")
-            bot.answer_callback_query(call.id, "✅ تم إنشاء النسخة الاحتياطية!", show_alert=False)
-        except Exception as e:
-            bot.answer_callback_query(call.id, f"❌ خطأ: {e}", show_alert=True)
-        return
-
-    # الرجوع للوحة الإدارة الكاملة
+    # العودة للقوائم السابقة
     if data == 'back_to_full_admin':
         bot.edit_message_text("🛑 **لوحة التحكم الكامل:**", call.message.chat.id, call.message.message_id, reply_markup=get_full_admin_keyboard(), parse_mode="Markdown")
         return
@@ -5576,31 +5009,7 @@ def main_router(message):
 
     elif text == '📋 قاعدة البيانات':
         if uid == ADMIN_ID:
-            cursor.execute("SELECT COUNT(*) FROM users WHERE deleted=0")
-            users_c = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM transactions")
-            trans_c = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM pending_charges WHERE status='pending'")
-            pending_c = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM pending_withdraws WHERE status='pending'")
-            pend_w = cursor.fetchone()[0]
-            
-            import os
-            db_size = os.path.getsize('matar_ultimate.db') / 1024
-            
-            markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton("💾 نسخة احتياطية الآن", callback_data="manual_backup"))
-            markup.add(types.InlineKeyboardButton("📊 إحصائيات", callback_data="admin_stats"))
-            
-            bot.send_message(message.chat.id,
-                             f"📋 **معلومات قاعدة البيانات:**\n\n"
-                             f"👥 المستخدمين: {users_c}\n"
-                             f"💳 المعاملات: {trans_c}\n"
-                             f"⏳ شحنات معلقة: {pending_c}\n"
-                             f"💸 سحوبات معلقة: {pend_w}\n"
-                             f"💾 حجم قاعدة البيانات: {db_size:.1f} KB\n"
-                             f"🔒 نظام WAL مفعل للحماية القصوى",
-                             reply_markup=markup, parse_mode="Markdown")
+            bot.send_message(message.chat.id, "📋 إدارة قاعدة البيانات...\n(هذه الخاصية قيد التطوير)", parse_mode="Markdown")
         else:
             bot.send_message(message.chat.id, "❌ هذه الخاصية للمالك فقط.")
 
@@ -5682,17 +5091,7 @@ def main_router(message):
 
     elif text == '💸 إدارة السحوبات':
         if uid == ADMIN_ID or check_permission(uid, 'can_handle_withdraws'):
-            cursor.execute("SELECT id, user_id, amount, net_amount, method, account, status, created_at FROM pending_withdraws WHERE status='pending' ORDER BY created_at DESC LIMIT 10")
-            withdraws = cursor.fetchall()
-            if not withdraws:
-                bot.send_message(message.chat.id, "✅ **لا توجد طلبات سحب معلقة**", parse_mode="Markdown")
-            else:
-                text_out = "💸 **طلبات السحب المعلقة:**\n\n"
-                for w in withdraws:
-                    text_out += f"🆔 #{w[0]} | 👤 {w[1]} | 💵 {w[2]:,.0f} ل.س\n"
-                    text_out += f"   💰 الصافي: {w[3]:,.0f} | 🏦 {w[4]} | {w[5]}\n"
-                    text_out += f"   ⏰ {w[7]}\n\n"
-                bot.send_message(message.chat.id, text_out, parse_mode="Markdown")
+            bot.send_message(message.chat.id, "📋 قائمة طلبات السحب:\n(هذه الخاصية قيد التطوير)")
         else:
             bot.send_message(message.chat.id, "❌ ليس لديك صلاحية للدخول إلى هذه القائمة.")
 
@@ -5704,34 +5103,13 @@ def main_router(message):
 
     elif text == '💰 طلبات الشحن':
         if uid == ADMIN_ID or check_permission(uid, 'can_handle_charges'):
-            cursor.execute("SELECT id, user_id, amount, method, receipt_number, syriatel_code, status, created_at FROM pending_charges WHERE status='pending' ORDER BY created_at DESC LIMIT 10")
-            charges = cursor.fetchall()
-            if not charges:
-                bot.send_message(message.chat.id, "✅ **لا توجد طلبات شحن معلقة**", parse_mode="Markdown")
-            else:
-                text_out = "💰 **طلبات الشحن المعلقة:**\n\n"
-                for c in charges:
-                    text_out += f"🆔 #{c[0]} | 👤 {c[1]} | 💵 {c[2]:,.0f} ل.س\n"
-                    text_out += f"   💳 {c[3]} | 🧾 {c[4]}"
-                    if c[5]:
-                        text_out += f" | كود: {c[5]}"
-                    text_out += f"\n   ⏰ {c[7]}\n\n"
-                bot.send_message(message.chat.id, text_out, parse_mode="Markdown")
+            bot.send_message(message.chat.id, "📋 قائمة طلبات الشحن:\n(هذه الخاصية قيد التطوير)")
         else:
             bot.send_message(message.chat.id, "❌ ليس لديك صلاحية للدخول إلى هذه القائمة.")
 
     elif text == '💸 طلبات السحب':
         if uid == ADMIN_ID or check_permission(uid, 'can_handle_withdraws'):
-            cursor.execute("SELECT id, user_id, amount, net_amount, method, account, status, created_at FROM pending_withdraws WHERE status='pending' ORDER BY created_at DESC LIMIT 10")
-            withdraws = cursor.fetchall()
-            if not withdraws:
-                bot.send_message(message.chat.id, "✅ **لا توجد طلبات سحب معلقة**", parse_mode="Markdown")
-            else:
-                text_out = "💸 **طلبات السحب المعلقة:**\n\n"
-                for w in withdraws:
-                    text_out += f"🆔 #{w[0]} | 👤 {w[1]} | 💵 {w[2]:,.0f} ل.س (صافي: {w[3]:,.0f})\n"
-                    text_out += f"   🏦 {w[4]} | {w[5]}\n   ⏰ {w[7]}\n\n"
-                bot.send_message(message.chat.id, text_out, parse_mode="Markdown")
+            bot.send_message(message.chat.id, "📋 قائمة طلبات السحب:\n(هذه الخاصية قيد التطوير)")
         else:
             bot.send_message(message.chat.id, "❌ ليس لديك صلاحية للدخول إلى هذه القائمة.")
 # ===== نهاية أزرار الإدارة الجديدة =====
@@ -5765,391 +5143,11 @@ def main_router(message):
             bot.send_message(message.chat.id, "❌ **أمر غير معروف. الرجاء استخدام الأزرار المتاحة.**", parse_mode="Markdown")
 
 # =============================================================================
-# دوال معالجة غرفة العمليات
-# =============================================================================
-
-def process_syriatel_charge_amount(message, charge_id):
-    """استلام مبلغ الشحن من الزبون بعد اختيار الكود"""
-    uid = message.from_user.id
-    try:
-        amount = float(message.text.strip())
-        
-        cursor.execute("UPDATE pending_charges SET amount=? WHERE id=?", (amount, charge_id))
-        conn.commit()
-        
-        cursor.execute("SELECT receipt_number, syriatel_code FROM pending_charges WHERE id=?", (charge_id,))
-        row = cursor.fetchone()
-        receipt, code = row if row else ('', '')
-        
-        bot.send_message(message.chat.id,
-                         f"✅ **طلبك قيد المعالجة الرجاء الانتظار**\n\n"
-                         f"🧾 رقم الفاتورة: `{receipt}`\n"
-                         f"💳 الكود المستخدم: `{code}`\n"
-                         f"💵 المبلغ: `{amount:,.0f}` ل.س\n\n"
-                         f"⏳ سيتم مراجعة طلبك وشحن رصيدك قريباً.",
-                         parse_mode="Markdown",
-                         reply_markup=get_main_keyboard(uid))
-        
-        # إشعار غرفة العمليات
-        notify_operations_room_charge(uid, 'سيرياتل كاش', receipt, amount, code, charge_id)
-        notifier.send_to_admin("💰 طلب شحن سيرياتل جديد",
-                               f"المستخدم: {uid}\nالكود: {code}\nرقم العملية: {receipt}\nالمبلغ: {amount:,.0f} ل.س")
-        notifier.send_to_moderators("💰 طلب شحن سيرياتل جديد",
-                                    f"المستخدم: {uid}\nالكود: {code}\nرقم العملية: {receipt}\nالمبلغ: {amount:,.0f} ل.س",
-                                    'can_handle_charges')
-        
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
-
-def handle_ops_execute_charge(call, charge_id):
-    """تنفيذ طلب شحن من غرفة العمليات"""
-    uid = call.from_user.id
-    executor_name = get_moderator_name(uid)
-    
-    cursor.execute("SELECT status, user_id, amount, receipt_number, syriatel_code, method FROM pending_charges WHERE id=?", (charge_id,))
-    row = cursor.fetchone()
-    if not row:
-        bot.answer_callback_query(call.id, "❌ الطلب غير موجود!", show_alert=True)
-        return
-    
-    status, user_id, amount, receipt, code, method = row
-    
-    if status != 'pending':
-        bot.answer_callback_query(call.id, f"⚠️ هذا الطلب معالج مسبقاً بواسطة شخص آخر!", show_alert=True)
-        return
-    
-    # تعليم الطلب بأنه قيد التنفيذ لمنع التكرار
-    cursor.execute("UPDATE pending_charges SET status='processing', processed_by=? WHERE id=? AND status='pending'",
-                   (uid, charge_id))
-    conn.commit()
-    
-    if cursor.rowcount == 0:
-        bot.answer_callback_query(call.id, "⚠️ يتم تنفيذ هذا الطلب من قِبل شخص آخر!", show_alert=True)
-        return
-    
-    # إخفاء الأزرار عن الجميع وإظهار من ينفذ
-    try:
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-        bot.send_message(call.message.chat.id,
-                         f"⚙️ **{executor_name}** يقوم بتنفيذ طلب الشحن #{charge_id}\n"
-                         f"👤 المستخدم: {user_id} | 💵 المبلغ: {amount:,.0f} ل.س",
-                         parse_mode="Markdown")
-    except Exception:
-        pass
-    
-    bot.answer_callback_query(call.id, f"✅ بدأت بتنفيذ الطلب", show_alert=False)
-
-def handle_ops_cancel_charge(call, charge_id):
-    """إلغاء طلب شحن مع سبب"""
-    uid = call.from_user.id
-    
-    cursor.execute("SELECT status, user_id FROM pending_charges WHERE id=?", (charge_id,))
-    row = cursor.fetchone()
-    if not row or row[0] not in ('pending', 'processing'):
-        bot.answer_callback_query(call.id, "❌ الطلب غير موجود أو معالج!", show_alert=True)
-        return
-    
-    user_id = row[1]
-    bot.answer_callback_query(call.id)
-    
-    msg = bot.send_message(call.message.chat.id,
-                           f"❌ **إلغاء طلب الشحن #{charge_id}**\n\n"
-                           f"📝 اكتب سبب الإلغاء لإرساله للزبون:",
-                           parse_mode="Markdown")
-    bot.register_next_step_handler(msg, process_ops_cancel_charge_reason, charge_id, user_id, call)
-
-def process_ops_cancel_charge_reason(message, charge_id, user_id, original_call):
-    """معالجة سبب الإلغاء وإرساله للزبون"""
-    reason = message.text.strip()
-    executor_uid = message.from_user.id
-    executor_name = get_moderator_name(executor_uid)
-    
-    cursor.execute("UPDATE pending_charges SET status='cancelled', processed_by=?, processed_at=? WHERE id=?",
-                   (executor_uid, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), charge_id))
-    conn.commit()
-    
-    # إرسال سبب الإلغاء للزبون
-    try:
-        bot.send_message(user_id,
-                         f"❌ **تم إلغاء طلب الشحن الخاص بك**\n\n"
-                         f"📝 السبب: {reason}\n\n"
-                         f"💡 يرجى التواصل مع الدعم إذا كنت تعتقد أن هناك خطأ.",
-                         parse_mode="Markdown")
-    except Exception:
-        pass
-    
-    # تحديث رسالة غرفة العمليات
-    try:
-        bot.edit_message_reply_markup(original_call.message.chat.id, original_call.message.message_id, reply_markup=None)
-        bot.send_message(original_call.message.chat.id,
-                         f"❌ **{executor_name}** ألغى طلب الشحن #{charge_id}\n📝 السبب: {reason}",
-                         parse_mode="Markdown")
-    except Exception:
-        pass
-
-def handle_ops_set_amount_charge(call, charge_id):
-    """إدخال المبلغ وشحن رصيد الزبون"""
-    uid = call.from_user.id
-    
-    cursor.execute("SELECT status, user_id, amount, receipt_number FROM pending_charges WHERE id=?", (charge_id,))
-    row = cursor.fetchone()
-    if not row:
-        bot.answer_callback_query(call.id, "❌ الطلب غير موجود!", show_alert=True)
-        return
-    
-    status, user_id, amount, receipt = row
-    
-    if status not in ('pending', 'processing'):
-        bot.answer_callback_query(call.id, "⚠️ الطلب معالج مسبقاً!", show_alert=True)
-        return
-    
-    bot.answer_callback_query(call.id)
-    
-    amount_text = f"المبلغ المُدخل من الزبون: {amount:,.0f} ل.س" if amount else "لم يُدخل الزبون مبلغاً"
-    msg = bot.send_message(call.message.chat.id,
-                           f"💵 **إرسال مبلغ للزبون #{user_id}**\n\n"
-                           f"{amount_text}\n\n"
-                           f"💰 أدخل المبلغ الذي تريد شحنه (أو اضغط إرسال لاستخدام المبلغ نفسه):",
-                           parse_mode="Markdown")
-    bot.register_next_step_handler(msg, process_ops_charge_user, charge_id, user_id, call)
-
-def process_ops_charge_user(message, charge_id, user_id, original_call):
-    """تنفيذ شحن رصيد الزبون من غرفة العمليات"""
-    executor_uid = message.from_user.id
-    executor_name = get_moderator_name(executor_uid)
-    
-    try:
-        amount = float(message.text.strip())
-        
-        # شحن رصيد الزبون
-        new_balance = update_user_balance(user_id, amount, add=True)
-        
-        # تعليم الطلب كمنجز
-        cursor.execute("UPDATE pending_charges SET status='completed', amount=?, processed_by=?, processed_at=? WHERE id=?",
-                       (amount, executor_uid, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), charge_id))
-        
-        # حفظ في processed_transactions
-        cursor.execute("SELECT receipt_number FROM pending_charges WHERE id=?", (charge_id,))
-        receipt_row = cursor.fetchone()
-        if receipt_row:
-            cursor.execute("INSERT OR IGNORE INTO processed_transactions(receipt_number, user_id, amount, processed_at) VALUES (?,?,?,?)",
-                          (receipt_row[0], user_id, amount, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        
-        conn.commit()
-        
-        log_transaction(user_id, "charge", amount, "manual", "success", admin_id=executor_uid)
-        log_admin_action(executor_uid, "شحن رصيد", f"شحن {amount:,.0f} ل.س للمستخدم {user_id}", target_user=user_id, amount=amount)
-        
-        # إشعار الزبون
-        try:
-            bot.send_message(user_id,
-                             f"✅ **تم شحن رصيدك بنجاح!**\n\n"
-                             f"💰 تم إضافة: `{amount:,.0f}` ل.س\n"
-                             f"💳 رصيدك الجديد: `{new_balance:,.0f}` ل.س",
-                             parse_mode="Markdown")
-        except Exception:
-            pass
-        
-        # تحديث رسالة غرفة العمليات - اللون الأخضر
-        try:
-            bot.edit_message_reply_markup(original_call.message.chat.id, original_call.message.message_id, reply_markup=None)
-            bot.send_message(original_call.message.chat.id,
-                             f"✅🟢 **{executor_name}** شحن `{amount:,.0f}` ل.س للمستخدم {user_id}\n"
-                             f"💳 رصيده الجديد: `{new_balance:,.0f}` ل.س\n"
-                             f"✅ **تم تنفيذ طلب الشحن #{charge_id} بنجاح**",
-                             parse_mode="Markdown")
-        except Exception:
-            pass
-        
-        bot.send_message(message.chat.id, f"✅ **تم شحن {amount:,.0f} ل.س بنجاح للمستخدم {user_id}**", parse_mode="Markdown")
-        
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
-
-def handle_ops_done_charge(call, charge_id):
-    """تعليم طلب الشحن كمنجز"""
-    uid = call.from_user.id
-    executor_name = get_moderator_name(uid)
-    
-    cursor.execute("SELECT status, user_id FROM pending_charges WHERE id=?", (charge_id,))
-    row = cursor.fetchone()
-    if not row or row[0] not in ('pending', 'processing'):
-        bot.answer_callback_query(call.id, "⚠️ الطلب معالج مسبقاً!", show_alert=True)
-        return
-    
-    user_id = row[1]
-    cursor.execute("UPDATE pending_charges SET status='completed', processed_by=?, processed_at=? WHERE id=?",
-                   (uid, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), charge_id))
-    conn.commit()
-    
-    try:
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-        bot.send_message(call.message.chat.id,
-                         f"✅🟢 **{executor_name}** أكد تنفيذ طلب الشحن #{charge_id}",
-                         parse_mode="Markdown")
-    except Exception:
-        pass
-    
-    bot.answer_callback_query(call.id, "✅ تم تعليم الطلب كمنجز", show_alert=False)
-
-def handle_ops_execute_withdraw(call, withdraw_id):
-    """تنفيذ طلب سحب من غرفة العمليات"""
-    uid = call.from_user.id
-    executor_name = get_moderator_name(uid)
-    
-    cursor.execute("SELECT status, user_id, amount, net_amount, account FROM pending_withdraws WHERE id=?", (withdraw_id,))
-    row = cursor.fetchone()
-    if not row:
-        bot.answer_callback_query(call.id, "❌ الطلب غير موجود!", show_alert=True)
-        return
-    
-    status, user_id, amount, net_amount, account = row
-    
-    if status != 'pending':
-        bot.answer_callback_query(call.id, "⚠️ هذا الطلب معالج مسبقاً!", show_alert=True)
-        return
-    
-    cursor.execute("UPDATE pending_withdraws SET status='processing', processed_by=? WHERE id=? AND status='pending'",
-                   (uid, withdraw_id))
-    conn.commit()
-    
-    if cursor.rowcount == 0:
-        bot.answer_callback_query(call.id, "⚠️ يتم تنفيذ هذا الطلب من شخص آخر!", show_alert=True)
-        return
-    
-    try:
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-        bot.send_message(call.message.chat.id,
-                         f"⚙️ **{executor_name}** يقوم بتنفيذ طلب السحب #{withdraw_id}\n"
-                         f"👤 المستخدم: {user_id} | 💵 الصافي: {net_amount:,.0f} ل.س\n"
-                         f"🏦 الحساب: `{account}`",
-                         parse_mode="Markdown")
-    except Exception:
-        pass
-    
-    bot.answer_callback_query(call.id, "✅ بدأت بتنفيذ الطلب")
-
-def handle_ops_cancel_withdraw(call, withdraw_id):
-    """إلغاء طلب سحب مع سبب"""
-    uid = call.from_user.id
-    
-    cursor.execute("SELECT status, user_id, amount FROM pending_withdraws WHERE id=?", (withdraw_id,))
-    row = cursor.fetchone()
-    if not row or row[0] not in ('pending', 'processing'):
-        bot.answer_callback_query(call.id, "❌ الطلب غير موجود أو معالج!", show_alert=True)
-        return
-    
-    user_id, amount = row[1], row[2]
-    bot.answer_callback_query(call.id)
-    
-    msg = bot.send_message(call.message.chat.id,
-                           f"❌ **إلغاء طلب السحب #{withdraw_id}**\n\nاكتب سبب الإلغاء:",
-                           parse_mode="Markdown")
-    bot.register_next_step_handler(msg, process_ops_cancel_withdraw_reason, withdraw_id, user_id, amount, call)
-
-def process_ops_cancel_withdraw_reason(message, withdraw_id, user_id, amount, original_call):
-    """معالجة سبب إلغاء السحب"""
-    reason = message.text.strip()
-    executor_uid = message.from_user.id
-    executor_name = get_moderator_name(executor_uid)
-    
-    # إرجاع المبلغ للزبون
-    update_user_balance(user_id, amount, add=True)
-    
-    cursor.execute("UPDATE pending_withdraws SET status='cancelled', processed_by=?, processed_at=? WHERE id=?",
-                   (executor_uid, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), withdraw_id))
-    conn.commit()
-    
-    try:
-        bot.send_message(user_id,
-                         f"❌ **تم إلغاء طلب السحب الخاص بك**\n\n"
-                         f"📝 السبب: {reason}\n"
-                         f"✅ تم إرجاع المبلغ إلى رصيدك.",
-                         parse_mode="Markdown")
-    except Exception:
-        pass
-    
-    try:
-        bot.edit_message_reply_markup(original_call.message.chat.id, original_call.message.message_id, reply_markup=None)
-        bot.send_message(original_call.message.chat.id,
-                         f"❌ **{executor_name}** ألغى طلب السحب #{withdraw_id}\n📝 السبب: {reason}\n✅ تم إرجاع المبلغ.",
-                         parse_mode="Markdown")
-    except Exception:
-        pass
-
-def handle_ops_send_money(call, withdraw_id):
-    """إرسال المبلغ من الكاشيرة"""
-    uid = call.from_user.id
-    executor_name = get_moderator_name(uid)
-    
-    cursor.execute("SELECT status, user_id, amount, net_amount, account, method, currency FROM pending_withdraws WHERE id=?", (withdraw_id,))
-    row = cursor.fetchone()
-    if not row or row[0] not in ('pending', 'processing'):
-        bot.answer_callback_query(call.id, "⚠️ الطلب معالج مسبقاً!", show_alert=True)
-        return
-    
-    status, user_id, amount, net_amount, account, method, currency = row
-    
-    bot.answer_callback_query(call.id)
-    bot.send_message(call.message.chat.id,
-                     f"💳 **إرسال المبلغ للمستخدم {user_id}**\n\n"
-                     f"💰 المبلغ الصافي: `{net_amount:,.0f}` ل.س\n"
-                     f"🏦 الحساب: `{account}`\n"
-                     f"💱 الطريقة: {method}\n\n"
-                     f"⬆️ اضغط **تم التنفيذ** بعد إتمام التحويل.",
-                     parse_mode="Markdown")
-    
-    # تحديث الكاشيرة
-    update_cashier_balance(net_amount, add=False)
-
-def handle_ops_done_withdraw(call, withdraw_id):
-    """تعليم طلب السحب كمنجز"""
-    uid = call.from_user.id
-    executor_name = get_moderator_name(uid)
-    
-    cursor.execute("SELECT status, user_id, amount, net_amount FROM pending_withdraws WHERE id=?", (withdraw_id,))
-    row = cursor.fetchone()
-    if not row or row[0] not in ('pending', 'processing'):
-        bot.answer_callback_query(call.id, "⚠️ الطلب معالج مسبقاً!", show_alert=True)
-        return
-    
-    user_id, amount, net_amount = row[1], row[2], row[3]
-    
-    # خصم المبلغ من رصيد الزبون وتعليم كمنجز
-    update_user_balance(user_id, amount, add=False)
-    cursor.execute("UPDATE pending_withdraws SET status='completed', processed_by=?, processed_at=? WHERE id=?",
-                   (uid, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), withdraw_id))
-    conn.commit()
-    
-    try:
-        bot.send_message(user_id,
-                         f"✅ **تم تنفيذ طلب السحب بنجاح!**\n\n"
-                         f"💵 تم إرسال: `{net_amount:,.0f}` ل.س إلى حسابك.",
-                         parse_mode="Markdown")
-    except Exception:
-        pass
-    
-    try:
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-        bot.send_message(call.message.chat.id,
-                         f"✅🟢 **{executor_name}** أنجز طلب السحب #{withdraw_id}\n"
-                         f"💵 أرسل {net_amount:,.0f} ل.س للمستخدم {user_id}",
-                         parse_mode="Markdown")
-    except Exception:
-        pass
-    
-    bot.answer_callback_query(call.id, "✅ تم تعليم الطلب كمنجز")
-
-def handle_ops_syriatel_code_select(call, charge_id, code):
-    """اختيار كود سيرياتل من الرسالة (مستقبلي)"""
-    pass
-
-# =============================================================================
 # دوال معالجة الشحن والسحب المفقودة (إضافة ضرورية)
 # =============================================================================
 
-def process_syria_charge_receipt(message):
-    """استلام رقم عملية الشحن سيرياتل - المرحلة الأولى"""
+def process_syria_charge(message, orig_chat_id=None):
+    """معالجة طلب شحن سيرياتل كاش"""
     uid = message.from_user.id
     chat_id = message.chat.id
     receipt = message.text.strip() if message.text else ""
@@ -6158,38 +5156,28 @@ def process_syria_charge_receipt(message):
         bot.send_message(chat_id, "❌ تم الإلغاء.", reply_markup=get_main_keyboard(uid))
         return
 
-    # التحقق من تكرار رقم العملية
-    cursor.execute("SELECT id FROM pending_charges WHERE receipt_number=? AND status='completed'", (receipt,))
-    if cursor.fetchone():
-        bot.send_message(chat_id, 
-                         "❌ **رقم العملية هذا تم معالجته مسبقاً!**\n"
-                         "لا يمكن استخدام نفس رقم العملية مرتين - هذا للحماية من الاحتيال.", 
-                         parse_mode="Markdown")
-        return
-    
+    # التحقق من الرقم
     cursor.execute("SELECT receipt_number FROM processed_transactions WHERE receipt_number=?", (receipt,))
     if cursor.fetchone():
         bot.send_message(chat_id, "❌ **رقم العملية هذا تم معالجته مسبقاً!**", parse_mode="Markdown")
         return
 
-    # عرض الأكواد المتاحة للاختيار أي كود استخدم
-    syriatel_numbers = get_db_setting('syriatel_numbers') or ''
-    nums = [n.strip() for n in syriatel_numbers.split(',') if n.strip()]
-    
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    for num in nums:
-        markup.add(types.InlineKeyboardButton(f"📱 {num}", callback_data=f"syriatel_code_{receipt}_{uid}_{num}"))
-    
-    msg = bot.send_message(chat_id,
-                           f"✅ **تم استلام رقم العملية:** `{receipt}`\n\n"
-                           f"📌 اضغط على الكود الذي قمت بالتحويل عليه:",
-                           reply_markup=markup, parse_mode="Markdown")
-    
-    # حفظ رقم العملية مؤقتاً
-    user_states[uid] = {'charge_receipt': receipt, 'charge_method': 'syriatel'}
+    # حفظ الطلب
+    txn_receipt = log_transaction(uid, "charge_request", 0, "syriatel", "pending", details=f"فاتورة: {receipt}")
 
-def process_sham_charge_receipt(message):
-    """استلام رقم عملية الشحن شام - المرحلة الأولى"""
+    bot.send_message(chat_id,
+                     f"✅ **تم استلام طلب الشحن عبر سيرياتل كاش**\n\n"
+                     f"🧾 رقم الفاتورة: `{receipt}`\n"
+                     f"📋 رقم الطلب: `{txn_receipt}`\n\n"
+                     f"⏳ سيتم مراجعة طلبك وشحن رصيدك خلال 1-24 ساعة.",
+                     parse_mode="Markdown",
+                     reply_markup=get_main_keyboard(uid))
+
+    notifier.send_to_admin("💰 طلب شحن سيرياتل جديد",
+                           f"المستخدم: {uid}\nرقم الفاتورة: {receipt}\nرقم الطلب: {txn_receipt}")
+
+def process_sham_charge(message, orig_chat_id=None):
+    """معالجة طلب شحن شام كاش"""
     uid = message.from_user.id
     chat_id = message.chat.id
     receipt = message.text.strip() if message.text else ""
@@ -6198,50 +5186,23 @@ def process_sham_charge_receipt(message):
         bot.send_message(chat_id, "❌ تم الإلغاء.", reply_markup=get_main_keyboard(uid))
         return
 
-    cursor.execute("SELECT id FROM pending_charges WHERE receipt_number=? AND status='completed'", (receipt,))
-    if cursor.fetchone():
-        bot.send_message(chat_id,
-                         "❌ **رقم العملية هذا تم معالجته مسبقاً!**\n"
-                         "لا يمكن استخدام نفس رقم العملية مرتين.",
-                         parse_mode="Markdown")
-        return
-    
     cursor.execute("SELECT receipt_number FROM processed_transactions WHERE receipt_number=?", (receipt,))
     if cursor.fetchone():
         bot.send_message(chat_id, "❌ **رقم العملية هذا تم معالجته مسبقاً!**", parse_mode="Markdown")
         return
 
-    # حفظ ومعالجة مباشرة لشام (لأنه عنوان واحد)
     txn_receipt = log_transaction(uid, "charge_request", 0, "sham", "pending", details=f"فاتورة: {receipt}")
-    
-    cursor.execute("""INSERT INTO pending_charges 
-        (user_id, method, receipt_number, status, created_at, txn_receipt)
-        VALUES (?,?,?,?,?,?)""",
-        (uid, 'شام كاش', receipt, 'pending', datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
-    conn.commit()
-    charge_id = cursor.lastrowid
 
     bot.send_message(chat_id,
                      f"✅ **تم استلام طلب الشحن عبر شام كاش**\n\n"
                      f"🧾 رقم الفاتورة: `{receipt}`\n"
                      f"📋 رقم الطلب: `{txn_receipt}`\n\n"
-                     f"⏳ **طلبك قيد المعالجة الرجاء الانتظار**",
+                     f"⏳ سيتم مراجعة طلبك وشحن رصيدك خلال 1-24 ساعة.",
                      parse_mode="Markdown",
                      reply_markup=get_main_keyboard(uid))
 
-    # إشعار غرفة العمليات
-    notify_operations_room_charge(uid, 'شام كاش', receipt, 0, None, charge_id)
-    # إشعار المالك والمشرفين أيضاً
-    notifier.send_to_admin("💰 طلب شحن شام جديد", f"المستخدم: {uid}\nرقم الفاتورة: {receipt}")
-    notifier.send_to_moderators("💰 طلب شحن شام جديد", f"المستخدم: {uid}\nرقم الفاتورة: {receipt}", 'can_handle_charges')
-
-def process_syria_charge(message, orig_chat_id=None):
-    """معالجة قديمة - للتوافق"""
-    process_syria_charge_receipt(message)
-
-def process_sham_charge(message, orig_chat_id=None):
-    """معالجة قديمة - للتوافق"""
-    process_sham_charge_receipt(message)
+    notifier.send_to_admin("💰 طلب شحن شام جديد",
+                           f"المستخدم: {uid}\nرقم الفاتورة: {receipt}\nرقم الطلب: {txn_receipt}")
 
 def process_syria_withdraw_account(message):
     """معالجة طلب سحب سيرياتل كاش (استلام رقم المحفظة)"""
@@ -6297,15 +5258,6 @@ def process_syria_withdraw_amount(message, account):
         txn_receipt = log_transaction(uid, "withdraw_request", amount, "syriatel", "pending",
                                       commission=commission, net_amount=net_amount,
                                       details=f"محفظة: {account}")
-        
-        # حفظ في pending_withdraws
-        cursor.execute("""INSERT INTO pending_withdraws
-            (user_id, method, account, amount, commission, net_amount, currency, status, created_at, txn_receipt)
-            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (uid, 'سيرياتل كاش', account, amount, commission, net_amount, 'ليرة سورية',
-             'pending', datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
-        conn.commit()
-        withdraw_id = cursor.lastrowid
 
         bot.send_message(message.chat.id,
                          f"✅ **تم استلام طلب السحب عبر سيرياتل كاش**\n\n"
@@ -6318,7 +5270,6 @@ def process_syria_withdraw_amount(message, account):
                          parse_mode="Markdown",
                          reply_markup=get_main_keyboard(uid))
 
-        notify_operations_room_withdraw(uid, 'سيرياتل كاش', account, amount, net_amount, 'ليرة سورية', withdraw_id, commission)
         notifier.notify_withdraw_request(uid, amount, net_amount, "syriatel", account)
 
     except ValueError:
@@ -6379,14 +5330,6 @@ def process_sham_withdraw_amount(message, account, currency):
         txn_receipt = log_transaction(uid, "withdraw_request", amount, "sham", "pending",
                                       commission=commission, net_amount=net_amount,
                                       details=f"عنوان: {account} | عملة: {currency}")
-        
-        cursor.execute("""INSERT INTO pending_withdraws
-            (user_id, method, account, amount, commission, net_amount, currency, status, created_at, txn_receipt)
-            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (uid, 'شام كاش', account, amount, commission, net_amount, currency,
-             'pending', datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
-        conn.commit()
-        withdraw_id = cursor.lastrowid
 
         bot.send_message(message.chat.id,
                          f"✅ **تم استلام طلب السحب عبر شام كاش**\n\n"
@@ -6400,7 +5343,6 @@ def process_sham_withdraw_amount(message, account, currency):
                          parse_mode="Markdown",
                          reply_markup=get_main_keyboard(uid))
 
-        notify_operations_room_withdraw(uid, 'شام كاش', account, amount, net_amount, currency, withdraw_id, commission)
         notifier.notify_withdraw_request(uid, amount, net_amount, "sham", account)
 
     except ValueError:
