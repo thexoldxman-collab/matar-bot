@@ -2240,17 +2240,38 @@ class ActionSystem:
             return
         
         # عرض الإعدادات الحالية
-        cursor.execute("""SELECT notify_on_charge, notify_on_withdraw, notify_on_ticket,
-                                 notify_on_new_user, notify_on_expired_gift, large_charge_threshold
-                          FROM notification_settings WHERE user_id=?""", (ADMIN_ID,))
-        settings = cursor.fetchone()
-        
-        if not settings:
-            # إعدادات افتراضية
-            settings = (1, 1, 1, 1, 1, 1000000)
-        
-                    text = f"""
-	🔔 **إعدادات الإشعارات الحالية:**
+cursor.execute("""SELECT notify_on_charge, notify_on_withdraw, notify_on_ticket,
+                         notify_on_new_user, notify_on_expired_gift, large_charge_threshold
+                  FROM notification_settings WHERE user_id=?""", (ADMIN_ID,))
+settings = cursor.fetchone()
+
+if not settings:
+    # إعدادات افتراضية
+    settings = (1, 1, 1, 1, 1, 1000000)
+
+text = f"""
+🔔 **إعدادات الإشعارات الحالية:**
+
+- ✅ إعدادات الشحن: {'مفعل' if settings[0] else 'غير مفعل'}
+- ✅ إعدادات السحب: {'مفعل' if settings[1] else 'غير مفعل'}
+- ✅ إعدادات التذاكر: {'مفعل' if settings[2] else 'غير مفعل'}
+- ✅ إعدادات المستخدمين الجدد: {'مفعل' if settings[3] else 'غير مفعل'}
+- ✅ إعدادات إنهاء الأكواد: {'مفعل' if settings[4] else 'غير مفعل'}
+
+حد الشحن الكبير: {settings[5]:.0f}
+
+اختر ما تريد تعديله:
+"""
+- ✅ إعدادات الشحن: {'مفعل' if settings[0] else 'غير مفعل'}
+- ✅ إعدادات السحب: {'مفعل' if settings[1] else 'غير مفعل'}
+- ✅ إعدادات التذاكر: {'مفعل' if settings[2] else 'غير مفعل'}
+- ✅ إعدادات المستخدمين الجدد: {'مفعل' if settings[3] else 'غير مفعل'}
+- ✅ إعدادات إنهاء الأكواد: {'مفعل' if settings[4] else 'غير مفعل'}
+
+حد الشحن الكبير: {settings[5]:.0f}
+
+اختر ما تريد تعديله:
+"""
 	
 	✅ إشعارات الشحن: {'🟢 مفعل' if settings[0] else '🔴 معطل'}
 	✅ إشعارات السحب: {'🟢 مفعل' if settings[1] else '🔴 معطل'}
