@@ -747,6 +747,12 @@ def setup_database():
         ('sham_address', 'sham_example@sham', 'عنوان شام كاش', 'text'),
         ('usdt_status', 'متوقف', 'حالة USDT', 'text'),
         ('binance_status', 'متوقف', 'حالة Binance', 'text'),
+        ('syriatel_status', 'active', 'حالة سيرياتل كاش', 'text'),
+        ('sham_status', 'active', 'حالة شام كاش', 'text'),
+        ('usdt_address', '', 'عنوان محفظة USDT', 'text'),
+        ('usdt_network', 'TRC20', 'شبكة USDT', 'text'),
+        ('binance_address', '', 'عنوان محفظة Binance', 'text'),
+        ('binance_pay_id', '', 'Binance Pay ID', 'text'),
         ('min_charge', '100', 'الحد الأدنى للشحن', 'number'),
         ('min_withdraw_syria', '25000', 'الحد الأدنى لسحب سيرياتل', 'number'),
         ('max_withdraw_syria', '500000', 'الحد الأقصى لسحب سيرياتل', 'number'),
@@ -771,15 +777,7 @@ def setup_database():
         ('large_charge_threshold', '1000000', 'حد الشحن الكبير', 'number'),
         ('large_sham_threshold', '10000', 'حد الشحن الكبير لشام', 'number'),
         ('operations_room_id', '', 'معرف غرفة العمليات', 'text'),
-        ('referral_cycle_days', '10', 'عدد أيام دورة الإحالات', 'number'),
-        ('usdt_enabled', '0', 'تفعيل USDT', 'boolean'),
-        ('binance_enabled', '0', 'تفعيل Binance', 'boolean'),
-        ('usdt_address', '', 'عنوان USDT', 'text'),
-        ('binance_address', '', 'عنوان/معرف Binance', 'text'),
-        ('usdt_network', 'TRC20', 'شبكة USDT', 'text'),
-        ('usdt_api_key', '', 'مفتاح API لـ USDT', 'text'),
-        ('binance_api_key', '', 'مفتاح API لـ Binance', 'text'),
-        ('binance_api_secret', '', 'السر API لـ Binance', 'text')
+        ('referral_cycle_days', '10', 'عدد أيام دورة الإحالات', 'number')
     ]
     
     for key, value, desc, typ in default_settings:
@@ -1061,40 +1059,42 @@ def notify_operations_room_charge(user_id, method, receipt, amount, syriatel_cod
     """إشعار غرفة العمليات بطلب شحن جديد"""
     room_id = get_operations_room_id()
     if not room_id:
+        logger.warning("لا توجد غرفة عمليات محددة - سيتم إرسال الإشعار للمالك فقط")
         return
     
-    cursor.execute("SELECT first_name, username FROM users WHERE user_id=?", (user_id,))
-    user = cursor.fetchone()
-    name = user[0] if user and user[0] else str(user_id)
-    uname = f"@{user[1]}" if user and user[1] else "لا يوجد"
-    
-    code_text = f"\n💎 كود سيرياتل المستخدم: `{syriatel_code}`" if syriatel_code else ""
-    
-    text = (f"💰 **طلب شحن جديد**\n\n"
-            f"👤 المستخدم: {name} ({user_id})\n"
-            f"📱 يوزر: {uname}\n"
-            f"💳 الطريقة: {method}\n"
-            f"🧾 رقم العملية: `{receipt}`"
-            f"{code_text}\n"
-            f"⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-            f"⚠️ **يجب التحقق يدوياً ثم اختيار أحد الخيارات:**")
-    
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("✅ تنفيذ الأمر", callback_data=f"ops_execute_charge_{charge_id}"),
-        types.InlineKeyboardButton("❌ إلغاء مع سبب", callback_data=f"ops_cancel_charge_{charge_id}")
-    )
-    markup.add(
-        types.InlineKeyboardButton("💵 إدخال المبلغ ثم شحن", callback_data=f"ops_set_amount_charge_{charge_id}"),
-        types.InlineKeyboardButton("✔️ تم التنفيذ", callback_data=f"ops_done_charge_{charge_id}")
-    )
-    
     try:
-        msg = bot.send_message(room_id, text, reply_markup=markup, parse_mode="Markdown")
-        if charge_id:
-            cursor.execute("UPDATE pending_charges SET notification_msg_id=? WHERE id=?",
-                          (msg.message_id, charge_id))
-            conn.commit()
+        # معلومات المستخدم
+        cursor.execute("SELECT first_name, username FROM users WHERE user_id=?", (user_id,))
+        user_info = cursor.fetchone()
+        user_name = user_info[0] if user_info else f"مستخدم {user_id}"
+        user_username = f"@{user_info[1]}" if user_info and user_info[1] else "بلا يوزر"
+        
+        text = (f"💰 **طلب شحن جديد #{charge_id}**\n\n"
+                f"👤 المستخدم: [{user_name}](tg://user?id={user_id}) | `{user_id}`\n"
+                f"🆔 اليوزر: {user_username}\n"
+                f"💳 الطريقة: {method}\n"
+                f"🧾 رقم العملية: `{receipt}`\n")
+        
+        if syriatel_code:
+            text += f"📱 الكود المستخدم: `{syriatel_code}`\n"
+        
+        if amount:
+            text += f"💵 المبلغ: `{amount:,.0f}`\n"
+        
+        text += f"⏰ الوقت: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            types.InlineKeyboardButton("✅ تنفيذ الطلب", callback_data=f"ops_execute_charge_{charge_id}"),
+            types.InlineKeyboardButton("❌ إلغاء مع سبب", callback_data=f"ops_cancel_charge_{charge_id}")
+        )
+        markup.add(
+            types.InlineKeyboardButton("💵 شحن + إدخال مبلغ", callback_data=f"ops_set_amount_charge_{charge_id}"),
+            types.InlineKeyboardButton("🟢 تم التنفيذ", callback_data=f"ops_done_charge_{charge_id}")
+        )
+        
+        bot.send_message(room_id, text, reply_markup=markup, parse_mode="Markdown")
+        logger.info(f"تم إرسال إشعار شحن لغرفة العمليات: #{charge_id}")
     except Exception as e:
         logger.error(f"خطأ في إشعار غرفة العمليات بطلب شحن: {e}")
 
@@ -1210,54 +1210,102 @@ class ActionSystem:
         try:
             logger.info(f"تنفيذ إجراء {action} للمستخدم {uid}")
             
-            action_map = {
-                'show_balance': ActionSystem.show_balance,
-                'show_ichancy_menu': ActionSystem.show_ichancy_menu,
-                'show_ichancy_account': ActionSystem.show_ichancy_account,
-                'create_ichancy_account': ActionSystem.create_ichancy_account,
-                'charge_ichancy': ActionSystem.charge_ichancy,
-                'withdraw_ichancy': ActionSystem.withdraw_ichancy,
-                'delete_ichancy_account': ActionSystem.delete_ichancy_account,
-                'show_charge_methods': ActionSystem.show_charge_methods,
-                'show_withdraw_methods': ActionSystem.show_withdraw_methods,
-                'start_gift': ActionSystem.start_gift,
-                'redeem_gift': ActionSystem.redeem_gift,
-                'show_transactions': ActionSystem.show_transactions,
-                'show_referral': ActionSystem.show_referral,
-                'show_referral_link': ActionSystem.show_referral_link,
-                'show_referral_stats': ActionSystem.show_referral_stats,
-                'start_support': ActionSystem.start_support,
-                'show_tickets': ActionSystem.show_tickets,
-                'show_terms': ActionSystem.show_terms,
-                'show_admin_panel': ActionSystem.show_admin_panel,
-                'show_moderator_panel': ActionSystem.show_moderator_panel,
-                'show_full_admin_menu': ActionSystem.show_full_admin_menu,
-                'manage_buttons': ActionSystem.manage_buttons,
-                'manage_users': ActionSystem.manage_users,
-                'manage_moderators': ActionSystem.manage_moderators,
-                'payment_settings': ActionSystem.payment_settings,
-                'bot_settings': ActionSystem.bot_settings,
-                'system_stats': ActionSystem.system_stats,
-                'backup_system': ActionSystem.backup_system,
-                'admin_logs': ActionSystem.show_admin_logs,
-                'notification_settings': ActionSystem.notification_settings,
-                'connect_syriatel': ActionSystem.connect_syriatel,
-                'connect_sham': ActionSystem.connect_sham,
-                'test_api': ActionSystem.test_api,
-                'toggle_auto_verify': ActionSystem.toggle_auto_verify,
-                'api_status': ActionSystem.show_api_status,
-                'send_message': ActionSystem.send_custom_message,
-                'send_photo': ActionSystem.send_custom_photo,
-                'open_link': ActionSystem.open_link,
-                'toggle_dark_mode': ActionSystem.toggle_dark_mode,
-                'show_submenu': ActionSystem.show_submenu,
-            }
-
-            if action in action_map:
-                if action in ['send_message', 'send_photo', 'open_link', 'show_submenu']:
-                    return action_map[action](uid, chat_id, button_data)
-                else:
-                    return action_map[action](uid, chat_id)
+            # إجراءات المستخدم الأساسية
+            if action == 'show_balance':
+                return ActionSystem.show_balance(uid, chat_id)
+            elif action == 'show_ichancy_menu':
+                return ActionSystem.show_ichancy_menu(uid, chat_id)
+            elif action == 'show_ichancy_account':
+                return ActionSystem.show_ichancy_account(uid, chat_id)
+            elif action == 'create_ichancy_account':
+                return ActionSystem.create_ichancy_account(uid, chat_id)
+            elif action == 'charge_ichancy':
+                return ActionSystem.charge_ichancy(uid, chat_id)
+            elif action == 'withdraw_ichancy':
+                return ActionSystem.withdraw_ichancy(uid, chat_id)
+            elif action == 'delete_ichancy_account':
+                return ActionSystem.delete_ichancy_account(uid, chat_id)
+            
+            # إجراءات مالية
+            elif action == 'show_charge_methods':
+                return ActionSystem.show_charge_methods(uid, chat_id)
+            elif action == 'show_withdraw_methods':
+                return ActionSystem.show_withdraw_methods(uid, chat_id)
+            elif action == 'start_gift':
+                return ActionSystem.start_gift(uid, chat_id)
+            elif action == 'redeem_gift':
+                return ActionSystem.redeem_gift(uid, chat_id)
+            elif action == 'show_transactions':
+                return ActionSystem.show_transactions(uid, chat_id)
+            
+            # إجراءات اجتماعية
+            elif action == 'show_referral':
+                return ActionSystem.show_referral(uid, chat_id)
+            elif action == 'show_referral_link':
+                return ActionSystem.show_referral_link(uid, chat_id)
+            elif action == 'show_referral_stats':
+                return ActionSystem.show_referral_stats(uid, chat_id)
+            
+            # إجراءات دعم
+            elif action == 'start_support':
+                return ActionSystem.start_support(uid, chat_id)
+            elif action == 'show_tickets':
+                return ActionSystem.show_tickets(uid, chat_id)
+            elif action == 'show_terms':
+                return ActionSystem.show_terms(uid, chat_id)
+            
+            # إجراءات إدارية
+            elif action == 'show_admin_panel':
+                return ActionSystem.show_admin_panel(uid, chat_id)
+            elif action == 'show_moderator_panel':
+                return ActionSystem.show_moderator_panel(uid, chat_id)
+            elif action == 'show_full_admin_menu':
+                return ActionSystem.show_full_admin_menu(uid, chat_id)
+            elif action == 'manage_buttons':
+                return ActionSystem.manage_buttons(uid, chat_id)
+            elif action == 'manage_users':
+                return ActionSystem.manage_users(uid, chat_id)
+            elif action == 'manage_moderators':
+                return ActionSystem.manage_moderators(uid, chat_id)
+            elif action == 'payment_settings':
+                return ActionSystem.payment_settings(uid, chat_id)
+            elif action == 'bot_settings':
+                return ActionSystem.bot_settings(uid, chat_id)
+            elif action == 'system_stats':
+                return ActionSystem.system_stats(uid, chat_id)
+            elif action == 'backup_system':
+                return ActionSystem.backup_system(uid, chat_id)
+            elif action == 'admin_logs':
+                return ActionSystem.show_admin_logs(uid, chat_id)
+            elif action == 'notification_settings':
+                return ActionSystem.notification_settings(uid, chat_id)
+            
+            # إجراءات ربط الكاشيرة
+            elif action == 'connect_syriatel':
+                return ActionSystem.connect_syriatel(uid, chat_id)
+            elif action == 'connect_sham':
+                return ActionSystem.connect_sham(uid, chat_id)
+            elif action == 'test_api':
+                return ActionSystem.test_api(uid, chat_id)
+            elif action == 'toggle_auto_verify':
+                return ActionSystem.toggle_auto_verify(uid, chat_id)
+            elif action == 'api_status':
+                return ActionSystem.show_api_status(uid, chat_id)
+            
+            # إجراءات مخصصة
+            elif action == 'send_message':
+                return ActionSystem.send_custom_message(uid, chat_id, button_data)
+            elif action == 'send_photo':
+                return ActionSystem.send_custom_photo(uid, chat_id, button_data)
+            elif action == 'open_link':
+                return ActionSystem.open_link(uid, chat_id, button_data)
+            elif action == 'toggle_dark_mode':
+                return ActionSystem.toggle_dark_mode(uid, chat_id)
+            
+            # إجراءات القوائم الفرعية
+            elif action == 'show_submenu':
+                return ActionSystem.show_submenu(uid, chat_id, button_data)
+            
             else:
                 bot.send_message(chat_id, "❌ هذا الإجراء غير مفعل بعد")
                 logger.warning(f"محاولة تنفيذ إجراء غير معروف: {action} من المستخدم {uid}")
@@ -2240,48 +2288,27 @@ class ActionSystem:
             return
         
         # عرض الإعدادات الحالية
-cursor.execute("""SELECT notify_on_charge, notify_on_withdraw, notify_on_ticket,
-                         notify_on_new_user, notify_on_expired_gift, large_charge_threshold
-                  FROM notification_settings WHERE user_id=?""", (ADMIN_ID,))
-settings = cursor.fetchone()
+        cursor.execute("""SELECT notify_on_charge, notify_on_withdraw, notify_on_ticket,
+                                 notify_on_new_user, notify_on_expired_gift, large_charge_threshold
+                          FROM notification_settings WHERE user_id=?""", (ADMIN_ID,))
+        settings = cursor.fetchone()
+        
+        if not settings:
+            # إعدادات افتراضية
+            settings = (1, 1, 1, 1, 1, 1000000)
+        
+        text = f"""
+🔔 **إعدادات الإشعارات**
 
-if not settings:
-    # إعدادات افتراضية
-    settings = (1, 1, 1, 1, 1, 1000000)
-
-text = f"""
-🔔 **إعدادات الإشعارات الحالية:**
-
-- ✅ إعدادات الشحن: {'مفعل' if settings[0] else 'غير مفعل'}
-- ✅ إعدادات السحب: {'مفعل' if settings[1] else 'غير مفعل'}
-- ✅ إعدادات التذاكر: {'مفعل' if settings[2] else 'غير مفعل'}
-- ✅ إعدادات المستخدمين الجدد: {'مفعل' if settings[3] else 'غير مفعل'}
-- ✅ إعدادات إنهاء الأكواد: {'مفعل' if settings[4] else 'غير مفعل'}
-
-حد الشحن الكبير: {settings[5]:.0f}
-
-اختر ما تريد تعديله:
-"""
-- ✅ إعدادات الشحن: {'مفعل' if settings[0] else 'غير مفعل'}
-- ✅ إعدادات السحب: {'مفعل' if settings[1] else 'غير مفعل'}
-- ✅ إعدادات التذاكر: {'مفعل' if settings[2] else 'غير مفعل'}
-- ✅ إعدادات المستخدمين الجدد: {'مفعل' if settings[3] else 'غير مفعل'}
-- ✅ إعدادات إنهاء الأكواد: {'مفعل' if settings[4] else 'غير مفعل'}
-
-حد الشحن الكبير: {settings[5]:.0f}
+✅ إشعارات الشحن: {'🟢 مفعل' if settings[0] else '🔴 معطل'}
+✅ إشعارات السحب: {'🟢 مفعل' if settings[1] else '🔴 معطل'}
+✅ إشعارات التذاكر: {'🟢 مفعل' if settings[2] else '🔴 معطل'}
+✅ إشعارات المستخدمين الجدد: {'🟢 مفعل' if settings[3] else '🔴 معطل'}
+✅ إشعارات انتهاء الأكواد: {'🟢 مفعل' if settings[4] else '🔴 معطل'}
+💰 حد الشحن الكبير: {settings[5]:,.0f} ل.س
 
 اختر ما تريد تعديله:
 """
-	
-	✅ إشعارات الشحن: {'🟢 مفعل' if settings[0] else '🔴 معطل'}
-	✅ إشعارات السحب: {'🟢 مفعل' if settings[1] else '🔴 معطل'}
-	✅ إشعارات التذاكر: {'🟢 مفعل' if settings[2] else '🔴 معطل'}
-	✅ إشعارات المستخدمين الجدد: {'🟢 مفعل' if settings[3] else '🔴 معطل'}
-	✅ إشعارات انتهاء الأكواد: {'🟢 مفعل' if settings[4] else '🔴 معطل'}
-	💰 حد الشحن الكبير: {settings[5]:,.0f} ل.س
-	
-	اختر ما تريد تعديله:
-	"""""
         # أزرار التعديل
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
@@ -2297,6 +2324,11 @@ text = f"""
 # =============================================================================
 
 def send_copyable_text(chat_id, text, caption=""):
+    """إرسال نص قابل للنسخ - النسخ يتم بالضغط مرة واحدة على النص"""
+    # النص داخل backticks يُنسخ بضغطة واحدة في تيليغرام
+    pass
+
+def _send_copyable_text_OLD(chat_id, text, caption=""):
     """إرسال نص قابل للنسخ بنقرة واحدة"""
     markup = types.InlineKeyboardMarkup()
     markup.add(types.InlineKeyboardButton("📋 نسخ", callback_data=f"copy_{text}"))
@@ -2310,71 +2342,75 @@ def send_copyable_text(chat_id, text, caption=""):
 
 def get_main_keyboard(uid):
     """
-    بناء القائمة الرئيسية ديناميكياً من قاعدة البيانات
+    بناء القائمة الرئيسية حسب الطلب
     """
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     
-    cursor.execute("""SELECT button_text, requires_admin, requires_moderator
-                      FROM dynamic_buttons
-                      WHERE parent_button=\'main\' AND level=1 AND is_active=1
-                      ORDER BY sort_order ASC""")
-    buttons = cursor.fetchall()
+    # الصف الأول - Ichancy منفرد
+    markup.row(types.KeyboardButton('⚽ Ichancy ⚽'))
     
-    temp_buttons = []
-    for btn_text, req_admin, req_mod in buttons:
-        if req_admin == 1 and uid != ADMIN_ID:
-            continue
-        if req_mod == 1 and not is_moderator(uid) and uid != ADMIN_ID:
-            continue
-        temp_buttons.append(types.KeyboardButton(btn_text))
+    # الصف الثاني
+    markup.row(
+        types.KeyboardButton('💳 الشحن في البوت'),
+        types.KeyboardButton('💸 السحب من البوت')
+    )
     
-    i = 0
-    while i < len(temp_buttons):
-        if i + 1 < len(temp_buttons):
-            markup.row(temp_buttons[i], temp_buttons[i+1])
-            i += 2
-        else:
-            markup.row(temp_buttons[i])
-            i += 1
-            
+    # الصف الثالث
+    markup.row(
+        types.KeyboardButton('🎁 اهداء رصيد'),
+        types.KeyboardButton('🎫 كود هدية')
+    )
+    
+    # الصف الرابع
+    markup.row(
+        types.KeyboardButton('💰 الرصيد'),
+        types.KeyboardButton('👥 دعوة الأصدقاء')
+    )
+    
+    # الصف الخامس
+    markup.row(
+        types.KeyboardButton('📜 الشروط والاحكام'),
+        types.KeyboardButton('📞 التواصل مع الدعم')
+    )
+    
+    # الصف السادس - إدارة البوت للمالك والمشرفين
+    if uid == ADMIN_ID or is_moderator(uid):
+        markup.row(types.KeyboardButton('🔐 إدارة البوت'))
+    
     return markup
 
-def get_dynamic_keyboard(uid, parent=\'main\', level=1):
+def get_dynamic_keyboard(parent='main', level=1):
     """
-    بناء لوحة مفاتيح ديناميكية من قاعدة البيانات مع مراعاة صلاحيات المستخدم
+    بناء لوحة مفاتيح ديناميكية من قاعدة البيانات
     """
-    cursor.execute("""SELECT button_text, requires_admin, requires_moderator
-                      FROM dynamic_buttons
+    cursor.execute("""SELECT button_text FROM dynamic_buttons
                       WHERE parent_button=? AND level=? AND is_active=1
                       ORDER BY sort_order ASC""", (parent, level))
-    buttons_data = cursor.fetchall()
+    buttons = cursor.fetchall()
     
-    if not buttons_data:
+    if not buttons:
         return None
     
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     
-    temp_buttons = []
-    for btn_text, req_admin, req_mod in buttons_data:
-        if req_admin == 1 and uid != ADMIN_ID:
-            continue
-        if req_mod == 1 and not is_moderator(uid) and uid != ADMIN_ID:
-            continue
-        temp_buttons.append(types.KeyboardButton(btn_text))
-    
     i = 0
-    while i < len(temp_buttons):
-        if i + 1 < len(temp_buttons):
-            markup.row(temp_buttons[i], temp_buttons[i+1])
+    while i < len(buttons):
+        if i + 1 < len(buttons):
+            markup.row(
+                types.KeyboardButton(buttons[i][0]),
+                types.KeyboardButton(buttons[i + 1][0])
+            )
             i += 2
         else:
-            markup.row(temp_buttons[i])
+            markup.row(types.KeyboardButton(buttons[i][0]))
             i += 1
     
     if level > 1:
-        markup.row(types.KeyboardButton(\'🔙 رجوع\'))
+        markup.row(types.KeyboardButton('🔙 رجوع'))
     
-    return markupf get_ichancy_main_keyboard():
+    return markup
+
+def get_ichancy_main_keyboard():
     """لوحة مفاتيح Ichancy الرئيسية (عند عدم وجود حساب)"""
     markup = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
     markup.add(types.KeyboardButton('📝 إنشاء حساب جديد'))
@@ -2393,27 +2429,41 @@ def get_ichancy_account_keyboard():
     return markup
 
 def get_charge_methods_keyboard():
-    """لوحة مفاتيح طرق الشحن مع حالة الخدمات"""
-    usdt_enabled = get_db_setting('usdt_enabled') or '0'
-    binance_enabled = get_db_setting('binance_enabled') or '0'
-    usdt_icon = "🟢" if usdt_enabled == '1' else "🔴"
-    binance_icon = "🟢" if binance_enabled == '1' else "🔴"
+    """لوحة طرق الشحن"""
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
     
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("💳 سيرياتل كاش", callback_data="charge_syria"),
-        types.InlineKeyboardButton("💳 شام كاش", callback_data="charge_sham"),
+    sy_status = get_db_setting('syriatel_status') or 'active'
+    sh_status = get_db_setting('sham_status') or 'active'
+    usdt_status = get_db_setting('usdt_status') or 'متوقف'
+    bin_status = get_db_setting('binance_status') or 'متوقف'
+    
+    sy_icon = "📱" if sy_status == 'active' else "🔴"
+    sh_icon = "🏦" if sh_status == 'active' else "🔴"
+    usdt_icon = "🔷" if usdt_status == 'active' else "🔴"
+    bin_icon = "💱" if bin_status == 'active' else "🔴"
+    
+    keyboard.add(
+        types.InlineKeyboardButton(f"{sy_icon} سيرياتل كاش", callback_data="charge_syria"),
+        types.InlineKeyboardButton(f"{sh_icon} شام كاش", callback_data="charge_sham"),
         types.InlineKeyboardButton(f"{usdt_icon} USDT", callback_data="charge_usdt"),
-        types.InlineKeyboardButton(f"{binance_icon} بينانس", callback_data="charge_binance")
+        types.InlineKeyboardButton(f"{bin_icon} Binance", callback_data="charge_binance"),
     )
-    return markup
+    return keyboard
 
 def get_withdraw_methods_keyboard():
     """لوحة مفاتيح طرق السحب"""
     markup = types.InlineKeyboardMarkup(row_width=2)
+    
+    usdt_status = get_db_setting('usdt_status') or 'متوقف'
+    bin_status = get_db_setting('binance_status') or 'متوقف'
+    usdt_icon = "🔷" if usdt_status == 'active' else "🔴"
+    bin_icon = "💱" if bin_status == 'active' else "🔴"
+    
     markup.add(
-        types.InlineKeyboardButton("💳 سيرياتل كاش", callback_data="withdraw_syria"),
-        types.InlineKeyboardButton("💳 شام كاش", callback_data="withdraw_sham")
+        types.InlineKeyboardButton("📱 سيرياتل كاش", callback_data="withdraw_syria"),
+        types.InlineKeyboardButton("🏦 شام كاش", callback_data="withdraw_sham"),
+        types.InlineKeyboardButton(f"{usdt_icon} USDT", callback_data="withdraw_usdt"),
+        types.InlineKeyboardButton(f"{bin_icon} Binance", callback_data="withdraw_binance"),
     )
     return markup
 
@@ -2623,58 +2673,49 @@ def toggle_button_status(button_text, admin_id=ADMIN_ID):
 # =============================================================================
 # 13. لوحات التحكم والإدارة
 # =============================================================================
-def get_admin_main_keyboard(uid):
-    """
-    بناء لوحة مفاتيح الإدارة الرئيسية ديناميكياً من قاعدة البيانات
-    """
+
+def get_admin_main_keyboard(is_owner=False, uid=None):
+    """لوحة المفاتيح الرئيسية للإدارة"""
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+
+    if is_owner:
+        markup.add('🎫 إنشاء كود هدية', '👥 إدارة المستخدمين')
+        markup.add('💰 تغيير أكواد الدفع', '📊 سجل المعاملات')
+        markup.add('📨 رسالة جماعية', '📧 رسالة فردية')
+        markup.add('🔄 استرجاع حساب', '🔧 حالة البوت')
+        markup.add('📋 قاعدة البيانات', '💬 تذاكر الدعم')
+        markup.add('👥 المشرفين', '📊 نظام الإحالات')
+        markup.add('📝 إدارة الأزرار', '🔔 إعدادات الإشعارات')
+        markup.add('📋 سجل الإجراءات', '⚙️ إعدادات متقدمة')
+        markup.add('🛠️ إدارة البوت بالكامل')
+        markup.add('🔙 العودة للقائمة الرئيسية')
+    else:
+        # عرض الأزرار حسب صلاحيات المشرف
+        perms = get_moderator_permissions(uid) if uid else {}
+
+        if perms.get('can_handle_charges', 0):
+            markup.add('💰 تغيير أكواد الدفع')
+        if perms.get('can_handle_withdraws', 0):
+            markup.add('💸 إدارة السحوبات')
+        if perms.get('can_reply_tickets', 0):
+            markup.add('💬 تذاكر الدعم')
+        if perms.get('can_send_broadcast', 0):
+            markup.add('📨 رسالة جماعية')
+        if perms.get('can_manage_users', 0):
+            markup.add('👥 إدارة المستخدمين')
+        if perms.get('can_view_stats', 0):
+            markup.add('📊 الإحصائيات')
+
+        markup.add('🔙 العودة للقائمة الرئيسية')
+
+    return markup
+
+def get_full_admin_keyboard():
+    """لوحة التحكم الكامل (للمالك فقط)"""
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
     
-    cursor.execute("""SELECT button_text, requires_admin, requires_moderator, action
-                      FROM dynamic_buttons
-                      WHERE parent_button=\'admin_main\' AND level=1 AND is_active=1
-                      ORDER BY sort_order ASC""")
-    buttons_data = cursor.fetchall()
-    
-    temp_buttons = []
-    for btn_text, req_admin, req_mod, action in buttons_data:
-        if req_admin == 1 and uid != ADMIN_ID:
-            continue
-        if req_mod == 1 and not is_moderator(uid) and uid != ADMIN_ID:
-            continue
-        
-        # تحقق من الصلاحيات الدقيقة إذا كان الإجراء يتطلب ذلك
-        if action == \'manage_users\' and not check_permission(uid, \'can_manage_users\'):
-            continue
-        if action == \'show_admin_logs\' and not check_permission(uid, \'can_view_stats\'):
-            continue
-        if action == \'payment_settings\' and not check_permission(uid, \'can_handle_charges\'):
-            continue
-        if action == \'bot_settings\' and uid != ADMIN_ID:
-            continue
-        if action == \'system_stats\' and not check_permission(uid, \'can_view_stats\'):
-            continue
-        if action == \'backup_system\' and uid != ADMIN_ID:
-            continue
-        if action == \'notification_settings\' and uid != ADMIN_ID:
-            continue
-        if action == \'manage_moderators\' and uid != ADMIN_ID:
-            continue
-        if action == \'manage_buttons\' and not check_permission(uid, \'can_manage_buttons\'):
-            continue
-        
-        temp_buttons.append(types.KeyboardButton(btn_text))
-    
-    i = 0
-    while i < len(temp_buttons):
-        if i + 1 < len(temp_buttons):
-            markup.row(temp_buttons[i], temp_buttons[i+1])
-            i += 2
-        else:
-            markup.row(temp_buttons[i])
-            i += 1
-            
-    markup.add(types.KeyboardButton(\'🔙 العودة للقائمة الرئيسية\'))
-    return markuptus = f"✅ غرفة عمليات نشطة" if room_id else "⚠️ لا توجد غرفة عمليات"
+    room_id = get_db_setting('operations_room_id')
+    room_status = f"✅ غرفة عمليات نشطة" if room_id else "⚠️ لا توجد غرفة عمليات"
     
     keyboard.add(
         types.InlineKeyboardButton("📝 إدارة الأزرار", callback_data="admin_buttons"),
@@ -2696,43 +2737,103 @@ def get_admin_main_keyboard(uid):
     return keyboard
 
 def get_buttons_management_keyboard():
-    """لوحة إدارة الأزرار"""
+    """لوحة إدارة الأزرار - تعرض جميع الأزرار كقائمة inline للاختيار المباشر"""
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    
+    # عرض جميع الأزرار الرئيسية أولاً
+    cursor.execute("""SELECT button_text, is_active, parent_button, level 
+                      FROM dynamic_buttons 
+                      ORDER BY parent_button, sort_order, level""")
+    buttons = cursor.fetchall()
+    
+    if buttons:
+        keyboard.add(types.InlineKeyboardButton("━━━ 📋 الأزرار الموجودة ━━━", callback_data="noop"))
+        for b in buttons[:20]:  # أقصى 20 زر في اللوحة
+            status_icon = "✅" if b[1] else "❌"
+            level_prefix = "  └" if b[2] and b[2] != 'main' else ""
+            btn_label = f"{status_icon}{level_prefix} {b[0]}"
+            keyboard.add(types.InlineKeyboardButton(btn_label, callback_data=f"btn_select_{b[0]}"))
+    
+    keyboard.add(types.InlineKeyboardButton("━━━ 🔧 الإجراءات ━━━", callback_data="noop"))
+    keyboard.add(
+        types.InlineKeyboardButton("➕ إضافة زر جديد", callback_data="add_button_new"),
+        types.InlineKeyboardButton("📋 عرض شجرة الأزرار", callback_data="list_buttons"),
+    )
+    keyboard.add(types.InlineKeyboardButton("🔙 رجوع للإدارة", callback_data="back_to_full_admin"))
+    return keyboard
+
+def get_button_options_keyboard(button_text):
+    """خيارات تعديل زر محدد - تظهر عند الضغط على الزر"""
     keyboard = types.InlineKeyboardMarkup(row_width=2)
     keyboard.add(
-        types.InlineKeyboardButton("➕ إضافة زر جديد", callback_data="add_button"),
-        types.InlineKeyboardButton("✏️ تعديل زر موجود", callback_data="edit_button"),
-        types.InlineKeyboardButton("🔄 ترتيب الأزرار", callback_data="reorder_buttons"),
-        types.InlineKeyboardButton("❌ حذف زر", callback_data="delete_button"),
-        types.InlineKeyboardButton("📋 عرض جميع الأزرار", callback_data="list_buttons"),
-        types.InlineKeyboardButton("🎯 إضافة إجراء لزر", callback_data="set_button_action"),
-        types.InlineKeyboardButton("📂 إنشاء قائمة فرعية", callback_data="create_submenu"),
-        types.InlineKeyboardButton("🔁 تفعيل/تعطيل زر", callback_data="toggle_button"),
-        types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_full_admin")
+        types.InlineKeyboardButton("✏️ إعادة تسمية", callback_data=f"btn_rename_{button_text}"),
+        types.InlineKeyboardButton("🎯 تغيير الوظيفة", callback_data=f"btn_action_{button_text}"),
+        types.InlineKeyboardButton("📝 تعديل الرسالة", callback_data=f"btn_msg_{button_text}"),
+        types.InlineKeyboardButton("🖼️ إضافة صورة", callback_data=f"btn_photo_{button_text}"),
+        types.InlineKeyboardButton("📂 إضافة أزرار فرعية", callback_data=f"btn_children_{button_text}"),
+        types.InlineKeyboardButton("🔁 تفعيل/تعطيل", callback_data=f"btn_toggle_{button_text}"),
+        types.InlineKeyboardButton("🔢 تغيير الترتيب", callback_data=f"btn_order_{button_text}"),
+        types.InlineKeyboardButton("❌ حذف الزر", callback_data=f"btn_delete_{button_text}"),
+        types.InlineKeyboardButton("🔙 رجوع للأزرار", callback_data="admin_buttons")
     )
+    return keyboard
+
+def get_available_actions_keyboard(button_text):
+    """لوحة اختيار وظيفة للزر"""
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    actions = [
+        ("💰 عرض الرصيد", "show_balance"),
+        ("🎮 قائمة Ichancy", "show_ichancy_menu"),
+        ("📝 إنشاء حساب", "create_ichancy_account"),
+        ("➕ تعبئة حساب", "charge_ichancy"),
+        ("➖ سحب من حساب", "withdraw_ichancy"),
+        ("💳 طرق الشحن", "show_charge_methods"),
+        ("💸 طرق السحب", "show_withdraw_methods"),
+        ("🎁 إهداء رصيد", "start_gift"),
+        ("🎫 استخدام كود", "redeem_gift"),
+        ("👥 نظام الإحالات", "show_referral"),
+        ("🔗 رابط الإحالة", "show_referral_link"),
+        ("📞 الدعم الفني", "start_support"),
+        ("📜 الشروط", "show_terms"),
+        ("📋 قائمة فرعية", "show_submenu"),
+        ("🌙 الوضع الليلي", "toggle_dark_mode"),
+        ("🔐 لوحة الإدارة", "show_admin_panel"),
+        ("📊 عرض معاملاتي", "show_transactions"),
+        ("💬 رسالة نصية فقط", "send_message"),
+    ]
+    for label, action in actions:
+        keyboard.add(types.InlineKeyboardButton(label, callback_data=f"btn_set_action_{button_text}_{action}"))
+    keyboard.add(types.InlineKeyboardButton("🔙 رجوع", callback_data=f"btn_select_{button_text}"))
     return keyboard
 
 def get_payment_settings_keyboard():
     """لوحة إعدادات الدفع"""
-    usdt_enabled = get_db_setting('usdt_enabled') or '0'
-    binance_enabled = get_db_setting('binance_enabled') or '0'
-    usdt_icon = "🟢" if usdt_enabled == '1' else "🔴"
-    binance_icon = "🟢" if binance_enabled == '1' else "🔴"
-    
     keyboard = types.InlineKeyboardMarkup(row_width=2)
+    
+    # حالة الخدمات
+    syriatel_status = get_db_setting('syriatel_status') or 'active'
+    sham_status = get_db_setting('sham_status') or 'active'
+    usdt_status = get_db_setting('usdt_status') or 'متوقف'
+    binance_status = get_db_setting('binance_status') or 'متوقف'
+    
+    sy_icon = "🟢" if syriatel_status == 'active' else "🔴"
+    sh_icon = "🟢" if sham_status == 'active' else "🔴"
+    usdt_icon = "🟢" if usdt_status == 'active' else "🔴"
+    bin_icon = "🟢" if binance_status == 'active' else "🔴"
+    
     keyboard.add(
-        types.InlineKeyboardButton("📱 تعديل سيرياتل", callback_data="edit_syriatel"),
-        types.InlineKeyboardButton("🏦 تعديل شام", callback_data="edit_sham"),
+        types.InlineKeyboardButton(f"{sy_icon} تعديل سيرياتل", callback_data="edit_syriatel"),
+        types.InlineKeyboardButton(f"{sh_icon} تعديل شام", callback_data="edit_sham"),
+        types.InlineKeyboardButton(f"{sy_icon} فتح/إغلاق سيرياتل", callback_data="toggle_syriatel"),
+        types.InlineKeyboardButton(f"{sh_icon} فتح/إغلاق شام", callback_data="toggle_sham"),
+        types.InlineKeyboardButton(f"{usdt_icon} إعداد USDT", callback_data="setup_usdt"),
+        types.InlineKeyboardButton(f"{bin_icon} إعداد Binance", callback_data="setup_binance"),
+        types.InlineKeyboardButton(f"{usdt_icon} فتح/إغلاق USDT", callback_data="toggle_usdt"),
+        types.InlineKeyboardButton(f"{bin_icon} فتح/إغلاق Binance", callback_data="toggle_binance"),
         types.InlineKeyboardButton("💰 تعديل الحدود", callback_data="edit_limits"),
         types.InlineKeyboardButton("💸 تعديل العمولة", callback_data="edit_commission"),
-        types.InlineKeyboardButton(f"{usdt_icon} تفعيل/إيقاف USDT", callback_data="toggle_usdt"),
-        types.InlineKeyboardButton(f"{binance_icon} تفعيل/إيقاف Binance", callback_data="toggle_binance"),
-        types.InlineKeyboardButton("🔷 عنوان USDT", callback_data="set_usdt_address"),
-        types.InlineKeyboardButton("💱 عنوان Binance", callback_data="set_binance_address"),
-        types.InlineKeyboardButton("🌐 شبكة USDT", callback_data="set_usdt_network"),
-        types.InlineKeyboardButton("🔌 API USDT", callback_data="set_usdt_api"),
-        types.InlineKeyboardButton("🔌 API Binance", callback_data="set_binance_api"),
-        types.InlineKeyboardButton("📊 حالة الخدمات", callback_data="payment_status"),
         types.InlineKeyboardButton("🔌 تفعيل API", callback_data="toggle_api"),
+        types.InlineKeyboardButton("📊 حالة الخدمات", callback_data="payment_status"),
         types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_full_admin")
     )
     return keyboard
@@ -2809,50 +2910,24 @@ def get_cashier_connection_keyboard():
     return keyboard
 
 def get_moderator_panel_keyboard(uid):
-    """
-    بناء لوحة مفاتيح المشرفين ديناميكياً من قاعدة البيانات
-    """
+    """لوحة المشرف (حسب الصلاحيات)"""
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    perms = get_moderator_permissions(uid)
     
-    cursor.execute("""SELECT button_text, requires_admin, requires_moderator, action
-                      FROM dynamic_buttons
-                      WHERE parent_button='moderator_main' AND level=1 AND is_active=1
-                      ORDER BY sort_order ASC""")
-    buttons_data = cursor.fetchall()
+    if perms.get('can_reply_tickets', 0):
+        markup.add('💬 تذاكر الدعم')
+    if perms.get('can_handle_charges', 0):
+        markup.add('💰 طلبات الشحن')
+    if perms.get('can_handle_withdraws', 0):
+        markup.add('💸 طلبات السحب')
+    if perms.get('can_send_broadcast', 0):
+        markup.add('📨 رسالة جماعية')
+    if perms.get('can_manage_users', 0):
+        markup.add('👥 إدارة المستخدمين')
+    if perms.get('can_view_stats', 0):
+        markup.add('📊 الإحصائيات')
     
-    temp_buttons = []
-    for btn_text, req_admin, req_mod, action in buttons_data:
-        if req_admin == 1 and uid != ADMIN_ID:
-            continue
-        if req_mod == 1 and not is_moderator(uid) and uid != ADMIN_ID:
-            continue
-        
-        # تحقق من الصلاحيات الدقيقة إذا كان الإجراء يتطلب ذلك
-        if action == 'show_charge_requests' and not check_permission(uid, 'can_handle_charges'):
-            continue
-        if action == 'show_withdraw_requests' and not check_permission(uid, 'can_handle_withdraws'):
-            continue
-        if action == 'show_tickets' and not check_permission(uid, 'can_reply_tickets'):
-            continue
-        if action == 'manage_users' and not check_permission(uid, 'can_manage_users'):
-            continue
-        if action == 'system_stats' and not check_permission(uid, 'can_view_stats'):
-            continue
-        if action == 'send_broadcast' and not check_permission(uid, 'can_send_broadcast'):
-            continue
-        
-        temp_buttons.append(types.KeyboardButton(btn_text))
-    
-    i = 0
-    while i < len(temp_buttons):
-        if i + 1 < len(temp_buttons):
-            markup.row(temp_buttons[i], temp_buttons[i+1])
-            i += 2
-        else:
-            markup.row(temp_buttons[i])
-            i += 1
-            
-    markup.add(types.KeyboardButton('🔙 العودة للقائمة الرئيسية'))
+    markup.add('🔙 العودة للقائمة الرئيسية')
     return markup
 
 def get_button_edit_menu(button_text):
@@ -2947,15 +3022,95 @@ class GiftManager:
 # 16. دوال معالجة الإدخالات (Input Handlers)
 # =============================================================================
 
+def process_btn_rename(message, button_text):
+    """إعادة تسمية زر"""
+    uid = message.from_user.id
+    new_text = message.text.strip()
+    if not new_text or len(new_text) > 50:
+        bot.send_message(message.chat.id, "❌ **اسم غير صالح** (يجب أن يكون بين 1-50 حرف)", parse_mode="Markdown")
+        return
+    edit_button_name(button_text, new_text, uid)
+    bot.send_message(message.chat.id,
+                     f"✅ **تم إعادة التسمية:**\n`{button_text}` → `{new_text}`",
+                     reply_markup=get_buttons_management_keyboard(), parse_mode="Markdown")
+
+def process_btn_message(message, button_text):
+    """تعديل رسالة زر"""
+    uid = message.from_user.id
+    new_msg = message.text
+    update_button_full(button_text, new_message=new_msg, admin_id=uid)
+    bot.send_message(message.chat.id,
+                     f"✅ **تم تحديث رسالة الزر** `{button_text}`",
+                     reply_markup=get_button_options_keyboard(button_text), parse_mode="Markdown")
+
+def process_btn_photo(message, button_text):
+    """إضافة صورة لزر"""
+    uid = message.from_user.id
+    if message.content_type == 'photo':
+        file_id = message.photo[-1].file_id
+        update_button_full(button_text, new_photo=file_id, admin_id=uid)
+        bot.send_message(message.chat.id,
+                         f"✅ **تم تحديث صورة الزر** `{button_text}`",
+                         reply_markup=get_button_options_keyboard(button_text), parse_mode="Markdown")
+    else:
+        bot.send_message(message.chat.id, "❌ **الرجاء إرسال صورة**", parse_mode="Markdown")
+
+def process_btn_add_child(message, parent_text):
+    """إضافة زر فرعي"""
+    uid = message.from_user.id
+    child_text = message.text.strip()
+    if not child_text:
+        bot.send_message(message.chat.id, "❌ **اسم غير صالح**", parse_mode="Markdown")
+        return
+    add_new_button(child_text, parent=parent_text, level=2, admin_id=uid)
+    bot.send_message(message.chat.id,
+                     f"✅ **تم إضافة الزر الفرعي** `{child_text}` **تحت** `{parent_text}`\n\n"
+                     f"💡 يمكنك الآن الضغط عليه لتخصيص وظيفته ورسالته.",
+                     reply_markup=get_buttons_management_keyboard(), parse_mode="Markdown")
+
+def process_btn_add_new(message, parent):
+    """إضافة زر جديد"""
+    uid = message.from_user.id
+    button_text = message.text.strip()
+    if not button_text:
+        bot.send_message(message.chat.id, "❌ **اسم غير صالح**", parse_mode="Markdown")
+        return
+    level = 1 if parent == 'main' else 2
+    add_new_button(button_text, parent=parent, level=level, admin_id=uid)
+    bot.send_message(message.chat.id,
+                     f"✅ **تم إضافة الزر** `{button_text}`!\n\n"
+                     f"💡 اضغط عليه في لوحة الأزرار لتخصيص وظيفته ورسالته.",
+                     reply_markup=get_buttons_management_keyboard(), parse_mode="Markdown")
+
+def process_btn_order(message, button_text, siblings):
+    """تغيير ترتيب زر"""
+    uid = message.from_user.id
+    try:
+        new_pos = int(message.text.strip())
+        if new_pos < 1 or new_pos > len(siblings):
+            bot.send_message(message.chat.id,
+                             f"❌ **الرقم يجب أن يكون بين 1 و {len(siblings)}**",
+                             parse_mode="Markdown")
+            return
+        # إعادة الترتيب
+        siblings.remove(button_text)
+        siblings.insert(new_pos - 1, button_text)
+        for i, btn in enumerate(siblings):
+            cursor.execute("UPDATE dynamic_buttons SET sort_order=? WHERE button_text=?", (i+1, btn))
+        conn.commit()
+        bot.send_message(message.chat.id,
+                         f"✅ **تم تغيير ترتيب الزر** `{button_text}` **إلى الموضع {new_pos}**",
+                         reply_markup=get_buttons_management_keyboard(), parse_mode="Markdown")
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
+
 def process_add_button(message):
-    """معالجة إضافة زر جديد"""
+    """معالجة إضافة زر جديد (الطريقة القديمة - للتوافق)"""
     uid = message.from_user.id
     button_text = message.text
-    
     if button_text == '🔙 العودة للقائمة الرئيسية':
         bot.send_message(message.chat.id, "القائمة الرئيسية:", reply_markup=get_main_keyboard(uid))
         return
-    
     add_new_button(button_text, admin_id=uid)
     bot.send_message(message.chat.id, f"✅ **تمت إضافة الزر:** `{button_text}`", parse_mode="Markdown")
     bot.send_message(message.chat.id, "🔧 **إدارة الأزرار:**", reply_markup=get_buttons_management_keyboard())
@@ -4060,14 +4215,11 @@ def handle_start(message):
     if not check_spam(uid):
         return
     
-    # إعادة تعيين حالة المستخدم
+    # إعادة تعيين كاملة لحالة المستخدم وإلغاء أي خطوة معلقة
+    bot.clear_step_handler_by_chat_id(message.chat.id)
     reset_user_state(uid)
-    
-    # الخروج من أي وضع إداري
-    if uid in user_mode:
-        user_mode.pop(uid, None)
-    if uid in user_section:
-        user_section.pop(uid, None)
+    user_mode.pop(uid, None)
+    user_section.pop(uid, None)
     
     # التحقق من وجود كود إحالة
     ref_code = None
@@ -4188,101 +4340,63 @@ def handle_all_callbacks(call):
     # ===== 2. معالج أزرار الشحن والسحب =====
     if data == 'charge_syria':
         bot.answer_callback_query(call.id)
-        reset_user_state(uid)
-        user_states[uid] = {'state': 'awaiting_syria_receipt'}
-        syriatel_numbers = get_db_setting('syriatel_numbers') or 'غير محدد'
+        bot.clear_step_handler_by_chat_id(uid)
+        syriatel_status = get_db_setting('syriatel_status') or 'active'
         
+        if syriatel_status != 'active':
+            bot.send_message(call.message.chat.id,
+                             "⚠️ **خدمة الشحن عبر سيرياتل كاش متوقفة حالياً**\n\n"
+                             "يرجى المحاولة لاحقاً أو استخدام طريقة شحن أخرى.\n"
+                             "نعتذر عن الإزعاج.", parse_mode="Markdown")
+            return
+        
+        syriatel_numbers = get_db_setting('syriatel_numbers') or 'غير محدد'
         nums = [n.strip() for n in syriatel_numbers.split(',') if n.strip()]
         
-        # أرقام قابلة للنسخ بنقرة واحدة - backtick format
         nums_text = ""
         for num in nums:
             nums_text += f"• `{num}`\n"
         
         msg_text = (f"📱 **طريقة الشحن عبر سيرياتل كاش:**\n\n"
                     f"1️⃣ افتح تطبيق سيرياتل كاش\n"
-                    f"2️⃣ **اضغط على الرقم لنسخه فوراً بنقرة واحدة:**\n\n"
+                    f"2️⃣ أرسل المبلغ إلى أحد الأرقام التالية:\n"
+                    f"*(اضغط على الرقم مرة واحدة لنسخه)*\n\n"
                     f"{nums_text}\n"
                     f"⚠️ **تنبيه: لن تُقبل أي عملية شحن بدون رقم عملية التحويل!**\n\n"
                     f"3️⃣ بعد الإرسال، أدخل رقم عملية التحويل:")
         
         bot.send_message(call.message.chat.id, msg_text, parse_mode="Markdown")
+        
         msg = bot.send_message(call.message.chat.id, "✏️ **أدخل رقم عملية التحويل الآن:**", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_syria_charge_receipt)
         return
 
     if data == 'charge_sham':
         bot.answer_callback_query(call.id)
-        reset_user_state(uid)
-        user_states[uid] = {'state': 'awaiting_sham_receipt'}
+        bot.clear_step_handler_by_chat_id(uid)
+        sham_status = get_db_setting('sham_status') or 'active'
+        
+        if sham_status != 'active':
+            bot.send_message(call.message.chat.id,
+                             "⚠️ **خدمة الشحن عبر شام كاش متوقفة حالياً**\n\n"
+                             "يرجى المحاولة لاحقاً أو استخدام طريقة شحن أخرى.\n"
+                             "نعتذر عن الإزعاج.", parse_mode="Markdown")
+            return
+        
         sham_address = get_db_setting('sham_address') or 'غير محدد'
         
         msg_text = (f"🏦 **طريقة الشحن عبر شام كاش:**\n\n"
                     f"1️⃣ افتح تطبيق شام كاش\n"
-                    f"2️⃣ **اضغط على العنوان لنسخه فوراً بنقرة واحدة:**\n\n"
-                    f"`{sham_address}`\n\n"
+                    f"2️⃣ أرسل المبلغ إلى العنوان التالي:\n"
+                    f"*(اضغط على العنوان مرة واحدة لنسخه)*\n\n"
+                    f"• `{sham_address}`\n\n"
                     f"⚠️ **تنبيه: لن تُقبل أي عملية شحن بدون رقم عملية التحويل!**\n\n"
                     f"3️⃣ بعد الإرسال، أدخل رقم عملية التحويل:")
         
         bot.send_message(call.message.chat.id, msg_text, parse_mode="Markdown")
+        
         msg = bot.send_message(call.message.chat.id, "✏️ **أدخل رقم عملية التحويل الآن:**", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_sham_charge_receipt)
-        return
-
-    if data == 'charge_usdt':
-        bot.answer_callback_query(call.id)
-        usdt_enabled = get_db_setting('usdt_enabled') or '0'
-        if usdt_enabled != '1':
-            bot.send_message(call.message.chat.id,
-                             "🔷 **USDT**\n\n"
-                             "⚠️ **هذه الوسيلة متوقفة حالياً**\n\n"
-                             "يرجى المحاولة لاحقاً أو استخدام وسيلة شحن أخرى.",
-                             parse_mode="Markdown")
-            return
-        
-        usdt_address = get_db_setting('usdt_address') or 'غير محدد'
-        usdt_network = get_db_setting('usdt_network') or 'TRC20'
-        reset_user_state(uid)
-        user_states[uid] = {'state': 'awaiting_usdt_receipt'}
-        
-        msg_text = (f"🔷 **الشحن عبر USDT ({usdt_network}):**\n\n"
-                    f"1️⃣ افتح محفظتك\n"
-                    f"2️⃣ **اضغط على العنوان لنسخه فوراً:**\n\n"
-                    f"`{usdt_address}`\n\n"
-                    f"🌐 **الشبكة:** `{usdt_network}`\n\n"
-                    f"3️⃣ بعد الإرسال، أدخل رقم المعاملة (TX Hash):\n"
-                    f"4️⃣ ثم أدخل القيمة التي أرسلتها بالدولار:")
-        
-        bot.send_message(call.message.chat.id, msg_text, parse_mode="Markdown")
-        msg = bot.send_message(call.message.chat.id, "✏️ **أدخل رقم المعاملة (TX Hash):**", parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_usdt_charge_receipt)
-        return
-
-    if data == 'charge_binance':
-        bot.answer_callback_query(call.id)
-        binance_enabled = get_db_setting('binance_enabled') or '0'
-        if binance_enabled != '1':
-            bot.send_message(call.message.chat.id,
-                             "💱 **Binance Pay**\n\n"
-                             "⚠️ **هذه الوسيلة متوقفة حالياً**\n\n"
-                             "يرجى المحاولة لاحقاً أو استخدام وسيلة شحن أخرى.",
-                             parse_mode="Markdown")
-            return
-        
-        binance_address = get_db_setting('binance_address') or 'غير محدد'
-        reset_user_state(uid)
-        user_states[uid] = {'state': 'awaiting_binance_receipt'}
-        
-        msg_text = (f"💱 **الشحن عبر Binance Pay:**\n\n"
-                    f"1️⃣ افتح تطبيق Binance\n"
-                    f"2️⃣ **اضغط على المعرف لنسخه فوراً:**\n\n"
-                    f"`{binance_address}`\n\n"
-                    f"3️⃣ بعد الإرسال، أدخل رقم المعاملة:\n"
-                    f"4️⃣ ثم أدخل القيمة التي أرسلتها بالدولار:")
-        
-        bot.send_message(call.message.chat.id, msg_text, parse_mode="Markdown")
-        msg = bot.send_message(call.message.chat.id, "✏️ **أدخل رقم المعاملة:**", parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_binance_charge_receipt)
         return
 
     if data == 'withdraw_syria':
@@ -4295,6 +4409,91 @@ def handle_all_callbacks(call):
         bot.answer_callback_query(call.id)
         markup = get_withdraw_currency_keyboard()
         bot.send_message(call.message.chat.id, "💰 **اختر العملة:**", reply_markup=markup)
+        return
+
+    if data == 'charge_usdt':
+        bot.answer_callback_query(call.id)
+        bot.clear_step_handler_by_chat_id(uid)
+        usdt_status = get_db_setting('usdt_status') or 'متوقف'
+        
+        if usdt_status != 'active':
+            bot.send_message(call.message.chat.id,
+                             "⚠️ **خدمة الشحن عبر USDT متوقفة حالياً**\n\n"
+                             "يرجى المحاولة لاحقاً أو استخدام طريقة شحن أخرى.\n"
+                             "نعتذر عن الإزعاج.", parse_mode="Markdown")
+            return
+        
+        usdt_address = get_db_setting('usdt_address') or 'غير محدد'
+        usdt_network = get_db_setting('usdt_network') or 'TRC20'
+        
+        msg_text = (f"🔷 **طريقة الشحن عبر USDT:**\n\n"
+                    f"1️⃣ افتح محفظتك\n"
+                    f"2️⃣ أرسل المبلغ إلى العنوان التالي:\n"
+                    f"*(اضغط على العنوان مرة واحدة لنسخه)*\n\n"
+                    f"🌐 **الشبكة:** `{usdt_network}`\n"
+                    f"📬 **العنوان:** `{usdt_address}`\n\n"
+                    f"3️⃣ بعد الإرسال، أرسل **رقم العملية (TxID)**\n\n"
+                    f"⚠️ **تنبيه:** لن يُقبل الشحن بدون رقم العملية!")
+        
+        bot.send_message(call.message.chat.id, msg_text, parse_mode="Markdown")
+        msg = bot.send_message(call.message.chat.id, "✏️ **أدخل رقم العملية (TxID):**", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_usdt_charge_receipt)
+        return
+
+    if data == 'charge_binance':
+        bot.answer_callback_query(call.id)
+        bot.clear_step_handler_by_chat_id(uid)
+        binance_status = get_db_setting('binance_status') or 'متوقف'
+        
+        if binance_status != 'active':
+            bot.send_message(call.message.chat.id,
+                             "⚠️ **خدمة الشحن عبر Binance متوقفة حالياً**\n\n"
+                             "يرجى المحاولة لاحقاً أو استخدام طريقة شحن أخرى.\n"
+                             "نعتذر عن الإزعاج.", parse_mode="Markdown")
+            return
+        
+        binance_address = get_db_setting('binance_address') or 'غير محدد'
+        binance_id = get_db_setting('binance_pay_id') or ''
+        
+        msg_text = f"💱 **طريقة الشحن عبر Binance:**\n\n"
+        if binance_id:
+            msg_text += (f"🆔 **Binance Pay ID:**\n"
+                         f"*(اضغط للنسخ)*\n`{binance_id}`\n\n")
+        if binance_address:
+            msg_text += (f"📬 **عنوان المحفظة:**\n"
+                         f"*(اضغط للنسخ)*\n`{binance_address}`\n\n")
+        msg_text += ("3️⃣ بعد الإرسال، أرسل **رقم العملية**\n\n"
+                     "⚠️ **تنبيه:** لن يُقبل الشحن بدون رقم العملية!")
+        
+        bot.send_message(call.message.chat.id, msg_text, parse_mode="Markdown")
+        msg = bot.send_message(call.message.chat.id, "✏️ **أدخل رقم العملية:**", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_binance_charge_receipt)
+        return
+
+    if data == 'withdraw_usdt':
+        bot.answer_callback_query(call.id)
+        bot.clear_step_handler_by_chat_id(uid)
+        usdt_status = get_db_setting('usdt_status') or 'متوقف'
+        if usdt_status != 'active':
+            bot.send_message(call.message.chat.id,
+                             "⚠️ **خدمة السحب عبر USDT متوقفة حالياً**\n\nنعتذر عن الإزعاج.",
+                             parse_mode="Markdown")
+            return
+        msg = bot.send_message(call.message.chat.id, "🔷 **أرسل عنوان محفظة USDT الخاصة بك (TRC20):**")
+        bot.register_next_step_handler(msg, process_usdt_withdraw_account)
+        return
+
+    if data == 'withdraw_binance':
+        bot.answer_callback_query(call.id)
+        bot.clear_step_handler_by_chat_id(uid)
+        binance_status = get_db_setting('binance_status') or 'متوقف'
+        if binance_status != 'active':
+            bot.send_message(call.message.chat.id,
+                             "⚠️ **خدمة السحب عبر Binance متوقفة حالياً**\n\nنعتذر عن الإزعاج.",
+                             parse_mode="Markdown")
+            return
+        msg = bot.send_message(call.message.chat.id, "💱 **أرسل عنوان محفظة Binance أو Binance Pay ID الخاص بك:**")
+        bot.register_next_step_handler(msg, process_binance_withdraw_account)
         return
 
     if data == 'withdraw_sham_lyr' or data == 'withdraw_sham_usd':
@@ -4330,7 +4529,245 @@ def handle_all_callbacks(call):
         return
 
     # ===== 5. باقي الأزرار الإدارية والداخلية =====
-    # إدارة الأزرار
+    # ===== نظام إدارة الأزرار الجديد =====
+    if data == 'noop':
+        bot.answer_callback_query(call.id)
+        return
+
+    # اختيار زر للتعديل
+    if data.startswith('btn_select_'):
+        button_text = data[11:]
+        cursor.execute("SELECT button_text, action, message_text, is_active, parent_button, level FROM dynamic_buttons WHERE button_text=?", (button_text,))
+        btn = cursor.fetchone()
+        if not btn:
+            bot.answer_callback_query(call.id, "❌ الزر غير موجود", show_alert=True)
+            return
+        status = "✅ مفعل" if btn[3] else "❌ معطل"
+        parent = btn[4] or "الرئيسية"
+        action = btn[1] or "بدون وظيفة"
+        info = (f"🔧 **الزر:** `{button_text}`\n"
+                f"📊 **الحالة:** {status}\n"
+                f"📂 **القائمة الأم:** {parent}\n"
+                f"🎯 **الوظيفة:** {action}\n\n"
+                f"اختر ما تريد فعله:")
+        try:
+            bot.edit_message_text(info, call.message.chat.id, call.message.message_id,
+                                  reply_markup=get_button_options_keyboard(button_text), parse_mode="Markdown")
+        except Exception:
+            bot.send_message(call.message.chat.id, info,
+                             reply_markup=get_button_options_keyboard(button_text), parse_mode="Markdown")
+        return
+
+    # إعادة تسمية زر
+    if data.startswith('btn_rename_'):
+        button_text = data[11:]
+        try:
+            bot.edit_message_text(f"✏️ **أدخل الاسم الجديد للزر** `{button_text}`**:**",
+                                  call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        except Exception:
+            bot.send_message(call.message.chat.id, f"✏️ **أدخل الاسم الجديد للزر** `{button_text}`**:**", parse_mode="Markdown")
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_btn_rename, button_text)
+        return
+
+    # تغيير وظيفة زر - عرض لوحة الوظائف
+    if data.startswith('btn_action_'):
+        button_text = data[11:]
+        try:
+            bot.edit_message_text(f"🎯 **اختر وظيفة الزر** `{button_text}`**:**",
+                                  call.message.chat.id, call.message.message_id,
+                                  reply_markup=get_available_actions_keyboard(button_text), parse_mode="Markdown")
+        except Exception:
+            bot.send_message(call.message.chat.id, f"🎯 **اختر وظيفة الزر** `{button_text}`**:**",
+                             reply_markup=get_available_actions_keyboard(button_text), parse_mode="Markdown")
+        return
+
+    # تعيين الوظيفة للزر
+    if data.startswith('btn_set_action_'):
+        parts = data[15:].rsplit('_', 1)
+        if len(parts) == 2:
+            button_text, action = parts[0], parts[1]
+        else:
+            # العثور على الوظيفة من القائمة
+            known_actions = ['show_balance','show_ichancy_menu','create_ichancy_account','charge_ichancy',
+                             'withdraw_ichancy','show_charge_methods','show_withdraw_methods','start_gift',
+                             'redeem_gift','show_referral','show_referral_link','start_support','show_terms',
+                             'show_submenu','toggle_dark_mode','show_admin_panel','show_transactions','send_message']
+            action = None
+            button_text = data[15:]
+            for act in known_actions:
+                if data.endswith('_' + act):
+                    action = act
+                    button_text = data[15:-(len(act)+1)]
+                    break
+        if action:
+            update_button_full(button_text, new_action=action, admin_id=uid)
+            bot.answer_callback_query(call.id, f"✅ تم تعيين الوظيفة: {action}", show_alert=True)
+            try:
+                bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
+                                              reply_markup=get_button_options_keyboard(button_text))
+            except Exception:
+                pass
+        return
+
+    # تعديل رسالة زر
+    if data.startswith('btn_msg_'):
+        button_text = data[8:]
+        try:
+            bot.edit_message_text(f"📝 **أرسل الرسالة/النص الجديد للزر** `{button_text}`**:**\n"
+                                  f"*(يمكنك استخدام Markdown)*",
+                                  call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        except Exception:
+            bot.send_message(call.message.chat.id, f"📝 **أرسل الرسالة الجديدة للزر** `{button_text}`**:**", parse_mode="Markdown")
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_btn_message, button_text)
+        return
+
+    # إضافة صورة لزر
+    if data.startswith('btn_photo_'):
+        button_text = data[10:]
+        try:
+            bot.edit_message_text(f"🖼️ **أرسل الصورة التي ستظهر مع الزر** `{button_text}`**:**",
+                                  call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        except Exception:
+            bot.send_message(call.message.chat.id, f"🖼️ **أرسل الصورة للزر** `{button_text}`**:**", parse_mode="Markdown")
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_btn_photo, button_text)
+        return
+
+    # إضافة أزرار فرعية
+    if data.startswith('btn_children_'):
+        button_text = data[13:]
+        cursor.execute("SELECT button_text, is_active FROM dynamic_buttons WHERE parent_button=? ORDER BY sort_order", (button_text,))
+        children = cursor.fetchall()
+        
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        text = f"📂 **الأزرار الفرعية لـ** `{button_text}`:\n\n"
+        
+        if children:
+            for c in children:
+                status = "✅" if c[1] else "❌"
+                text += f"{status} `{c[0]}`\n"
+                keyboard.add(types.InlineKeyboardButton(f"{status} {c[0]}", callback_data=f"btn_select_{c[0]}"))
+        else:
+            text += "_لا توجد أزرار فرعية بعد_\n"
+        
+        keyboard.add(types.InlineKeyboardButton("➕ إضافة زر فرعي جديد", callback_data=f"btn_add_child_{button_text}"))
+        keyboard.add(types.InlineKeyboardButton("🔙 رجوع", callback_data=f"btn_select_{button_text}"))
+        
+        # تعيين الزر الأب ليفتح قائمة فرعية
+        update_button_full(button_text, new_action='show_submenu', admin_id=uid)
+        
+        try:
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
+                                  reply_markup=keyboard, parse_mode="Markdown")
+        except Exception:
+            bot.send_message(call.message.chat.id, text, reply_markup=keyboard, parse_mode="Markdown")
+        return
+
+    if data.startswith('btn_add_child_'):
+        parent_text = data[14:]
+        try:
+            bot.edit_message_text(f"➕ **أدخل اسم الزر الفرعي الجديد تحت** `{parent_text}`**:**",
+                                  call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        except Exception:
+            bot.send_message(call.message.chat.id, f"➕ **أدخل اسم الزر الفرعي الجديد:**", parse_mode="Markdown")
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_btn_add_child, parent_text)
+        return
+
+    # تفعيل/تعطيل زر
+    if data.startswith('btn_toggle_'):
+        button_text = data[11:]
+        new_status = toggle_button_status(button_text, uid)
+        status_text = "✅ مفعل" if new_status == 1 else "❌ معطل"
+        bot.answer_callback_query(call.id, f"تم التغيير: {status_text}", show_alert=True)
+        try:
+            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
+                                          reply_markup=get_button_options_keyboard(button_text))
+        except Exception:
+            pass
+        return
+
+    # تغيير ترتيب زر
+    if data.startswith('btn_order_'):
+        button_text = data[10:]
+        cursor.execute("SELECT button_text FROM dynamic_buttons WHERE parent_button=(SELECT parent_button FROM dynamic_buttons WHERE button_text=?) ORDER BY sort_order", (button_text,))
+        siblings = [r[0] for r in cursor.fetchall()]
+        if not siblings:
+            siblings = [button_text]
+        text = "🔢 **الأزرار في نفس القائمة:**\n\n"
+        for i, b in enumerate(siblings, 1):
+            marker = "◀️ " if b == button_text else ""
+            text += f"{i}. {marker}`{b}`\n"
+        text += "\n📝 **أرسل الرقم الجديد لهذا الزر (ترتيبه):**"
+        try:
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        except Exception:
+            bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_btn_order, button_text, siblings)
+        return
+
+    # حذف زر
+    if data.startswith('btn_delete_'):
+        button_text = data[11:]
+        keyboard = types.InlineKeyboardMarkup(row_width=2)
+        keyboard.add(
+            types.InlineKeyboardButton("⚠️ نعم، احذفه", callback_data=f"btn_confirm_delete_{button_text}"),
+            types.InlineKeyboardButton("❌ إلغاء", callback_data=f"btn_select_{button_text}")
+        )
+        try:
+            bot.edit_message_text(f"⚠️ **هل أنت متأكد من حذف الزر** `{button_text}`**؟**\n\n"
+                                  f"سيتم حذف هذا الزر وجميع أزراره الفرعية!",
+                                  call.message.chat.id, call.message.message_id,
+                                  reply_markup=keyboard, parse_mode="Markdown")
+        except Exception:
+            bot.send_message(call.message.chat.id, f"⚠️ **هل أنت متأكد من حذف الزر** `{button_text}`**؟**",
+                             reply_markup=keyboard, parse_mode="Markdown")
+        return
+
+    if data.startswith('btn_confirm_delete_'):
+        button_text = data[19:]
+        delete_button(button_text, uid)
+        bot.answer_callback_query(call.id, f"✅ تم حذف الزر: {button_text}", show_alert=True)
+        try:
+            bot.edit_message_text("🔧 **إدارة الأزرار:**",
+                                  call.message.chat.id, call.message.message_id,
+                                  reply_markup=get_buttons_management_keyboard(), parse_mode="Markdown")
+        except Exception:
+            bot.send_message(call.message.chat.id, "🔧 **إدارة الأزرار:**",
+                             reply_markup=get_buttons_management_keyboard(), parse_mode="Markdown")
+        return
+
+    # إضافة زر جديد
+    if data == 'add_button_new':
+        # عرض خيارات: أين يُضاف الزر
+        cursor.execute("SELECT DISTINCT parent_button FROM dynamic_buttons UNION SELECT 'main'")
+        parents = [r[0] for r in cursor.fetchall() if r[0]]
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        keyboard.add(types.InlineKeyboardButton("📋 القائمة الرئيسية", callback_data="btn_add_to_main"))
+        for p in parents:
+            if p != 'main':
+                keyboard.add(types.InlineKeyboardButton(f"📂 تحت: {p}", callback_data=f"btn_add_to_{p}"))
+        keyboard.add(types.InlineKeyboardButton("🔙 رجوع", callback_data="admin_buttons"))
+        try:
+            bot.edit_message_text("➕ **أين تريد إضافة الزر الجديد؟**",
+                                  call.message.chat.id, call.message.message_id,
+                                  reply_markup=keyboard, parse_mode="Markdown")
+        except Exception:
+            bot.send_message(call.message.chat.id, "➕ **أين تريد إضافة الزر الجديد؟**",
+                             reply_markup=keyboard, parse_mode="Markdown")
+        return
+
+    if data.startswith('btn_add_to_'):
+        parent = data[11:]
+        if parent == 'main':
+            parent_display = 'القائمة الرئيسية'
+        else:
+            parent_display = f'تحت {parent}'
+        bot.send_message(call.message.chat.id,
+                         f"➕ **أدخل اسم الزر الجديد ({parent_display}):**",
+                         parse_mode="Markdown")
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_btn_add_new, parent)
+        return
+
+    # ===== إدارة الأزرار (admin_buttons) =====
     if data == 'admin_buttons':
         bot.edit_message_text("🔧 **إدارة الأزرار - اختر ما تريد فعله:**", call.message.chat.id, call.message.message_id, reply_markup=get_buttons_management_keyboard(), parse_mode="Markdown")
         return
@@ -4399,7 +4836,7 @@ def handle_all_callbacks(call):
         bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_confirm_delete, button_text)
         return
 
-    if data.startswith('toggle_'):
+    if data.startswith('toggle_') and data not in ('toggle_usdt', 'toggle_binance', 'toggle_syriatel', 'toggle_sham', 'toggle_bot', 'toggle_api', 'toggle_dark_mode_global', 'toggle_auto_verify', 'toggle_all_notifications'):
         button_text = data[7:]
         new_status = toggle_button_status(button_text, uid)
         status_text = "مفعل ✅" if new_status == 1 else "معطل ❌"
@@ -4477,6 +4914,106 @@ def handle_all_callbacks(call):
         commission = get_db_setting('withdraw_commission')
         text = f"💳 **إعدادات الدفع الحالية:**\n\n📱 **سيرياتل كاش:** `{syriatel}`\n🏦 **شام كاش:** `{sham}`\n💰 **الحد الأدنى للشحن:** {min_charge} ل.س\n💸 **الحد الأدنى للسحب:** {min_withdraw} ل.س\n📈 **الحد الأقصى للسحب:** {max_withdraw} ل.س\n💵 **عمولة السحب:** {commission}%\n\nاختر ما تريد تعديله:"
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=get_payment_settings_keyboard(), parse_mode="Markdown")
+        return
+
+    if data == 'toggle_syriatel':
+        current = get_db_setting('syriatel_status') or 'active'
+        new_val = 'stopped' if current == 'active' else 'active'
+        update_db_setting('syriatel_status', new_val, uid)
+        status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
+        bot.answer_callback_query(call.id, f"سيرياتل كاش: {status}", show_alert=True)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
+                                      reply_markup=get_payment_settings_keyboard())
+        return
+
+    if data == 'toggle_sham':
+        current = get_db_setting('sham_status') or 'active'
+        new_val = 'stopped' if current == 'active' else 'active'
+        update_db_setting('sham_status', new_val, uid)
+        status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
+        bot.answer_callback_query(call.id, f"شام كاش: {status}", show_alert=True)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
+                                      reply_markup=get_payment_settings_keyboard())
+        return
+
+    if data == 'toggle_usdt':
+        current = get_db_setting('usdt_status') or 'متوقف'
+        new_val = 'متوقف' if current == 'active' else 'active'
+        update_db_setting('usdt_status', new_val, uid)
+        status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
+        bot.answer_callback_query(call.id, f"USDT: {status}", show_alert=True)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
+                                      reply_markup=get_payment_settings_keyboard())
+        return
+
+    if data == 'toggle_binance':
+        current = get_db_setting('binance_status') or 'متوقف'
+        new_val = 'متوقف' if current == 'active' else 'active'
+        update_db_setting('binance_status', new_val, uid)
+        status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
+        bot.answer_callback_query(call.id, f"Binance: {status}", show_alert=True)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
+                                      reply_markup=get_payment_settings_keyboard())
+        return
+
+    if data == 'setup_usdt':
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        keyboard.add(
+            types.InlineKeyboardButton("📬 تعديل عنوان USDT", callback_data="edit_usdt_address"),
+            types.InlineKeyboardButton("🌐 تعديل شبكة USDT", callback_data="edit_usdt_network"),
+            types.InlineKeyboardButton("🔙 رجوع", callback_data="admin_payment")
+        )
+        usdt_address = get_db_setting('usdt_address') or 'غير محدد'
+        usdt_network = get_db_setting('usdt_network') or 'TRC20'
+        bot.edit_message_text(f"🔷 **إعداد USDT:**\n\n📬 العنوان: `{usdt_address}`\n🌐 الشبكة: `{usdt_network}`\n\nاختر ما تريد تعديله:",
+                              call.message.chat.id, call.message.message_id,
+                              reply_markup=keyboard, parse_mode="Markdown")
+        return
+
+    if data == 'setup_binance':
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        keyboard.add(
+            types.InlineKeyboardButton("📬 تعديل عنوان Binance", callback_data="edit_binance_address"),
+            types.InlineKeyboardButton("🆔 تعديل Binance Pay ID", callback_data="edit_binance_pay_id"),
+            types.InlineKeyboardButton("🔙 رجوع", callback_data="admin_payment")
+        )
+        binance_address = get_db_setting('binance_address') or 'غير محدد'
+        binance_pay_id = get_db_setting('binance_pay_id') or 'غير محدد'
+        bot.edit_message_text(f"💱 **إعداد Binance:**\n\n📬 العنوان: `{binance_address}`\n🆔 Pay ID: `{binance_pay_id}`\n\nاختر ما تريد تعديله:",
+                              call.message.chat.id, call.message.message_id,
+                              reply_markup=keyboard, parse_mode="Markdown")
+        return
+
+    if data == 'edit_usdt_address':
+        bot.edit_message_text("📬 **أرسل عنوان محفظة USDT الجديد:**",
+                              call.message.chat.id, call.message.message_id)
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id,
+            lambda m: (update_db_setting('usdt_address', m.text.strip(), m.from_user.id),
+                       bot.send_message(m.chat.id, f"✅ تم تحديث عنوان USDT: `{m.text.strip()}`", parse_mode="Markdown")))
+        return
+
+    if data == 'edit_usdt_network':
+        bot.edit_message_text("🌐 **أرسل شبكة USDT (مثال: TRC20 أو ERC20):**",
+                              call.message.chat.id, call.message.message_id)
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id,
+            lambda m: (update_db_setting('usdt_network', m.text.strip(), m.from_user.id),
+                       bot.send_message(m.chat.id, f"✅ تم تحديث شبكة USDT: `{m.text.strip()}`", parse_mode="Markdown")))
+        return
+
+    if data == 'edit_binance_address':
+        bot.edit_message_text("📬 **أرسل عنوان محفظة Binance الجديد:**",
+                              call.message.chat.id, call.message.message_id)
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id,
+            lambda m: (update_db_setting('binance_address', m.text.strip(), m.from_user.id),
+                       bot.send_message(m.chat.id, f"✅ تم تحديث عنوان Binance: `{m.text.strip()}`", parse_mode="Markdown")))
+        return
+
+    if data == 'edit_binance_pay_id':
+        bot.edit_message_text("🆔 **أرسل Binance Pay ID الجديد:**",
+                              call.message.chat.id, call.message.message_id)
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id,
+            lambda m: (update_db_setting('binance_pay_id', m.text.strip(), m.from_user.id),
+                       bot.send_message(m.chat.id, f"✅ تم تحديث Binance Pay ID: `{m.text.strip()}`", parse_mode="Markdown")))
         return
 
     if data == 'edit_syriatel':
@@ -4937,120 +5474,6 @@ def handle_all_callbacks(call):
         bot.edit_message_text("💳 **إعدادات الدفع**", call.message.chat.id, call.message.message_id, reply_markup=get_payment_settings_keyboard())
         return
 
-    # ===== معالجات إعدادات USDT وBinance =====
-    if data == 'toggle_usdt':
-        if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
-            return
-        current = get_db_setting('usdt_enabled') or '0'
-        new_val = '0' if current == '1' else '1'
-        update_db_setting('usdt_enabled', new_val, uid)
-        status = "مفعل ✅" if new_val == '1' else "معطل ❌"
-        bot.answer_callback_query(call.id, f"USDT: {status}", show_alert=True)
-        try:
-            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=get_payment_settings_keyboard())
-        except Exception:
-            pass
-        return
-
-    if data == 'toggle_binance':
-        if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
-            return
-        current = get_db_setting('binance_enabled') or '0'
-        new_val = '0' if current == '1' else '1'
-        update_db_setting('binance_enabled', new_val, uid)
-        status = "مفعل ✅" if new_val == '1' else "معطل ❌"
-        bot.answer_callback_query(call.id, f"Binance: {status}", show_alert=True)
-        try:
-            bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=get_payment_settings_keyboard())
-        except Exception:
-            pass
-        return
-
-    if data == 'set_usdt_address':
-        if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
-            return
-        current_addr = get_db_setting('usdt_address') or 'غير محدد'
-        bot.edit_message_text(f"🔷 **أرسل عنوان محفظة USDT الجديد:**\n\nالعنوان الحالي: `{current_addr}`",
-                              call.message.chat.id, call.message.message_id, parse_mode="Markdown")
-        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_set_usdt_address)
-        return
-
-    if data == 'set_binance_address':
-        if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
-            return
-        current_addr = get_db_setting('binance_address') or 'غير محدد'
-        bot.edit_message_text(f"💱 **أرسل معرف Binance Pay الجديد:**\n\nالمعرف الحالي: `{current_addr}`",
-                              call.message.chat.id, call.message.message_id, parse_mode="Markdown")
-        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_set_binance_address)
-        return
-
-    if data == 'set_usdt_network':
-        if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
-            return
-        markup = types.InlineKeyboardMarkup(row_width=3)
-        markup.add(
-            types.InlineKeyboardButton("TRC20", callback_data="usdt_net_TRC20"),
-            types.InlineKeyboardButton("ERC20", callback_data="usdt_net_ERC20"),
-            types.InlineKeyboardButton("BEP20", callback_data="usdt_net_BEP20")
-        )
-        markup.add(types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_payment"))
-        current_net = get_db_setting('usdt_network') or 'TRC20'
-        bot.edit_message_text(f"🌐 **اختر شبكة USDT:**\n\nالشبكة الحالية: `{current_net}`",
-                              call.message.chat.id, call.message.message_id,
-                              reply_markup=markup, parse_mode="Markdown")
-        return
-
-    if data.startswith('usdt_net_'):
-        if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
-            return
-        network = data[9:]  # TRC20 / ERC20 / BEP20
-        update_db_setting('usdt_network', network, uid)
-        bot.answer_callback_query(call.id, f"✅ تم تغيير الشبكة إلى {network}", show_alert=True)
-        bot.edit_message_text("💳 **إعدادات الدفع**", call.message.chat.id, call.message.message_id, reply_markup=get_payment_settings_keyboard())
-        return
-
-    if data == 'set_usdt_api':
-        if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
-            return
-        bot.edit_message_text("🔑 **أرسل مفتاح API لـ USDT:**",
-                              call.message.chat.id, call.message.message_id)
-        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_set_usdt_api)
-        return
-
-    if data == 'set_binance_api':
-        if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
-            return
-        bot.edit_message_text("🔑 **أرسل مفاتيح Binance API بالصيغة:**\n`api_key,api_secret`",
-                              call.message.chat.id, call.message.message_id, parse_mode="Markdown")
-        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_set_binance_api)
-        return
-
-    if data == 'usdt_binance_status':
-        usdt_en = get_db_setting('usdt_enabled') or '0'
-        bin_en = get_db_setting('binance_enabled') or '0'
-        usdt_addr = get_db_setting('usdt_address') or 'غير محدد'
-        bin_addr = get_db_setting('binance_address') or 'غير محدد'
-        usdt_net = get_db_setting('usdt_network') or 'TRC20'
-        text = (f"📊 **حالة USDT وBinance:**\n\n"
-                f"🔷 **USDT:**\n"
-                f"   الحالة: {'🟢 مفعل' if usdt_en == '1' else '🔴 متوقف'}\n"
-                f"   العنوان: `{usdt_addr}`\n"
-                f"   الشبكة: `{usdt_net}`\n\n"
-                f"💱 **Binance Pay:**\n"
-                f"   الحالة: {'🟢 مفعل' if bin_en == '1' else '🔴 متوقف'}\n"
-                f"   المعرف: `{bin_addr}`")
-        bot.answer_callback_query(call.id)
-        bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
-        return
-
     if data == 'back_to_button_management':
         bot.edit_message_text("🔧 **إدارة الأزرار**", call.message.chat.id, call.message.message_id, reply_markup=get_buttons_management_keyboard())
         return
@@ -5103,28 +5526,86 @@ def handle_all_callbacks(call):
         if uid != ADMIN_ID:
             bot.answer_callback_query(call.id, "❌ هذه الميزة للمالك فقط", show_alert=True)
             return
-        markup = get_gift_type_keyboard()
-        bot.edit_message_text("🎁 **نظام الهدايا - اختر النوع:**",
+        keyboard = types.InlineKeyboardMarkup(row_width=2)
+        keyboard.add(
+            types.InlineKeyboardButton("🎁 إنشاء كود هدية", callback_data="create_gift_start"),
+            types.InlineKeyboardButton("📋 قائمة الأكواد النشطة", callback_data="list_active_gifts"),
+            types.InlineKeyboardButton("❌ إلغاء كود", callback_data="cancel_gift_code"),
+            types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_full_admin")
+        )
+        bot.edit_message_text("🎁 **نظام إدارة الهدايا:**",
                               call.message.chat.id, call.message.message_id,
-                              reply_markup=markup, parse_mode="Markdown")
+                              reply_markup=keyboard, parse_mode="Markdown")
+        return
+
+    if data == 'create_gift_start':
+        if uid != ADMIN_ID:
+            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
+            return
+        keyboard = types.InlineKeyboardMarkup(row_width=2)
+        keyboard.add(
+            types.InlineKeyboardButton("👤 فردي (شخص واحد)", callback_data="gift_individual"),
+            types.InlineKeyboardButton("👥 جماعي (عدة أشخاص)", callback_data="gift_group"),
+            types.InlineKeyboardButton("🔙 رجوع", callback_data="admin_gifts")
+        )
+        try:
+            bot.edit_message_text("🎁 **اختر نوع كود الهدية:**\n\n"
+                                  "👤 **فردي:** يُستخدم مرة واحدة فقط\n"
+                                  "👥 **جماعي:** يُستخدم من عدة أشخاص",
+                                  call.message.chat.id, call.message.message_id,
+                                  reply_markup=keyboard, parse_mode="Markdown")
+        except Exception:
+            bot.send_message(call.message.chat.id, "🎁 **اختر نوع كود الهدية:**",
+                             reply_markup=keyboard, parse_mode="Markdown")
+        return
+
+    if data == 'list_active_gifts':
+        cursor.execute("""SELECT code, value, limit_count, used_count, type, expires_at 
+                          FROM gifts WHERE used_count < limit_count 
+                          AND (expires_at IS NULL OR expires_at > datetime('now'))
+                          ORDER BY created_at DESC LIMIT 10""")
+        gifts = cursor.fetchall()
+        if not gifts:
+            bot.answer_callback_query(call.id, "لا توجد أكواد هدايا نشطة", show_alert=True)
+        else:
+            text = "🎁 **الأكواد النشطة:**\n\n"
+            for g in gifts:
+                expiry = g[5] or "بلا انتهاء"
+                text += f"🔑 `{g[0]}`\n💰 {g[1]} ل.س | {g[4]} | {g[3]}/{g[2]} مستخدم\n⏳ {expiry}\n\n"
+            bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
+        bot.answer_callback_query(call.id)
+        return
+
+    if data == 'cancel_gift_code':
+        bot.send_message(call.message.chat.id, "❌ **أرسل الكود الذي تريد إلغاءه:**")
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_cancel_gift_code)
+        bot.answer_callback_query(call.id)
         return
 
     if data == 'gift_individual':
         if uid != ADMIN_ID:
             bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
             return
-        bot.edit_message_text("💰 **أدخل قيمة كود الهدية (بالليرة السورية):**",
-                              call.message.chat.id, call.message.message_id)
-        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_individual_gift, call.message.chat.id)
+        try:
+            bot.edit_message_text("💰 **أدخل قيمة كود الهدية الفردي (بالليرة السورية):**",
+                                  call.message.chat.id, call.message.message_id)
+        except Exception:
+            bot.send_message(call.message.chat.id, "💰 **أدخل قيمة كود الهدية الفردي:**", parse_mode="Markdown")
+        user_states[uid] = {'gift_type': 'individual', 'gift_count': 1}
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_gift_value_step)
         return
 
     if data == 'gift_group':
         if uid != ADMIN_ID:
             bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
             return
-        bot.edit_message_text("👥 **أدخل عدد المستخدمين الذين سيستخدمون الكود:**",
-                              call.message.chat.id, call.message.message_id)
-        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_group_gift_count, call.message.chat.id)
+        try:
+            bot.edit_message_text("👥 **أدخل عدد الأشخاص الذين سيستخدمون الكود:**",
+                                  call.message.chat.id, call.message.message_id)
+        except Exception:
+            bot.send_message(call.message.chat.id, "👥 **أدخل عدد الأشخاص:**", parse_mode="Markdown")
+        user_states[uid] = {'gift_type': 'group'}
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_gift_count_step)
         return
 
     # نظام الإحالات
@@ -5435,15 +5916,7 @@ def handle_all_callbacks(call):
         bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_search_by_user)
         return
 
-    # ===== 6. معالجة الأزرار الديناميكية =====
-    if data.startswith('dynamic_button_'):
-        button_id = int(data.split('_')[2])
-        ActionSystem.execute_dynamic_button_action(uid, call.message.chat.id, button_id)
-        return
-
-    # ===== 7. إذا لم يتم التعرف على الكول باك =====
-    bot.answer_callback_query(call.id, "هذا الزر غير مفعل أو حدث خطأ.", show_alert=False)
-    logger.warning(f"Callback غير معروف من المستخدم {uid}: {data}")
+    # ===== 6. إذا لم يتم التعرف على الكول باك =====
     bot.answer_callback_query(call.id, "هذا الزر غير مفعل أو حدث خطأ.", show_alert=False)
     logger.warning(f"Callback غير معروف من المستخدم {uid}: {data}")
 
@@ -5451,55 +5924,80 @@ def handle_all_callbacks(call):
 # 19. دوال إضافية للهدايا
 # =============================================================================
 
-def process_individual_gift(message, chat_id):
-    """معالجة إنشاء كود هدية فردي"""
+def process_gift_count_step(message):
+    """الخطوة الأولى - عدد المستخدمين للهدية الجماعية"""
     uid = message.from_user.id
-    
+    if uid not in user_states:
+        reset_user_state(uid)
+        return
     try:
-        value = float(message.text)
-        
-        # اختيار مدة الصلاحية
-        markup = get_gift_expiry_keyboard()
-        bot.send_message(chat_id, "⏳ **اختر مدة صلاحية الكود:**", reply_markup=markup)
-        
-        # تخزين القيمة مؤقتاً
-        user_states[uid] = {'gift_value': value, 'gift_count': 1, 'gift_type': 'individual'}
-        
+        count = int(message.text.strip())
+        if count <= 0:
+            bot.send_message(message.chat.id, "❌ **العدد يجب أن يكون أكبر من 0**", parse_mode="Markdown")
+            return
+        user_states[uid]['gift_count'] = count
+        msg = bot.send_message(message.chat.id, f"💰 **أدخل قيمة الهدية لكل شخص (بالليرة السورية):**", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_gift_value_step)
     except ValueError:
-        bot.send_message(chat_id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
+        bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
+
+def process_gift_value_step(message):
+    """الخطوة التالية - قيمة الهدية"""
+    uid = message.from_user.id
+    if uid not in user_states:
+        bot.send_message(message.chat.id, "❌ **حدث خطأ، ابدأ من جديد**", parse_mode="Markdown")
+        return
+    try:
+        value = float(message.text.strip())
+        if value <= 0:
+            bot.send_message(message.chat.id, "❌ **القيمة يجب أن تكون أكبر من 0**", parse_mode="Markdown")
+            return
+        user_states[uid]['gift_value'] = value
+        # عرض خيارات الصلاحية
+        keyboard = types.InlineKeyboardMarkup(row_width=2)
+        keyboard.add(
+            types.InlineKeyboardButton("⏳ 7 أيام", callback_data="gift_expiry_7"),
+            types.InlineKeyboardButton("📅 30 يوم", callback_data="gift_expiry_30"),
+            types.InlineKeyboardButton("♾️ بلا انتهاء", callback_data="gift_expiry_0"),
+            types.InlineKeyboardButton("✏️ مدة مخصصة", callback_data="gift_expiry_custom"),
+        )
+        gift_type = user_states[uid].get('gift_type', 'individual')
+        count = user_states[uid].get('gift_count', 1)
+        total = value * count
+        bot.send_message(message.chat.id,
+                         f"✅ **ملخص الكود:**\n\n"
+                         f"🎁 النوع: {'فردي' if gift_type == 'individual' else 'جماعي'}\n"
+                         f"💰 القيمة للشخص: `{value:,.0f}` ل.س\n"
+                         f"👥 العدد: `{count}`\n"
+                         f"💵 الإجمالي: `{total:,.0f}` ل.س\n\n"
+                         f"⏳ **اختر مدة صلاحية الكود:**",
+                         reply_markup=keyboard, parse_mode="Markdown")
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
+
+def process_cancel_gift_code(message):
+    """إلغاء كود هدية"""
+    uid = message.from_user.id
+    code = message.text.strip().upper()
+    cursor.execute("SELECT id, value, used_count, limit_count FROM gifts WHERE code=?", (code,))
+    gift = cursor.fetchone()
+    if not gift:
+        bot.send_message(message.chat.id, "❌ **الكود غير موجود**", parse_mode="Markdown")
+        return
+    remaining = (gift[2] - gift[1]) * (gift[2] or 0)
+    cursor.execute("UPDATE gifts SET limit_count=used_count, auto_returned=1 WHERE code=?", (code,))
+    conn.commit()
+    bot.send_message(message.chat.id, f"✅ **تم إلغاء الكود:** `{code}`", parse_mode="Markdown")
+
+def process_individual_gift(message, chat_id):
+    """معالجة قديمة - للتوافق"""
+    uid = message.from_user.id
+    user_states[uid] = {'gift_type': 'individual', 'gift_count': 1}
+    process_gift_value_step(message)
 
 def process_group_gift_count(message, chat_id):
-    """معالجة عدد المستخدمين للهدية الجماعية"""
-    uid = message.from_user.id
-    
-    try:
-        count = int(message.text)
-        if count <= 0:
-            bot.send_message(chat_id, "❌ **العدد يجب أن يكون أكبر من 0**", parse_mode="Markdown")
-            return
-        
-        msg = bot.send_message(chat_id, "💰 **أدخل قيمة الهدية لكل مستخدم:**")
-        bot.register_next_step_handler(msg, process_group_gift_value, chat_id, count)
-        
-    except ValueError:
-        bot.send_message(chat_id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
-
-def process_group_gift_value(message, chat_id, count):
-    """معالجة قيمة الهدية الجماعية"""
-    uid = message.from_user.id
-    
-    try:
-        value = float(message.text)
-        
-        # اختيار مدة الصلاحية
-        markup = get_gift_expiry_keyboard()
-        bot.send_message(chat_id, "⏳ **اختر مدة صلاحية الكود:**", reply_markup=markup)
-        
-        # تخزين القيمة مؤقتاً
-        user_states[uid] = {'gift_value': value, 'gift_count': count, 'gift_type': 'group'}
-        
-    except ValueError:
-        bot.send_message(chat_id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
+    """معالجة قديمة - للتوافق"""
+    process_gift_count_step(message)
 
 # تمت إضافة gift_expiry_ handler في handle_all_callbacks
 def handle_gift_expiry(call):
@@ -5634,9 +6132,6 @@ def main_router(message):
     if not check_spam(uid):
         return
     
-    # إعادة تعيين حالة المستخدم (مع الاحتفاظ بوضع الإدارة)
-    bot.clear_step_handler_by_chat_id(uid)
-    
     # التحقق من حالة البوت
     if not check_bot_status() and uid != ADMIN_ID and not is_moderator(uid):
         maintenance_msg = get_db_setting('maintenance_message')
@@ -5662,6 +6157,23 @@ def main_router(message):
                   (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), uid))
     conn.commit()
     
+    # ===== فصل الأوامر: إلغاء أي حالة معلقة عند الضغط على الأزرار الرئيسية =====
+    MAIN_NAVIGATION_BUTTONS = {
+        '⚽ Ichancy ⚽', '💳 الشحن في البوت', '💸 السحب من البوت',
+        '🎁 اهداء رصيد', '🎫 كود هدية', '💰 الرصيد', '👥 دعوة الأصدقاء',
+        '📜 الشروط والاحكام', '📞 التواصل مع الدعم', '🔐 إدارة البوت',
+        '🔙 العودة للقائمة الرئيسية', '🔙 رجوع',
+        '📝 إنشاء حساب جديد', '➕ تعبئة في حسابي', '➖ سحب من حسابي',
+        '🗑 حذف الحساب', '🛠️ إدارة البوت بالكامل', '⚙️ إعدادات متقدمة',
+        '📝 إدارة الأزرار', '📊 نظام الإحالات', '📋 سجل الإجراءات',
+        '🔔 إعدادات الإشعارات', '📨 رسالة جماعية',
+    }
+    
+    if text in MAIN_NAVIGATION_BUTTONS:
+        # إلغاء أي خطوة معلقة عند الضغط على أزرار التنقل
+        bot.clear_step_handler_by_chat_id(message.chat.id)
+        reset_user_state(uid)
+    
     # التحقق من وضع الإدارة
     if user_mode.get(uid) == 'button_management':
         # وضع إدارة الأزرار
@@ -5669,7 +6181,13 @@ def main_router(message):
         if cursor.fetchone():
             # عرض قائمة تعديل الزر
             bot.send_message(message.chat.id, f"🔧 **تعديل الزر:** `{text}`", 
-                           reply_markup=get_button_edit_menu(text), parse_mode="Markdown")
+                           reply_markup=get_button_options_keyboard(text), parse_mode="Markdown")
+            return
+        elif text not in MAIN_NAVIGATION_BUTTONS:
+            bot.send_message(message.chat.id, 
+                           "🔧 **أنت في وضع إدارة الأزرار**\n"
+                           "اضغط على أحد الأزرار المعروضة لتعديله، أو اضغط على '🔙 العودة للقائمة الرئيسية'",
+                           parse_mode="Markdown")
             return
     
     # ===== معالجة أزرار القائمة الرئيسية =====
@@ -5828,6 +6346,12 @@ def main_router(message):
         else:
             bot.send_message(message.chat.id, "❌ ليس لديك صلاحية للدخول إلى هذه القائمة.")
 
+    elif text == '🛠️ إدارة البوت بالكامل':
+        if uid == ADMIN_ID:
+            ActionSystem.show_full_admin_menu(uid, message.chat.id)
+        else:
+            bot.send_message(message.chat.id, "❌ هذه القائمة للمالك فقط.")
+
     elif text == '⚙️ إعدادات متقدمة':
         if uid == ADMIN_ID:
             ActionSystem.bot_settings(uid, message.chat.id)
@@ -5933,13 +6457,6 @@ def main_router(message):
                 bot.send_message(message.chat.id, text_out, parse_mode="Markdown")
         else:
             bot.send_message(message.chat.id, "❌ ليس لديك صلاحية للدخول إلى هذه القائمة.")
-
-    elif text == '🛑 إدارة البوت بالكامل':
-        if uid == ADMIN_ID:
-            bot.send_message(message.chat.id, "🛑 **لوحة التحكم الكامل:**",
-                             reply_markup=get_full_admin_keyboard(), parse_mode="Markdown")
-        else:
-            bot.send_message(message.chat.id, "❌ هذه القائمة للمالك فقط.")
 # ===== نهاية أزرار الإدارة الجديدة =====
 
     else:
@@ -6441,158 +6958,6 @@ def process_sham_charge_receipt(message):
     notifier.send_to_admin("💰 طلب شحن شام جديد", f"المستخدم: {uid}\nرقم الفاتورة: {receipt}")
     notifier.send_to_moderators("💰 طلب شحن شام جديد", f"المستخدم: {uid}\nرقم الفاتورة: {receipt}", 'can_handle_charges')
 
-def process_usdt_charge_receipt(message):
-    """استلام TX Hash لشحن USDT"""
-    uid = message.from_user.id
-    chat_id = message.chat.id
-    tx_hash = message.text.strip() if message.text else ""
-
-    if not tx_hash or tx_hash == '🔙 العودة للقائمة الرئيسية':
-        bot.send_message(chat_id, "❌ تم الإلغاء.", reply_markup=get_main_keyboard(uid))
-        return
-
-    cursor.execute("SELECT id FROM pending_charges WHERE receipt_number=?", (tx_hash,))
-    if cursor.fetchone():
-        bot.send_message(chat_id, "❌ **هذه المعاملة تم معالجتها مسبقاً!**", parse_mode="Markdown")
-        return
-
-    user_states[uid] = {'usdt_tx': tx_hash}
-    msg = bot.send_message(chat_id,
-                           f"✅ **TX Hash:** `{tx_hash}`\n\n💵 **أدخل القيمة بالدولار:**",
-                           parse_mode="Markdown")
-    bot.register_next_step_handler(msg, process_usdt_charge_amount)
-
-def process_usdt_charge_amount(message):
-    """استلام مبلغ USDT"""
-    uid = message.from_user.id
-    chat_id = message.chat.id
-    if uid not in user_states or 'usdt_tx' not in user_states.get(uid, {}):
-        bot.send_message(chat_id, "❌ انتهت الجلسة، حاول مرة أخرى.", reply_markup=get_main_keyboard(uid))
-        return
-    try:
-        amount_usd = float(message.text.strip())
-    except ValueError:
-        msg2 = bot.send_message(chat_id, "❌ **رقم غير صحيح. أدخل القيمة بالدولار:**", parse_mode="Markdown")
-        bot.register_next_step_handler(msg2, process_usdt_charge_amount)
-        return
-    tx_hash = user_states[uid]['usdt_tx']
-    usdt_network = get_db_setting('usdt_network') or 'TRC20'
-    txn_receipt = log_transaction(uid, "charge_request", amount_usd, "USDT", "pending",
-                                   details=f"TX: {tx_hash} | الشبكة: {usdt_network} | ${amount_usd}")
-    cursor.execute("""INSERT INTO pending_charges 
-        (user_id, method, receipt_number, amount, status, created_at, txn_receipt)
-        VALUES (?,?,?,?,?,?,?)""",
-        (uid, f'USDT ({usdt_network})', tx_hash, amount_usd, 'pending',
-         datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
-    conn.commit()
-    charge_id = cursor.lastrowid
-    user_states.pop(uid, None)
-    bot.send_message(chat_id,
-                     f"✅ **تم استلام طلب الشحن عبر USDT**\n\n"
-                     f"🔷 TX Hash: `{tx_hash}`\n"
-                     f"🌐 الشبكة: `{usdt_network}`\n"
-                     f"💵 القيمة: `${amount_usd:,.2f}`\n"
-                     f"📋 رقم الطلب: `{txn_receipt}`\n\n"
-                     f"⏳ **طلبك قيد المعالجة**",
-                     parse_mode="Markdown", reply_markup=get_main_keyboard(uid))
-    notify_operations_room_charge(uid, f'USDT ({usdt_network})', tx_hash, amount_usd, None, charge_id)
-    notifier.send_to_admin("🔷 طلب شحن USDT جديد", f"المستخدم: {uid}\nTX: {tx_hash}\nالشبكة: {usdt_network}\nالقيمة: ${amount_usd}")
-    notifier.send_to_moderators("🔷 طلب شحن USDT جديد", f"المستخدم: {uid}\nTX: {tx_hash}\nالقيمة: ${amount_usd}", 'can_handle_charges')
-
-def process_binance_charge_receipt(message):
-    """استلام رقم معاملة Binance"""
-    uid = message.from_user.id
-    chat_id = message.chat.id
-    tx_id = message.text.strip() if message.text else ""
-    if not tx_id or tx_id == '🔙 العودة للقائمة الرئيسية':
-        bot.send_message(chat_id, "❌ تم الإلغاء.", reply_markup=get_main_keyboard(uid))
-        return
-    cursor.execute("SELECT id FROM pending_charges WHERE receipt_number=?", (tx_id,))
-    if cursor.fetchone():
-        bot.send_message(chat_id, "❌ **هذه المعاملة تم معالجتها مسبقاً!**", parse_mode="Markdown")
-        return
-    user_states[uid] = {'binance_tx': tx_id}
-    msg = bot.send_message(chat_id,
-                           f"✅ **رقم المعاملة:** `{tx_id}`\n\n💵 **أدخل القيمة بالدولار:**",
-                           parse_mode="Markdown")
-    bot.register_next_step_handler(msg, process_binance_charge_amount)
-
-def process_binance_charge_amount(message):
-    """استلام مبلغ Binance"""
-    uid = message.from_user.id
-    chat_id = message.chat.id
-    if uid not in user_states or 'binance_tx' not in user_states.get(uid, {}):
-        bot.send_message(chat_id, "❌ انتهت الجلسة، حاول مرة أخرى.", reply_markup=get_main_keyboard(uid))
-        return
-    try:
-        amount_usd = float(message.text.strip())
-    except ValueError:
-        msg2 = bot.send_message(chat_id, "❌ **رقم غير صحيح. أدخل القيمة بالدولار:**", parse_mode="Markdown")
-        bot.register_next_step_handler(msg2, process_binance_charge_amount)
-        return
-    tx_id = user_states[uid]['binance_tx']
-    txn_receipt = log_transaction(uid, "charge_request", amount_usd, "Binance Pay", "pending",
-                                   details=f"TX: {tx_id} | ${amount_usd}")
-    cursor.execute("""INSERT INTO pending_charges 
-        (user_id, method, receipt_number, amount, status, created_at, txn_receipt)
-        VALUES (?,?,?,?,?,?,?)""",
-        (uid, 'Binance Pay', tx_id, amount_usd, 'pending',
-         datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
-    conn.commit()
-    charge_id = cursor.lastrowid
-    user_states.pop(uid, None)
-    bot.send_message(chat_id,
-                     f"✅ **تم استلام طلب الشحن عبر Binance Pay**\n\n"
-                     f"💱 رقم المعاملة: `{tx_id}`\n"
-                     f"💵 القيمة: `${amount_usd:,.2f}`\n"
-                     f"📋 رقم الطلب: `{txn_receipt}`\n\n"
-                     f"⏳ **طلبك قيد المعالجة**",
-                     parse_mode="Markdown", reply_markup=get_main_keyboard(uid))
-    notify_operations_room_charge(uid, 'Binance Pay', tx_id, amount_usd, None, charge_id)
-    notifier.send_to_admin("💱 طلب شحن Binance جديد", f"المستخدم: {uid}\nTX: {tx_id}\nالقيمة: ${amount_usd}")
-    notifier.send_to_moderators("💱 طلب شحن Binance جديد", f"المستخدم: {uid}\nTX: {tx_id}\nالقيمة: ${amount_usd}", 'can_handle_charges')
-
-def process_set_usdt_address(message):
-    """حفظ عنوان USDT الجديد"""
-    uid = message.from_user.id
-    address = message.text.strip()
-    update_db_setting('usdt_address', address, uid)
-    bot.send_message(message.chat.id,
-                     f"✅ **تم تحديث عنوان USDT:**\n`{address}`",
-                     parse_mode="Markdown")
-    log_admin_action(uid, 'تعديل عنوان USDT', f'العنوان الجديد: {address}')
-
-def process_set_binance_address(message):
-    """حفظ معرف Binance الجديد"""
-    uid = message.from_user.id
-    address = message.text.strip()
-    update_db_setting('binance_address', address, uid)
-    bot.send_message(message.chat.id,
-                     f"✅ **تم تحديث معرف Binance Pay:**\n`{address}`",
-                     parse_mode="Markdown")
-    log_admin_action(uid, 'تعديل معرف Binance', f'المعرف الجديد: {address}')
-
-def process_set_usdt_api(message):
-    """حفظ مفتاح API لـ USDT"""
-    uid = message.from_user.id
-    api_key = message.text.strip()
-    update_db_setting('usdt_api_key', api_key, uid)
-    bot.send_message(message.chat.id, "✅ **تم حفظ مفتاح USDT API بنجاح**", parse_mode="Markdown")
-    log_admin_action(uid, 'تعديل USDT API', 'تم تحديث مفتاح API')
-
-def process_set_binance_api(message):
-    """حفظ مفاتيح Binance API"""
-    uid = message.from_user.id
-    keys = message.text.strip()
-    parts = keys.split(',', 1)
-    if len(parts) == 2:
-        update_db_setting('binance_api_key', parts[0].strip(), uid)
-        update_db_setting('binance_api_secret', parts[1].strip(), uid)
-        bot.send_message(message.chat.id, "✅ **تم حفظ مفاتيح Binance API بنجاح**", parse_mode="Markdown")
-        log_admin_action(uid, 'تعديل Binance API', 'تم تحديث مفاتيح API')
-    else:
-        bot.send_message(message.chat.id, "❌ **الصيغة غير صحيحة.** أرسل: `api_key,api_secret`", parse_mode="Markdown")
-
 def process_syria_charge(message, orig_chat_id=None):
     """معالجة قديمة - للتوافق"""
     process_syria_charge_receipt(message)
@@ -6600,6 +6965,210 @@ def process_syria_charge(message, orig_chat_id=None):
 def process_sham_charge(message, orig_chat_id=None):
     """معالجة قديمة - للتوافق"""
     process_sham_charge_receipt(message)
+
+def process_usdt_charge_receipt(message):
+    """استلام رقم عملية USDT"""
+    uid = message.from_user.id
+    chat_id = message.chat.id
+    receipt = message.text.strip() if message.text else ""
+
+    if not receipt or receipt == '🔙 العودة للقائمة الرئيسية':
+        reset_user_state(uid)
+        bot.send_message(chat_id, "❌ تم الإلغاء.", reply_markup=get_main_keyboard(uid))
+        return
+
+    cursor.execute("SELECT receipt_number FROM processed_transactions WHERE receipt_number=?", (receipt,))
+    if cursor.fetchone():
+        bot.send_message(chat_id, "❌ **رقم العملية هذا تم معالجته مسبقاً!**", parse_mode="Markdown")
+        return
+
+    txn_receipt = log_transaction(uid, "charge_request", 0, "usdt", "pending", details=f"TxID: {receipt}")
+    cursor.execute("""INSERT INTO pending_charges 
+        (user_id, method, receipt_number, status, created_at, txn_receipt)
+        VALUES (?,?,?,?,?,?)""",
+        (uid, 'USDT', receipt, 'pending', datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
+    conn.commit()
+    charge_id = cursor.lastrowid
+
+    msg = bot.send_message(chat_id,
+                           f"✅ **تم استلام رقم العملية:** `{receipt}`\n\n"
+                           f"💵 **أدخل المبلغ الذي أرسلته (بالدولار USDT):**",
+                           parse_mode="Markdown")
+    bot.register_next_step_handler(msg, process_usdt_charge_amount, charge_id, receipt)
+
+def process_usdt_charge_amount(message, charge_id, receipt):
+    uid = message.from_user.id
+    try:
+        amount_usd = float(message.text.strip())
+        cursor.execute("UPDATE pending_charges SET amount=? WHERE id=?", (amount_usd, charge_id))
+        conn.commit()
+
+        bot.send_message(message.chat.id,
+                         f"✅ **طلب الشحن عبر USDT قيد المعالجة**\n\n"
+                         f"🧾 رقم العملية: `{receipt}`\n"
+                         f"💵 المبلغ: `{amount_usd}` USDT\n\n"
+                         f"⏳ سيتم مراجعة طلبك وشحن رصيدك قريباً.",
+                         parse_mode="Markdown",
+                         reply_markup=get_main_keyboard(uid))
+
+        notify_operations_room_charge(uid, 'USDT', receipt, amount_usd, None, charge_id)
+        notifier.send_to_admin("🔷 طلب شحن USDT جديد",
+                               f"المستخدم: {uid}\nرقم العملية: {receipt}\nالمبلغ: {amount_usd} USDT")
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
+
+def process_binance_charge_receipt(message):
+    """استلام رقم عملية Binance"""
+    uid = message.from_user.id
+    chat_id = message.chat.id
+    receipt = message.text.strip() if message.text else ""
+
+    if not receipt or receipt == '🔙 العودة للقائمة الرئيسية':
+        reset_user_state(uid)
+        bot.send_message(chat_id, "❌ تم الإلغاء.", reply_markup=get_main_keyboard(uid))
+        return
+
+    cursor.execute("SELECT receipt_number FROM processed_transactions WHERE receipt_number=?", (receipt,))
+    if cursor.fetchone():
+        bot.send_message(chat_id, "❌ **رقم العملية هذا تم معالجته مسبقاً!**", parse_mode="Markdown")
+        return
+
+    txn_receipt = log_transaction(uid, "charge_request", 0, "binance", "pending", details=f"Ref: {receipt}")
+    cursor.execute("""INSERT INTO pending_charges 
+        (user_id, method, receipt_number, status, created_at, txn_receipt)
+        VALUES (?,?,?,?,?,?)""",
+        (uid, 'Binance', receipt, 'pending', datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
+    conn.commit()
+    charge_id = cursor.lastrowid
+
+    msg = bot.send_message(chat_id,
+                           f"✅ **تم استلام رقم العملية:** `{receipt}`\n\n"
+                           f"💵 **أدخل المبلغ الذي أرسلته (بالدولار):**",
+                           parse_mode="Markdown")
+    bot.register_next_step_handler(msg, process_binance_charge_amount, charge_id, receipt)
+
+def process_binance_charge_amount(message, charge_id, receipt):
+    uid = message.from_user.id
+    try:
+        amount_usd = float(message.text.strip())
+        cursor.execute("UPDATE pending_charges SET amount=? WHERE id=?", (amount_usd, charge_id))
+        conn.commit()
+
+        bot.send_message(message.chat.id,
+                         f"✅ **طلب الشحن عبر Binance قيد المعالجة**\n\n"
+                         f"🧾 رقم العملية: `{receipt}`\n"
+                         f"💵 المبلغ: `{amount_usd}` USD\n\n"
+                         f"⏳ سيتم مراجعة طلبك وشحن رصيدك قريباً.",
+                         parse_mode="Markdown",
+                         reply_markup=get_main_keyboard(uid))
+
+        notify_operations_room_charge(uid, 'Binance', receipt, amount_usd, None, charge_id)
+        notifier.send_to_admin("💱 طلب شحن Binance جديد",
+                               f"المستخدم: {uid}\nرقم العملية: {receipt}\nالمبلغ: {amount_usd} USD")
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
+
+def process_usdt_withdraw_account(message):
+    uid = message.from_user.id
+    account = message.text.strip()
+    if not account or account == '🔙 العودة للقائمة الرئيسية':
+        reset_user_state(uid)
+        bot.send_message(message.chat.id, "❌ تم الإلغاء.", reply_markup=get_main_keyboard(uid))
+        return
+    cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
+    bal = cursor.fetchone()
+    balance = bal[0] if bal else 0
+    msg = bot.send_message(message.chat.id,
+                           f"💰 **رصيدك:** `{balance:,.0f}` ل.س\n\n"
+                           f"💵 **أدخل المبلغ بالليرة السورية للسحب:**",
+                           parse_mode="Markdown")
+    bot.register_next_step_handler(msg, process_usdt_withdraw_amount, account)
+
+def process_usdt_withdraw_amount(message, account):
+    uid = message.from_user.id
+    try:
+        amount = float(message.text.strip())
+        commission_pct = float(get_db_setting('withdraw_commission') or '10')
+        cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
+        bal = cursor.fetchone()
+        balance = bal[0] if bal else 0
+        if amount > balance:
+            bot.send_message(message.chat.id, f"❌ **رصيدك غير كافٍ!** رصيدك: `{balance:,.0f}` ل.س", parse_mode="Markdown")
+            return
+        commission = amount * commission_pct / 100
+        net_amount = amount - commission
+        txn_receipt = log_transaction(uid, "withdraw_request", amount, "usdt", "pending",
+                                      commission=commission, net_amount=net_amount,
+                                      details=f"USDT wallet: {account}")
+        cursor.execute("""INSERT INTO pending_withdraws
+            (user_id, method, account, amount, commission, net_amount, currency, status, created_at, txn_receipt)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (uid, 'USDT', account, amount, commission, net_amount, 'USDT',
+             'pending', datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
+        conn.commit()
+        withdraw_id = cursor.lastrowid
+        bot.send_message(message.chat.id,
+                         f"✅ **تم استلام طلب السحب عبر USDT**\n\n"
+                         f"🔷 العنوان: `{account}`\n"
+                         f"💵 المبلغ: `{amount:,.0f}` ل.س\n"
+                         f"💸 العمولة: `{commission:,.0f}` ل.س\n"
+                         f"💰 الصافي: `{net_amount:,.0f}` ل.س\n"
+                         f"⏳ سيتم المعالجة خلال 1-24 ساعة.",
+                         parse_mode="Markdown", reply_markup=get_main_keyboard(uid))
+        notify_operations_room_withdraw(uid, 'USDT', account, amount, net_amount, 'USDT', withdraw_id, commission)
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ الرجاء إدخال مبلغ صحيح.")
+
+def process_binance_withdraw_account(message):
+    uid = message.from_user.id
+    account = message.text.strip()
+    if not account or account == '🔙 العودة للقائمة الرئيسية':
+        reset_user_state(uid)
+        bot.send_message(message.chat.id, "❌ تم الإلغاء.", reply_markup=get_main_keyboard(uid))
+        return
+    cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
+    bal = cursor.fetchone()
+    balance = bal[0] if bal else 0
+    msg = bot.send_message(message.chat.id,
+                           f"💰 **رصيدك:** `{balance:,.0f}` ل.س\n\n"
+                           f"💵 **أدخل المبلغ بالليرة السورية للسحب:**",
+                           parse_mode="Markdown")
+    bot.register_next_step_handler(msg, process_binance_withdraw_amount, account)
+
+def process_binance_withdraw_amount(message, account):
+    uid = message.from_user.id
+    try:
+        amount = float(message.text.strip())
+        commission_pct = float(get_db_setting('withdraw_commission') or '10')
+        cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
+        bal = cursor.fetchone()
+        balance = bal[0] if bal else 0
+        if amount > balance:
+            bot.send_message(message.chat.id, f"❌ **رصيدك غير كافٍ!** رصيدك: `{balance:,.0f}` ل.س", parse_mode="Markdown")
+            return
+        commission = amount * commission_pct / 100
+        net_amount = amount - commission
+        txn_receipt = log_transaction(uid, "withdraw_request", amount, "binance", "pending",
+                                      commission=commission, net_amount=net_amount,
+                                      details=f"Binance: {account}")
+        cursor.execute("""INSERT INTO pending_withdraws
+            (user_id, method, account, amount, commission, net_amount, currency, status, created_at, txn_receipt)
+            VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (uid, 'Binance', account, amount, commission, net_amount, 'USD',
+             'pending', datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
+        conn.commit()
+        withdraw_id = cursor.lastrowid
+        bot.send_message(message.chat.id,
+                         f"✅ **تم استلام طلب السحب عبر Binance**\n\n"
+                         f"💱 الحساب: `{account}`\n"
+                         f"💵 المبلغ: `{amount:,.0f}` ل.س\n"
+                         f"💸 العمولة: `{commission:,.0f}` ل.س\n"
+                         f"💰 الصافي: `{net_amount:,.0f}` ل.س\n"
+                         f"⏳ سيتم المعالجة خلال 1-24 ساعة.",
+                         parse_mode="Markdown", reply_markup=get_main_keyboard(uid))
+        notify_operations_room_withdraw(uid, 'Binance', account, amount, net_amount, 'USD', withdraw_id, commission)
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ الرجاء إدخال مبلغ صحيح.")
 
 def process_syria_withdraw_account(message):
     """معالجة طلب سحب سيرياتل كاش (استلام رقم المحفظة)"""
