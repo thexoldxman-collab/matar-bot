@@ -1210,102 +1210,54 @@ class ActionSystem:
         try:
             logger.info(f"تنفيذ إجراء {action} للمستخدم {uid}")
             
-            # إجراءات المستخدم الأساسية
-            if action == 'show_balance':
-                return ActionSystem.show_balance(uid, chat_id)
-            elif action == 'show_ichancy_menu':
-                return ActionSystem.show_ichancy_menu(uid, chat_id)
-            elif action == 'show_ichancy_account':
-                return ActionSystem.show_ichancy_account(uid, chat_id)
-            elif action == 'create_ichancy_account':
-                return ActionSystem.create_ichancy_account(uid, chat_id)
-            elif action == 'charge_ichancy':
-                return ActionSystem.charge_ichancy(uid, chat_id)
-            elif action == 'withdraw_ichancy':
-                return ActionSystem.withdraw_ichancy(uid, chat_id)
-            elif action == 'delete_ichancy_account':
-                return ActionSystem.delete_ichancy_account(uid, chat_id)
-            
-            # إجراءات مالية
-            elif action == 'show_charge_methods':
-                return ActionSystem.show_charge_methods(uid, chat_id)
-            elif action == 'show_withdraw_methods':
-                return ActionSystem.show_withdraw_methods(uid, chat_id)
-            elif action == 'start_gift':
-                return ActionSystem.start_gift(uid, chat_id)
-            elif action == 'redeem_gift':
-                return ActionSystem.redeem_gift(uid, chat_id)
-            elif action == 'show_transactions':
-                return ActionSystem.show_transactions(uid, chat_id)
-            
-            # إجراءات اجتماعية
-            elif action == 'show_referral':
-                return ActionSystem.show_referral(uid, chat_id)
-            elif action == 'show_referral_link':
-                return ActionSystem.show_referral_link(uid, chat_id)
-            elif action == 'show_referral_stats':
-                return ActionSystem.show_referral_stats(uid, chat_id)
-            
-            # إجراءات دعم
-            elif action == 'start_support':
-                return ActionSystem.start_support(uid, chat_id)
-            elif action == 'show_tickets':
-                return ActionSystem.show_tickets(uid, chat_id)
-            elif action == 'show_terms':
-                return ActionSystem.show_terms(uid, chat_id)
-            
-            # إجراءات إدارية
-            elif action == 'show_admin_panel':
-                return ActionSystem.show_admin_panel(uid, chat_id)
-            elif action == 'show_moderator_panel':
-                return ActionSystem.show_moderator_panel(uid, chat_id)
-            elif action == 'show_full_admin_menu':
-                return ActionSystem.show_full_admin_menu(uid, chat_id)
-            elif action == 'manage_buttons':
-                return ActionSystem.manage_buttons(uid, chat_id)
-            elif action == 'manage_users':
-                return ActionSystem.manage_users(uid, chat_id)
-            elif action == 'manage_moderators':
-                return ActionSystem.manage_moderators(uid, chat_id)
-            elif action == 'payment_settings':
-                return ActionSystem.payment_settings(uid, chat_id)
-            elif action == 'bot_settings':
-                return ActionSystem.bot_settings(uid, chat_id)
-            elif action == 'system_stats':
-                return ActionSystem.system_stats(uid, chat_id)
-            elif action == 'backup_system':
-                return ActionSystem.backup_system(uid, chat_id)
-            elif action == 'admin_logs':
-                return ActionSystem.show_admin_logs(uid, chat_id)
-            elif action == 'notification_settings':
-                return ActionSystem.notification_settings(uid, chat_id)
-            
-            # إجراءات ربط الكاشيرة
-            elif action == 'connect_syriatel':
-                return ActionSystem.connect_syriatel(uid, chat_id)
-            elif action == 'connect_sham':
-                return ActionSystem.connect_sham(uid, chat_id)
-            elif action == 'test_api':
-                return ActionSystem.test_api(uid, chat_id)
-            elif action == 'toggle_auto_verify':
-                return ActionSystem.toggle_auto_verify(uid, chat_id)
-            elif action == 'api_status':
-                return ActionSystem.show_api_status(uid, chat_id)
-            
-            # إجراءات مخصصة
-            elif action == 'send_message':
-                return ActionSystem.send_custom_message(uid, chat_id, button_data)
-            elif action == 'send_photo':
-                return ActionSystem.send_custom_photo(uid, chat_id, button_data)
-            elif action == 'open_link':
-                return ActionSystem.open_link(uid, chat_id, button_data)
-            elif action == 'toggle_dark_mode':
-                return ActionSystem.toggle_dark_mode(uid, chat_id)
-            
-            # إجراءات القوائم الفرعية
-            elif action == 'show_submenu':
-                return ActionSystem.show_submenu(uid, chat_id, button_data)
-            
+            action_map = {
+                'show_balance': ActionSystem.show_balance,
+                'show_ichancy_menu': ActionSystem.show_ichancy_menu,
+                'show_ichancy_account': ActionSystem.show_ichancy_account,
+                'create_ichancy_account': ActionSystem.create_ichancy_account,
+                'charge_ichancy': ActionSystem.charge_ichancy,
+                'withdraw_ichancy': ActionSystem.withdraw_ichancy,
+                'delete_ichancy_account': ActionSystem.delete_ichancy_account,
+                'show_charge_methods': ActionSystem.show_charge_methods,
+                'show_withdraw_methods': ActionSystem.show_withdraw_methods,
+                'start_gift': ActionSystem.start_gift,
+                'redeem_gift': ActionSystem.redeem_gift,
+                'show_transactions': ActionSystem.show_transactions,
+                'show_referral': ActionSystem.show_referral,
+                'show_referral_link': ActionSystem.show_referral_link,
+                'show_referral_stats': ActionSystem.show_referral_stats,
+                'start_support': ActionSystem.start_support,
+                'show_tickets': ActionSystem.show_tickets,
+                'show_terms': ActionSystem.show_terms,
+                'show_admin_panel': ActionSystem.show_admin_panel,
+                'show_moderator_panel': ActionSystem.show_moderator_panel,
+                'show_full_admin_menu': ActionSystem.show_full_admin_menu,
+                'manage_buttons': ActionSystem.manage_buttons,
+                'manage_users': ActionSystem.manage_users,
+                'manage_moderators': ActionSystem.manage_moderators,
+                'payment_settings': ActionSystem.payment_settings,
+                'bot_settings': ActionSystem.bot_settings,
+                'system_stats': ActionSystem.system_stats,
+                'backup_system': ActionSystem.backup_system,
+                'admin_logs': ActionSystem.show_admin_logs,
+                'notification_settings': ActionSystem.notification_settings,
+                'connect_syriatel': ActionSystem.connect_syriatel,
+                'connect_sham': ActionSystem.connect_sham,
+                'test_api': ActionSystem.test_api,
+                'toggle_auto_verify': ActionSystem.toggle_auto_verify,
+                'api_status': ActionSystem.show_api_status,
+                'send_message': ActionSystem.send_custom_message,
+                'send_photo': ActionSystem.send_custom_photo,
+                'open_link': ActionSystem.open_link,
+                'toggle_dark_mode': ActionSystem.toggle_dark_mode,
+                'show_submenu': ActionSystem.show_submenu,
+            }
+
+            if action in action_map:
+                if action in ['send_message', 'send_photo', 'open_link', 'show_submenu']:
+                    return action_map[action](uid, chat_id, button_data)
+                else:
+                    return action_map[action](uid, chat_id)
             else:
                 bot.send_message(chat_id, "❌ هذا الإجراء غير مفعل بعد")
                 logger.warning(f"محاولة تنفيذ إجراء غير معروف: {action} من المستخدم {uid}")
@@ -2297,18 +2249,18 @@ class ActionSystem:
             # إعدادات افتراضية
             settings = (1, 1, 1, 1, 1, 1000000)
         
-        text = f"""
-🔔 **إعدادات الإشعارات**
-
-✅ إشعارات الشحن: {'🟢 مفعل' if settings[0] else '🔴 معطل'}
-✅ إشعارات السحب: {'🟢 مفعل' if settings[1] else '🔴 معطل'}
-✅ إشعارات التذاكر: {'🟢 مفعل' if settings[2] else '🔴 معطل'}
-✅ إشعارات المستخدمين الجدد: {'🟢 مفعل' if settings[3] else '🔴 معطل'}
-✅ إشعارات انتهاء الأكواد: {'🟢 مفعل' if settings[4] else '🔴 معطل'}
-💰 حد الشحن الكبير: {settings[5]:,.0f} ل.س
-
-اختر ما تريد تعديله:
-"""
+                    text = f"""
+	🔔 **إعدادات الإشعارات الحالية:**
+	
+	✅ إشعارات الشحن: {'🟢 مفعل' if settings[0] else '🔴 معطل'}
+	✅ إشعارات السحب: {'🟢 مفعل' if settings[1] else '🔴 معطل'}
+	✅ إشعارات التذاكر: {'🟢 مفعل' if settings[2] else '🔴 معطل'}
+	✅ إشعارات المستخدمين الجدد: {'🟢 مفعل' if settings[3] else '🔴 معطل'}
+	✅ إشعارات انتهاء الأكواد: {'🟢 مفعل' if settings[4] else '🔴 معطل'}
+	💰 حد الشحن الكبير: {settings[5]:,.0f} ل.س
+	
+	اختر ما تريد تعديله:
+	"""""
         # أزرار التعديل
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
@@ -2337,75 +2289,71 @@ def send_copyable_text(chat_id, text, caption=""):
 
 def get_main_keyboard(uid):
     """
-    بناء القائمة الرئيسية حسب الطلب
+    بناء القائمة الرئيسية ديناميكياً من قاعدة البيانات
     """
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     
-    # الصف الأول - Ichancy منفرد
-    markup.row(types.KeyboardButton('⚽ Ichancy ⚽'))
-    
-    # الصف الثاني
-    markup.row(
-        types.KeyboardButton('💳 الشحن في البوت'),
-        types.KeyboardButton('💸 السحب من البوت')
-    )
-    
-    # الصف الثالث
-    markup.row(
-        types.KeyboardButton('🎁 اهداء رصيد'),
-        types.KeyboardButton('🎫 كود هدية')
-    )
-    
-    # الصف الرابع
-    markup.row(
-        types.KeyboardButton('💰 الرصيد'),
-        types.KeyboardButton('👥 دعوة الأصدقاء')
-    )
-    
-    # الصف الخامس
-    markup.row(
-        types.KeyboardButton('📜 الشروط والاحكام'),
-        types.KeyboardButton('📞 التواصل مع الدعم')
-    )
-    
-    # الصف السادس - إدارة البوت للمالك والمشرفين
-    if uid == ADMIN_ID or is_moderator(uid):
-        markup.row(types.KeyboardButton('🔐 إدارة البوت'))
-    
-    return markup
-
-def get_dynamic_keyboard(parent='main', level=1):
-    """
-    بناء لوحة مفاتيح ديناميكية من قاعدة البيانات
-    """
-    cursor.execute("""SELECT button_text FROM dynamic_buttons
-                      WHERE parent_button=? AND level=? AND is_active=1
-                      ORDER BY sort_order ASC""", (parent, level))
+    cursor.execute("""SELECT button_text, requires_admin, requires_moderator
+                      FROM dynamic_buttons
+                      WHERE parent_button=\'main\' AND level=1 AND is_active=1
+                      ORDER BY sort_order ASC""")
     buttons = cursor.fetchall()
     
-    if not buttons:
+    temp_buttons = []
+    for btn_text, req_admin, req_mod in buttons:
+        if req_admin == 1 and uid != ADMIN_ID:
+            continue
+        if req_mod == 1 and not is_moderator(uid) and uid != ADMIN_ID:
+            continue
+        temp_buttons.append(types.KeyboardButton(btn_text))
+    
+    i = 0
+    while i < len(temp_buttons):
+        if i + 1 < len(temp_buttons):
+            markup.row(temp_buttons[i], temp_buttons[i+1])
+            i += 2
+        else:
+            markup.row(temp_buttons[i])
+            i += 1
+            
+    return markup
+
+def get_dynamic_keyboard(uid, parent=\'main\', level=1):
+    """
+    بناء لوحة مفاتيح ديناميكية من قاعدة البيانات مع مراعاة صلاحيات المستخدم
+    """
+    cursor.execute("""SELECT button_text, requires_admin, requires_moderator
+                      FROM dynamic_buttons
+                      WHERE parent_button=? AND level=? AND is_active=1
+                      ORDER BY sort_order ASC""", (parent, level))
+    buttons_data = cursor.fetchall()
+    
+    if not buttons_data:
         return None
     
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
     
+    temp_buttons = []
+    for btn_text, req_admin, req_mod in buttons_data:
+        if req_admin == 1 and uid != ADMIN_ID:
+            continue
+        if req_mod == 1 and not is_moderator(uid) and uid != ADMIN_ID:
+            continue
+        temp_buttons.append(types.KeyboardButton(btn_text))
+    
     i = 0
-    while i < len(buttons):
-        if i + 1 < len(buttons):
-            markup.row(
-                types.KeyboardButton(buttons[i][0]),
-                types.KeyboardButton(buttons[i + 1][0])
-            )
+    while i < len(temp_buttons):
+        if i + 1 < len(temp_buttons):
+            markup.row(temp_buttons[i], temp_buttons[i+1])
             i += 2
         else:
-            markup.row(types.KeyboardButton(buttons[i][0]))
+            markup.row(temp_buttons[i])
             i += 1
     
     if level > 1:
-        markup.row(types.KeyboardButton('🔙 رجوع'))
+        markup.row(types.KeyboardButton(\'🔙 رجوع\'))
     
-    return markup
-
-def get_ichancy_main_keyboard():
+    return markupf get_ichancy_main_keyboard():
     """لوحة مفاتيح Ichancy الرئيسية (عند عدم وجود حساب)"""
     markup = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
     markup.add(types.KeyboardButton('📝 إنشاء حساب جديد'))
@@ -2654,49 +2602,58 @@ def toggle_button_status(button_text, admin_id=ADMIN_ID):
 # =============================================================================
 # 13. لوحات التحكم والإدارة
 # =============================================================================
-
-def get_admin_main_keyboard(is_owner=False, uid=None):
-    """لوحة المفاتيح الرئيسية للإدارة"""
+def get_admin_main_keyboard(uid):
+    """
+    بناء لوحة مفاتيح الإدارة الرئيسية ديناميكياً من قاعدة البيانات
+    """
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-
-    if is_owner:
-        markup.add('🎫 إنشاء كود هدية', '👥 إدارة المستخدمين')
-        markup.add('💰 تغيير أكواد الدفع', '📊 سجل المعاملات')
-        markup.add('📨 رسالة جماعية', '📧 رسالة فردية')
-        markup.add('🔄 استرجاع حساب', '🔧 حالة البوت')
-        markup.add('📋 قاعدة البيانات', '💬 تذاكر الدعم')
-        markup.add('👥 المشرفين', '📊 نظام الإحالات')
-        markup.add('📝 إدارة الأزرار', '🔔 إعدادات الإشعارات')
-        markup.add('📋 سجل الإجراءات', '⚙️ إعدادات متقدمة')
-        markup.add('🛑 إدارة البوت بالكامل')
-        markup.add('🔙 العودة للقائمة الرئيسية')
-    else:
-        # عرض الأزرار حسب صلاحيات المشرف
-        perms = get_moderator_permissions(uid) if uid else {}
-
-        if perms.get('can_handle_charges', 0):
-            markup.add('💰 تغيير أكواد الدفع')
-        if perms.get('can_handle_withdraws', 0):
-            markup.add('💸 إدارة السحوبات')
-        if perms.get('can_reply_tickets', 0):
-            markup.add('💬 تذاكر الدعم')
-        if perms.get('can_send_broadcast', 0):
-            markup.add('📨 رسالة جماعية')
-        if perms.get('can_manage_users', 0):
-            markup.add('👥 إدارة المستخدمين')
-        if perms.get('can_view_stats', 0):
-            markup.add('📊 الإحصائيات')
-
-        markup.add('🔙 العودة للقائمة الرئيسية')
-
-    return markup
-
-def get_full_admin_keyboard():
-    """لوحة التحكم الكامل (للمالك فقط)"""
-    keyboard = types.InlineKeyboardMarkup(row_width=2)
     
-    room_id = get_db_setting('operations_room_id')
-    room_status = f"✅ غرفة عمليات نشطة" if room_id else "⚠️ لا توجد غرفة عمليات"
+    cursor.execute("""SELECT button_text, requires_admin, requires_moderator, action
+                      FROM dynamic_buttons
+                      WHERE parent_button=\'admin_main\' AND level=1 AND is_active=1
+                      ORDER BY sort_order ASC""")
+    buttons_data = cursor.fetchall()
+    
+    temp_buttons = []
+    for btn_text, req_admin, req_mod, action in buttons_data:
+        if req_admin == 1 and uid != ADMIN_ID:
+            continue
+        if req_mod == 1 and not is_moderator(uid) and uid != ADMIN_ID:
+            continue
+        
+        # تحقق من الصلاحيات الدقيقة إذا كان الإجراء يتطلب ذلك
+        if action == \'manage_users\' and not check_permission(uid, \'can_manage_users\'):
+            continue
+        if action == \'show_admin_logs\' and not check_permission(uid, \'can_view_stats\'):
+            continue
+        if action == \'payment_settings\' and not check_permission(uid, \'can_handle_charges\'):
+            continue
+        if action == \'bot_settings\' and uid != ADMIN_ID:
+            continue
+        if action == \'system_stats\' and not check_permission(uid, \'can_view_stats\'):
+            continue
+        if action == \'backup_system\' and uid != ADMIN_ID:
+            continue
+        if action == \'notification_settings\' and uid != ADMIN_ID:
+            continue
+        if action == \'manage_moderators\' and uid != ADMIN_ID:
+            continue
+        if action == \'manage_buttons\' and not check_permission(uid, \'can_manage_buttons\'):
+            continue
+        
+        temp_buttons.append(types.KeyboardButton(btn_text))
+    
+    i = 0
+    while i < len(temp_buttons):
+        if i + 1 < len(temp_buttons):
+            markup.row(temp_buttons[i], temp_buttons[i+1])
+            i += 2
+        else:
+            markup.row(temp_buttons[i])
+            i += 1
+            
+    markup.add(types.KeyboardButton(\'🔙 العودة للقائمة الرئيسية\'))
+    return markuptus = f"✅ غرفة عمليات نشطة" if room_id else "⚠️ لا توجد غرفة عمليات"
     
     keyboard.add(
         types.InlineKeyboardButton("📝 إدارة الأزرار", callback_data="admin_buttons"),
@@ -2831,24 +2788,50 @@ def get_cashier_connection_keyboard():
     return keyboard
 
 def get_moderator_panel_keyboard(uid):
-    """لوحة المشرف (حسب الصلاحيات)"""
+    """
+    بناء لوحة مفاتيح المشرفين ديناميكياً من قاعدة البيانات
+    """
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    perms = get_moderator_permissions(uid)
     
-    if perms.get('can_reply_tickets', 0):
-        markup.add('💬 تذاكر الدعم')
-    if perms.get('can_handle_charges', 0):
-        markup.add('💰 طلبات الشحن')
-    if perms.get('can_handle_withdraws', 0):
-        markup.add('💸 طلبات السحب')
-    if perms.get('can_send_broadcast', 0):
-        markup.add('📨 رسالة جماعية')
-    if perms.get('can_manage_users', 0):
-        markup.add('👥 إدارة المستخدمين')
-    if perms.get('can_view_stats', 0):
-        markup.add('📊 الإحصائيات')
+    cursor.execute("""SELECT button_text, requires_admin, requires_moderator, action
+                      FROM dynamic_buttons
+                      WHERE parent_button='moderator_main' AND level=1 AND is_active=1
+                      ORDER BY sort_order ASC""")
+    buttons_data = cursor.fetchall()
     
-    markup.add('🔙 العودة للقائمة الرئيسية')
+    temp_buttons = []
+    for btn_text, req_admin, req_mod, action in buttons_data:
+        if req_admin == 1 and uid != ADMIN_ID:
+            continue
+        if req_mod == 1 and not is_moderator(uid) and uid != ADMIN_ID:
+            continue
+        
+        # تحقق من الصلاحيات الدقيقة إذا كان الإجراء يتطلب ذلك
+        if action == 'show_charge_requests' and not check_permission(uid, 'can_handle_charges'):
+            continue
+        if action == 'show_withdraw_requests' and not check_permission(uid, 'can_handle_withdraws'):
+            continue
+        if action == 'show_tickets' and not check_permission(uid, 'can_reply_tickets'):
+            continue
+        if action == 'manage_users' and not check_permission(uid, 'can_manage_users'):
+            continue
+        if action == 'system_stats' and not check_permission(uid, 'can_view_stats'):
+            continue
+        if action == 'send_broadcast' and not check_permission(uid, 'can_send_broadcast'):
+            continue
+        
+        temp_buttons.append(types.KeyboardButton(btn_text))
+    
+    i = 0
+    while i < len(temp_buttons):
+        if i + 1 < len(temp_buttons):
+            markup.row(temp_buttons[i], temp_buttons[i+1])
+            i += 2
+        else:
+            markup.row(temp_buttons[i])
+            i += 1
+            
+    markup.add(types.KeyboardButton('🔙 العودة للقائمة الرئيسية'))
     return markup
 
 def get_button_edit_menu(button_text):
@@ -5431,7 +5414,15 @@ def handle_all_callbacks(call):
         bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_search_by_user)
         return
 
-    # ===== 6. إذا لم يتم التعرف على الكول باك =====
+    # ===== 6. معالجة الأزرار الديناميكية =====
+    if data.startswith('dynamic_button_'):
+        button_id = int(data.split('_')[2])
+        ActionSystem.execute_dynamic_button_action(uid, call.message.chat.id, button_id)
+        return
+
+    # ===== 7. إذا لم يتم التعرف على الكول باك =====
+    bot.answer_callback_query(call.id, "هذا الزر غير مفعل أو حدث خطأ.", show_alert=False)
+    logger.warning(f"Callback غير معروف من المستخدم {uid}: {data}")
     bot.answer_callback_query(call.id, "هذا الزر غير مفعل أو حدث خطأ.", show_alert=False)
     logger.warning(f"Callback غير معروف من المستخدم {uid}: {data}")
 
