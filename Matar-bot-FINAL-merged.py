@@ -1036,7 +1036,12 @@ def check_and_create_ref_code(user_id):
 def get_operations_room_id():
     """الحصول على معرف غرفة العمليات"""
     val = get_db_setting('operations_room_id')
-    return int(val) if val and val.isdigit() else None
+    if val:
+        try:
+            return int(val)
+        except ValueError:
+            return None
+    return None
 
 def set_operations_room_id(chat_id):
     """حفظ معرف غرفة العمليات"""
