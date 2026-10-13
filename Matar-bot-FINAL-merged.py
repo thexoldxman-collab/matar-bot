@@ -753,6 +753,38 @@ def setup_database():
         restored_by INTEGER,
         size INTEGER
     )""")
+
+    # ===== عجلة الحظ والعروض المالية (إضافة آمنة لا تحذف أي بيانات قديمة) =====
+    cursor.execute("""CREATE TABLE IF NOT EXISTS wheel_prizes(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        label TEXT NOT NULL,
+        prize_type TEXT NOT NULL CHECK(prize_type IN ('fixed','percent')),
+        value REAL NOT NULL CHECK(value >= 0),
+        weight REAL NOT NULL DEFAULT 1 CHECK(weight >= 0),
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS wheel_spins(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        spin_date TEXT NOT NULL,
+        prize_id INTEGER NOT NULL,
+        prize_label TEXT NOT NULL,
+        prize_type TEXT NOT NULL,
+        prize_value REAL NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(user_id, spin_date)
+    )""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS wheel_bonuses(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        percent REAL NOT NULL,
+        source_spin_id INTEGER NOT NULL,
+        used_at TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE(source_spin_id)
+    )""")
     
     # ===== الإعدادات الافتراضية =====
     default_settings = [
@@ -793,10 +825,33 @@ def setup_database():
         ('referral_cycle_days', '10', 'عدد أيام دورة الإحالات', 'number')
     ]
     
+    default_settings.extend([
+        ('wheel_enabled', '0', 'تفعيل عجلة الحظ', 'boolean'),
+        ('wheel_daily_charge_threshold', '100000', 'حد الشحن اليومي لاستحقاق لفة', 'number'),
+        ('wheel_title', '🎡 عجلة الحظ', 'عنوان عجلة الحظ', 'text'),
+        ('wheel_spin_message', 'اضغط على الزر لتدوير العجلة مرة واحدة يومياً بعد استيفاء شرط الشحن.', 'رسالة عجلة الحظ', 'text'),
+        ('operation_mode', 'demo', 'وضع التشغيل العام', 'text'),
+    ])
+
     for key, value, desc, typ in default_settings:
         cursor.execute("INSERT OR IGNORE INTO settings(key, value, description, type) VALUES (?,?,?,?)",
                       (key, value, desc, typ))
     
+    # جوائز ابتدائية قابلة للتعديل من لوحة الإدارة، ولا تُضاف مرة أخرى بعد أول تشغيل.
+    cursor.execute('SELECT COUNT(*) FROM wheel_prizes')
+    if cursor.fetchone()[0] == 0:
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        for label, kind, value, weight in [
+            ('5,000 ل.س', 'fixed', 5000, 35),
+            ('10,000 ل.س', 'fixed', 10000, 25),
+            ('25,000 ل.س', 'fixed', 25000, 12),
+            ('50,000 ل.س', 'fixed', 50000, 3),
+            ('زيادة 10% على أول شحن قادم', 'percent', 10, 10),
+            ('حظ أوفر في المرة القادمة', 'fixed', 0, 15),
+        ]:
+            cursor.execute('INSERT INTO wheel_prizes(label, prize_type, value, weight, is_active, created_at, updated_at) VALUES (?,?,?,?,?,?,?)',
+                           (label, kind, value, weight, 1, now, now))
+
     # إضافة رصيد الكاشيرة للمالك
     cursor.execute("INSERT OR IGNORE INTO cashier_balance(admin_id, balance, last_updated) VALUES (?,?,?)",
                   (ADMIN_ID, 0, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
@@ -821,7 +876,8 @@ def setup_database():
         ('gift', '🎁 اهداء رصيد', 'main', 'reply', 'start_gift', None, None, 1, 3, 0, 0, 0, 0, 0, '/main/gift'),
         ('gift_code', '🎫 كود هدية', 'main', 'reply', 'redeem_gift', None, None, 1, 4, 0, 0, 0, 0, 0, '/main/gift_code'),
         ('charge', '💳 الشحن في البوت', 'main', 'reply', 'show_charge_methods', None, None, 1, 5, 0, 0, 0, 0, 0, '/main/charge'),
-        ('withdraw', '💸 السحب من البوت', 'main', 'reply', 'show_withdraw_methods', None, None, 1, 6, 0, 0, 0, 0, 0, '/main/withdraw'),
+        ('wheel', '🎡 عجلة الحظ', 'main', 'reply', 'show_wheel', None, None, 1, 6, 0, 0, 0, 0, 0, '/main/wheel'),
+        ('withdraw', '💸 السحب من البوت', 'main', 'reply', 'show_withdraw_methods', None, None, 1, 7, 0, 0, 0, 0, 0, '/main/withdraw'),
         ('referral', '👥 دعوة الأصدقاء', 'main', 'reply', 'show_referral', None, None, 1, 7, 0, 0, 0, 0, 0, '/main/referral'),
         ('support', '📞 التواصل مع الدعم', 'main', 'reply', 'start_support', None, None, 1, 8, 0, 0, 0, 0, 0, '/main/support'),
         ('terms', '📜 الشروط والاحكام', 'main', 'reply', 'show_terms', None, None, 1, 9, 0, 0, 0, 0, 0, '/main/terms'),
@@ -835,11 +891,26 @@ def setup_database():
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (btn[0], btn[1], btn[2], btn[3], btn[4], btn[5], btn[6], btn[7], btn[8], btn[9], btn[10], btn[11], btn[12],
              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), btn[14]))
+
+    # ترحيل زر العجلة إلى القواعد القديمة من دون إعادة ضبط القائمة الحالية.
+    cursor.execute("SELECT 1 FROM dynamic_buttons WHERE button_name='wheel' OR button_text='🎡 عجلة الحظ' LIMIT 1")
+    if not cursor.fetchone():
+        cursor.execute("""INSERT INTO dynamic_buttons
+            (button_name, button_text, parent_button, button_type, action, level, sort_order,
+             requires_subscription, requires_admin, requires_moderator, cooldown, created_at, path)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ('wheel', '🎡 عجلة الحظ', 'main', 'reply', 'show_wheel', 1, 6, 0, 0, 0, 0,
+             datetime.now().strftime('%Y-%m-%d %H:%M:%S'), '/main/wheel'))
     
     # ترحيل آمن لقواعد البيانات القديمة دون حذف بياناتها.
     withdraw_columns = {row[1] for row in cursor.execute("PRAGMA table_info(pending_withdraws)").fetchall()}
     if 'reserved' not in withdraw_columns:
         cursor.execute("ALTER TABLE pending_withdraws ADD COLUMN reserved INTEGER NOT NULL DEFAULT 0")
+    moderator_columns = {row[1] for row in cursor.execute('PRAGMA table_info(moderators)').fetchall()}
+    if 'can_withdraw_site_to_bot' not in moderator_columns:
+        cursor.execute('ALTER TABLE moderators ADD COLUMN can_withdraw_site_to_bot INTEGER DEFAULT 0')
+    if 'can_manage_wheel' not in moderator_columns:
+        cursor.execute('ALTER TABLE moderators ADD COLUMN can_manage_wheel INTEGER DEFAULT 0')
 
     conn.commit()
     logger.info("✅ تم إنشاء قاعدة البيانات بنجاح مع 30+ جدول")
@@ -1060,12 +1131,15 @@ def get_moderator_permissions(user_id):
             'can_view_stats': 1,
             'can_manage_buttons': 1,
             'can_access_full_admin': 1,
-            'can_manage_moderators': 1
+            'can_manage_moderators': 1,
+            'can_withdraw_site_to_bot': 1,
+            'can_manage_wheel': 1
         }
     
     cursor.execute("""SELECT can_reply_tickets, can_handle_charges, can_handle_withdraws,
                       can_send_broadcast, can_manage_users, can_charge_withdraw_users,
-                      can_view_stats, can_manage_buttons, can_access_full_admin, can_manage_moderators
+                      can_view_stats, can_manage_buttons, can_access_full_admin, can_manage_moderators,
+                      COALESCE(can_withdraw_site_to_bot,0), COALESCE(can_manage_wheel,0)
                       FROM moderators WHERE user_id=?""", (user_id,))
     result = cursor.fetchone()
     if result:
@@ -1079,7 +1153,9 @@ def get_moderator_permissions(user_id):
             'can_view_stats': result[6],
             'can_manage_buttons': result[7],
             'can_access_full_admin': result[8],
-            'can_manage_moderators': result[9]
+            'can_manage_moderators': result[9],
+            'can_withdraw_site_to_bot': result[10],
+            'can_manage_wheel': result[11]
         }
     return {}
 
@@ -1238,6 +1314,16 @@ def notify_operations_room_withdraw(user_id, method, account, amount, net_amount
     except Exception as e:
         logger.error(f"خطأ في إشعار غرفة العمليات بطلب سحب: {e}")
 
+def charge_processing_keyboard(charge_id):
+    """لوحة المرحلة الثانية: تبقى ظاهرة بعد بدء التنفيذ حتى الإتمام أو الإلغاء."""
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("💵 إدخال/تعديل المبلغ", callback_data=f"ops_set_amount_charge_{charge_id}"),
+        types.InlineKeyboardButton("🟢 تم التنفيذ", callback_data=f"ops_done_charge_{charge_id}"),
+        types.InlineKeyboardButton("❌ إلغاء مع سبب", callback_data=f"ops_cancel_charge_{charge_id}")
+    )
+    return markup
+
 def get_user_by_ref_code(ref_code):
     """الحصول على مستخدم عن طريق كود الإحالة"""
     cursor.execute("SELECT user_id FROM users WHERE ref_code=?", (ref_code,))
@@ -1357,6 +1443,141 @@ def transfer_internal_balance(user_id, amount, direction):
             conn.rollback()
             raise
 
+# =============================================================================
+# عجلة الحظ: نظام مالي ذري قابل للتحكم
+# =============================================================================
+
+def wheel_is_enabled():
+    return str(get_db_setting('wheel_enabled') or '0').lower() in ('1', 'true', 'on', 'active')
+
+def wheel_today():
+    return datetime.now().strftime('%Y-%m-%d')
+
+def wheel_daily_charge(uid):
+    row = cursor.execute("SELECT COALESCE(SUM(amount),0) FROM transactions WHERE user_id=? AND type IN ('charge','admin_charge') AND status='success' AND DATE(transaction_date)=DATE('now')", (uid,)).fetchone()
+    return float(row[0] or 0)
+
+def wheel_has_spin(uid):
+    return cursor.execute('SELECT 1 FROM wheel_spins WHERE user_id=? AND spin_date=?', (uid, wheel_today())).fetchone() is not None
+
+def wheel_eligible(uid):
+    threshold = float(get_db_setting('wheel_daily_charge_threshold') or 0)
+    return wheel_is_enabled() and not wheel_has_spin(uid) and wheel_daily_charge(uid) >= threshold
+
+def wheel_keyboard(uid):
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    kb.add(types.InlineKeyboardButton('🎡 تدوير العجلة', callback_data='wheel_spin'))
+    kb.add(types.InlineKeyboardButton('🔙 رجوع', callback_data='wheel_back'))
+    return kb
+
+def wheel_admin_keyboard():
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    kb.add(types.InlineKeyboardButton('🟢/🔴 تشغيل أو إيقاف', callback_data='wheel_toggle'))
+    kb.add(types.InlineKeyboardButton('➕ إضافة جائزة', callback_data='wheel_add'))
+    kb.add(types.InlineKeyboardButton('📋 إدارة الجوائز', callback_data='wheel_prizes'))
+    kb.add(types.InlineKeyboardButton('💰 تعديل شرط الشحن', callback_data='wheel_threshold'))
+    kb.add(types.InlineKeyboardButton('🔙 رجوع', callback_data='back_to_full_admin'))
+    return kb
+
+def wheel_status_text():
+    enabled = '🟢 مفعلة' if wheel_is_enabled() else '🔴 متوقفة'
+    threshold = float(get_db_setting('wheel_daily_charge_threshold') or 0)
+    prizes = cursor.execute('SELECT COUNT(*) FROM wheel_prizes WHERE is_active=1').fetchone()[0]
+    return f"🎡 **إدارة عجلة الحظ**\n\nالحالة: {enabled}\nشرط الشحن اليومي: `{threshold:,.0f}` ل.س\nالجوائز الفعالة: {prizes}\n\nيمكنك التحكم بالأوزان، الإيقاف، والإضافة من الأزرار أدناه."
+
+def show_wheel(uid, chat_id):
+    if not wheel_is_enabled():
+        bot.send_message(chat_id, '🎡 عجلة الحظ متوقفة حالياً.', reply_markup=get_main_keyboard(uid))
+        return
+    threshold = float(get_db_setting('wheel_daily_charge_threshold') or 0)
+    paid = wheel_daily_charge(uid)
+    if wheel_has_spin(uid):
+        bot.send_message(chat_id, '🎡 استخدمت لفتك اليومية. عد غداً بعد استيفاء الشرط.', reply_markup=get_main_keyboard(uid))
+        return
+    if paid < threshold:
+        bot.send_message(chat_id, f'🎡 **عجلة الحظ**\n\nاشحن اليوم `{threshold:,.0f}` ل.س لتحصل على لفة واحدة.\nإجمالي شحنك اليوم: `{paid:,.0f}` ل.س', reply_markup=get_main_keyboard(uid), parse_mode='Markdown')
+        return
+    bot.send_message(chat_id, f"🎡 **{get_db_setting('wheel_title') or 'عجلة الحظ'}**\n\n{get_db_setting('wheel_spin_message') or 'اضغط للتدوير.'}\n\n✅ استحققت لفة اليوم.", reply_markup=wheel_keyboard(uid), parse_mode='Markdown')
+
+def spin_wheel(uid, chat_id, call_id=None):
+    if not wheel_eligible(uid):
+        if call_id: bot.answer_callback_query(call_id, '⚠️ لا توجد لفة متاحة أو لم يتحقق شرط الشحن.', show_alert=True)
+        else: bot.send_message(chat_id, '⚠️ لا توجد لفة متاحة حالياً.')
+        return
+    prizes = cursor.execute('SELECT id,label,prize_type,value,weight FROM wheel_prizes WHERE is_active=1 AND weight>0').fetchall()
+    if not prizes:
+        if call_id: bot.answer_callback_query(call_id, '⚠️ لا توجد جوائز مفعلة.', show_alert=True)
+        return
+    chosen = random.choices(prizes, weights=[float(x[4]) for x in prizes], k=1)[0]
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    with db_lock:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            cur = conn.execute('INSERT INTO wheel_spins(user_id,spin_date,prize_id,prize_label,prize_type,prize_value,created_at) VALUES (?,?,?,?,?,?,?)', (uid,wheel_today(),chosen[0],chosen[1],chosen[2],chosen[3],now))
+            spin_id = cur.lastrowid
+            if chosen[2] == 'fixed' and float(chosen[3]) > 0:
+                cur = conn.execute('UPDATE cashier_balance SET balance=balance-?, last_updated=? WHERE admin_id=? AND balance>=?', (float(chosen[3]), now, ADMIN_ID, float(chosen[3])))
+                if cur.rowcount != 1:
+                    conn.rollback()
+                    if call_id: bot.answer_callback_query(call_id, '⚠️ رصيد الكاشيرة غير كافٍ لهذه الجائزة.', show_alert=True)
+                    return
+                conn.execute('UPDATE users SET balance=balance+?, last_active=? WHERE user_id=?', (float(chosen[3]),now,uid))
+                conn.execute("INSERT INTO transactions(user_id,type,amount,commission,net_amount,method,status,transaction_date,admin_id,details,receipt_number,external_ref) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (uid,'wheel_prize',float(chosen[3]),0,float(chosen[3]),'wheel','success',now,ADMIN_ID,'جائزة عجلة الحظ',generate_receipt_number('WHE'),''))
+            elif chosen[2] == 'percent' and float(chosen[3]) > 0:
+                conn.execute('INSERT INTO wheel_bonuses(user_id,percent,source_spin_id,created_at) VALUES (?,?,?,?)', (uid,float(chosen[3]),spin_id,now))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    if call_id: bot.answer_callback_query(call_id, '🎉 تم تسجيل جائزتك!', show_alert=False)
+    if chosen[2] == 'percent':
+        text = f"🎉 ربحت **{chosen[1]}**. ستضاف النسبة إلى أول شحن قادم بعد التحقق، وتُخصم من الكاشيرة عند التنفيذ."
+    elif float(chosen[3]) > 0:
+        text = f"🎉 ربحت **{chosen[1]}** وتمت إضافتها فوراً إلى رصيدك في البوت."
+    else:
+        text = '🍀 حظاً أوفر في المرة القادمة!'
+    bot.send_message(chat_id, text, reply_markup=get_main_keyboard(uid), parse_mode='Markdown')
+
+def wheel_admin_menu(uid, chat_id):
+    if not check_permission(uid, 'can_manage_wheel'):
+        bot.send_message(chat_id, '❌ لا تملك صلاحية إدارة عجلة الحظ.')
+        return
+    bot.send_message(chat_id, wheel_status_text(), reply_markup=wheel_admin_keyboard(), parse_mode='Markdown')
+
+def wheel_list_prizes(chat_id):
+    rows = cursor.execute('SELECT id,label,prize_type,value,weight,is_active FROM wheel_prizes ORDER BY id').fetchall()
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    lines = ['🎡 **جوائز العجلة**\n']
+    for rid,label,kind,value,weight,active in rows:
+        state = '🟢' if active else '🔴'
+        lines.append(f'{state} `{rid}` {label} | قيمة {value:g} | وزن {weight:g}')
+        kb.add(types.InlineKeyboardButton(f'{state} {label} (تفعيل/إيقاف)', callback_data=f'wheel_prize_toggle_{rid}'))
+    kb.add(types.InlineKeyboardButton('🔙 رجوع', callback_data='wheel_admin'))
+    bot.send_message(chat_id, '\n'.join(lines), reply_markup=kb, parse_mode='Markdown')
+
+def apply_wheel_bonus_on_charge(uid, amount, admin_id):
+    """يطبق مكافأة النسبة مرة واحدة بعد إتمام أول شحن تالٍ؛ لا ينشئ رصيداً من العدم."""
+    row = cursor.execute('SELECT id,percent FROM wheel_bonuses WHERE user_id=? AND used_at IS NULL ORDER BY id LIMIT 1', (uid,)).fetchone()
+    if not row: return 0.0
+    bonus = round(float(amount) * float(row[1]) / 100.0, 2)
+    if bonus <= 0: return 0.0
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    with db_lock:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            cur = conn.execute('UPDATE cashier_balance SET balance=balance-?,last_updated=? WHERE admin_id=? AND balance>=?', (bonus,now,ADMIN_ID,bonus))
+            if cur.rowcount != 1:
+                conn.rollback(); return 0.0
+            cur = conn.execute('UPDATE wheel_bonuses SET used_at=? WHERE id=? AND used_at IS NULL', (now,row[0]))
+            if cur.rowcount != 1:
+                conn.rollback(); return 0.0
+            conn.execute('UPDATE users SET balance=balance+? WHERE user_id=?', (bonus,uid))
+            conn.execute("INSERT INTO transactions(user_id,type,amount,commission,net_amount,method,status,transaction_date,admin_id,details,receipt_number,external_ref) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (uid,'wheel_bonus',bonus,0,bonus,'wheel','success',now,admin_id,'مكافأة نسبة من عجلة الحظ',generate_receipt_number('BON'),'') )
+            conn.commit()
+        except Exception:
+            conn.rollback(); raise
+    return bonus
+
 class ActionSystem:
     """
     نظام الإجراءات الموحد - يربط الأزرار بالوظائف
@@ -1387,6 +1608,9 @@ class ActionSystem:
             elif action == 'delete_ichancy_account':
                 return ActionSystem.delete_ichancy_account(uid, chat_id)
             
+            # عجلة الحظ
+            elif action == 'show_wheel':
+                return show_wheel(uid, chat_id)
             # إجراءات مالية
             elif action == 'show_charge_methods':
                 return ActionSystem.show_charge_methods(uid, chat_id)
@@ -2356,7 +2580,7 @@ def get_main_keyboard(uid):
         visible.append(text)
     # التوافق مع قواعد بيانات قديمة لم تُملأ أزرارها الافتراضية بعد.
     if not visible:
-        visible = ['⚽ Ichancy ⚽', '💰 الرصيد', '💳 الشحن في البوت',
+        visible = ['⚽ Ichancy ⚽', '🎡 عجلة الحظ', '💰 الرصيد', '💳 الشحن في البوت',
                    '💸 السحب من البوت', '👥 دعوة الأصدقاء', '📞 التواصل مع الدعم',
                    '📜 الشروط والاحكام']
         if uid == ADMIN_ID or is_moderator(uid):
@@ -2716,6 +2940,7 @@ def get_full_admin_keyboard():
         types.InlineKeyboardButton("🔔 إعدادات الإشعارات", callback_data="admin_notifications"),
         types.InlineKeyboardButton("📋 سجل الإجراءات", callback_data="admin_logs"),
         types.InlineKeyboardButton("🎁 نظام الهدايا", callback_data="admin_gifts"),
+        types.InlineKeyboardButton("🎡 عجلة الحظ", callback_data="wheel_admin"),
         types.InlineKeyboardButton("📊 ادارة الإحالات", callback_data="admin_referrals"),
         types.InlineKeyboardButton("🏢 غرفة العمليات", callback_data="admin_operations_room"),
         types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_admin")
@@ -3514,7 +3739,9 @@ def process_withdraw_user_type(message, target):
 def process_withdraw_user_amount(message, target, withdraw_type):
     """الخطوة النهائية لسحب المستخدم"""
     uid = message.from_user.id
-    
+    if withdraw_type == '🌐 سحب من الموقع' and not check_permission(uid, 'can_withdraw_site_to_bot'):
+        bot.send_message(message.chat.id, '❌ لا تملك صلاحية سحب رصيد الموقع إلى رصيد البوت.')
+        return
     try:
         amount = float(message.text)
         
@@ -5206,6 +5433,53 @@ def handle_all_callbacks(call):
         bot.register_next_step_handler(msg, process_syriatel_charge_amount, charge_id)
         return
 
+    # ===== عجلة الحظ =====
+    if data == 'wheel_back':
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, '📋 القائمة الرئيسية:', reply_markup=get_main_keyboard(uid))
+        return
+    if data == 'wheel_spin':
+        spin_wheel(uid, call.message.chat.id, call.id)
+        return
+    if data == 'wheel_admin':
+        if not check_permission(uid, 'can_manage_wheel'):
+            bot.answer_callback_query(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
+        bot.answer_callback_query(call.id)
+        bot.send_message(call.message.chat.id, wheel_status_text(), reply_markup=wheel_admin_keyboard(), parse_mode='Markdown')
+        return
+    if data == 'wheel_toggle':
+        if not check_permission(uid, 'can_manage_wheel'):
+            bot.answer_callback_query(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
+        new_value = '0' if wheel_is_enabled() else '1'
+        update_db_setting('wheel_enabled', new_value, uid)
+        bot.answer_callback_query(call.id, '✅ تم تحديث حالة العجلة')
+        bot.send_message(call.message.chat.id, wheel_status_text(), reply_markup=wheel_admin_keyboard(), parse_mode='Markdown')
+        return
+    if data == 'wheel_prizes':
+        if not check_permission(uid, 'can_manage_wheel'):
+            bot.answer_callback_query(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
+        bot.answer_callback_query(call.id); wheel_list_prizes(call.message.chat.id); return
+    if data == 'wheel_add':
+        if not check_permission(uid, 'can_manage_wheel'):
+            bot.answer_callback_query(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
+        bot.answer_callback_query(call.id)
+        msg = bot.send_message(call.message.chat.id, 'أرسل الجائزة بهذا الشكل:\nاسم الجائزة,النوع fixed أو percent,القيمة,الوزن')
+        bot.register_next_step_handler(msg, process_wheel_add_prize)
+        return
+    if data == 'wheel_threshold':
+        if not check_permission(uid, 'can_manage_wheel'):
+            bot.answer_callback_query(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
+        bot.answer_callback_query(call.id)
+        msg = bot.send_message(call.message.chat.id, 'أرسل حد الشحن اليومي المطلوب للفة (رقم فقط):')
+        bot.register_next_step_handler(msg, process_wheel_threshold)
+        return
+    if data.startswith('wheel_prize_toggle_'):
+        if not check_permission(uid, 'can_manage_wheel'):
+            bot.answer_callback_query(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
+        rid = int(data.rsplit('_',1)[1])
+        cursor.execute('UPDATE wheel_prizes SET is_active=CASE WHEN is_active=1 THEN 0 ELSE 1 END, updated_at=? WHERE id=?', (datetime.now().strftime('%Y-%m-%d %H:%M:%S'),rid)); conn.commit()
+        bot.answer_callback_query(call.id, '✅ تم تحديث الجائزة'); wheel_list_prizes(call.message.chat.id); return
+
     # ===== معالجة أوامر غرفة العمليات =====
     if data.startswith('ops_execute_charge_'):
         if not require_ops_permission(call, 'can_handle_charges'):
@@ -6139,7 +6413,7 @@ def main_router(message):
     
     # ===== فصل الأوامر: إلغاء أي حالة معلقة عند الضغط على الأزرار الرئيسية =====
     MAIN_NAVIGATION_BUTTONS = {
-        '⚽ Ichancy ⚽', '💳 الشحن في البوت', '💸 السحب من البوت',
+        '⚽ Ichancy ⚽', '🎡 عجلة الحظ', '💳 الشحن في البوت', '💸 السحب من البوت',
         '🎁 اهداء رصيد', '🎫 كود هدية', '💰 الرصيد', '👥 دعوة الأصدقاء',
         '📜 الشروط والاحكام', '📞 التواصل مع الدعم', '🔐 إدارة البوت',
         '🔙 العودة للقائمة الرئيسية', '🔙 رجوع',
@@ -6176,6 +6450,9 @@ def main_router(message):
     if text == '⚽ Ichancy ⚽':
         ActionSystem.execute_action(uid, message.chat.id, 'show_ichancy_menu')
     
+    # عجلة الحظ
+    elif text == '🎡 عجلة الحظ':
+        ActionSystem.execute_action(uid, message.chat.id, 'show_wheel')
     # أزرار الشحن والسحب
     elif text == '💳 الشحن في البوت':
         ActionSystem.execute_action(uid, message.chat.id, 'show_charge_methods')
@@ -6628,9 +6905,9 @@ def handle_ops_execute_charge(call, charge_id):
         bot.answer_callback_query(call.id, "⚠️ يتم تنفيذ هذا الطلب من قِبل شخص آخر!", show_alert=True)
         return
     
-    # إخفاء الأزرار عن الجميع وإظهار من ينفذ
+    # لا نحذف اللوحة؛ ننتقل إلى لوحة المرحلة التالية كي لا يعلق المشرف.
     try:
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=charge_processing_keyboard(charge_id))
         bot.send_message(call.message.chat.id,
                          f"⚙️ **{executor_name}** يقوم بتنفيذ طلب الشحن #{charge_id}\n"
                          f"👤 المستخدم: {user_id} | 💵 المبلغ: {amount:,.0f} ل.س",
@@ -6726,8 +7003,12 @@ def process_ops_charge_user(message, charge_id, user_id, original_call):
         if status != 'ok':
             bot.send_message(message.chat.id, "⚠️ لم يتم الشحن: الطلب منجز مسبقاً أو رقم العملية مكرر أو البيانات غير صالحة.", parse_mode='Markdown')
             return
+        bonus = apply_wheel_bonus_on_charge(user_id, amount, executor_uid)
+        if bonus:
+            new_balance += bonus
         try:
-            bot.send_message(user_id, f"✅ **تم شحن رصيدك بنجاح!**\n\n💰 تم إضافة: `{amount:,.0f}` ل.س\n💳 رصيدك الجديد: `{new_balance:,.0f}` ل.س", parse_mode='Markdown')
+            extra = f"\n🎁 مكافأة العجلة: `{bonus:,.0f}` ل.س" if bonus else ''
+            bot.send_message(user_id, f"✅ **تم شحن رصيدك بنجاح!**\n\n💰 تم إضافة: `{amount:,.0f}` ل.س{extra}\n💳 رصيدك الجديد: `{new_balance:,.0f}` ل.س", parse_mode='Markdown')
         except Exception:
             pass
         try:
@@ -6751,13 +7032,18 @@ def handle_ops_done_charge(call, charge_id):
     if 'usdt' in method or 'binance' in method:
         bot.answer_callback_query(call.id, '⚠️ هذا الطلب بالدولار؛ استخدم زر تنفيذ الشحن وأدخل قيمة الرصيد بالليرة السورية بعد التحقق من التحويل.', show_alert=True)
         return
-    new_balance, status = complete_pending_charge(charge_id, uid, float(row[0]))
+    charge_amount = float(row[0])
+    new_balance, status = complete_pending_charge(charge_id, uid, charge_amount)
     if status != 'ok':
         bot.answer_callback_query(call.id, '⚠️ الطلب منجز مسبقاً أو غير صالح.', show_alert=True)
         return
     user_id = cursor.execute("SELECT user_id FROM pending_charges WHERE id=?", (charge_id,)).fetchone()[0]
+    bonus = apply_wheel_bonus_on_charge(user_id, charge_amount, uid)
+    if bonus:
+        new_balance += bonus
     try:
-        bot.send_message(user_id, f'✅ **تم شحن رصيدك بنجاح!**\n💰 المبلغ: `{float(row[0]):,.0f}` ل.س\n💳 رصيدك الجديد: `{new_balance:,.0f}` ل.س', parse_mode='Markdown')
+        extra = f'\n🎁 مكافأة العجلة: `{bonus:,.0f}` ل.س' if bonus else ''
+        bot.send_message(user_id, f'✅ **تم شحن رصيدك بنجاح!**\n💰 المبلغ: `{charge_amount:,.0f}` ل.س{extra}\n💳 رصيدك الجديد: `{new_balance:,.0f}` ل.س', parse_mode='Markdown')
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
     except Exception:
         pass
@@ -6939,6 +7225,33 @@ def handle_ops_syriatel_code_select(call, charge_id, code):
 # =============================================================================
 # دوال معالجة الشحن والسحب المفقودة (إضافة ضرورية)
 # =============================================================================
+
+def process_wheel_threshold(message):
+    uid = message.from_user.id
+    try:
+        value = float(message.text.strip())
+        if not math.isfinite(value) or value < 0: raise ValueError
+        update_db_setting('wheel_daily_charge_threshold', str(value), uid)
+        bot.send_message(message.chat.id, '✅ تم حفظ شرط الشحن.', reply_markup=wheel_admin_keyboard())
+    except ValueError:
+        bot.send_message(message.chat.id, '❌ أدخل رقماً موجباً صحيحاً.')
+
+def process_wheel_add_prize(message):
+    uid = message.from_user.id
+    if not check_permission(uid, 'can_manage_wheel'):
+        bot.send_message(message.chat.id, '❌ لا تملك الصلاحية.'); return
+    try:
+        parts = [x.strip() for x in message.text.split(',')]
+        if len(parts) != 4: raise ValueError
+        label, kind, value, weight = parts
+        if kind not in ('fixed','percent'): raise ValueError
+        value, weight = float(value), float(weight)
+        if value < 0 or weight < 0: raise ValueError
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        cursor.execute('INSERT INTO wheel_prizes(label,prize_type,value,weight,is_active,created_at,updated_at) VALUES (?,?,?,?,?,?,?)', (label,kind,value,weight,1,now,now)); conn.commit()
+        bot.send_message(message.chat.id, '✅ تمت إضافة الجائزة.', reply_markup=wheel_admin_keyboard())
+    except ValueError:
+        bot.send_message(message.chat.id, '❌ الصيغة: الاسم,fixed أو percent,القيمة,الوزن')
 
 def process_syria_charge_receipt(message):
     """استلام رقم عملية الشحن سيرياتل - المرحلة الأولى"""
