@@ -7,7 +7,7 @@
 import telebot
 from telebot import types
 from flask import Flask
-from threading import Thread
+from threading import Thread, RLock
 import os
 import sqlite3
 from datetime import datetime, timedelta
@@ -18,6 +18,7 @@ import hashlib
 import json
 import requests
 import re
+import math
 import logging
 from logging.handlers import RotatingFileHandler
 from collections import defaultdict
@@ -31,16 +32,21 @@ print("✅ تم تحميل البوت - نسخة تشخيص الأزرار")
 # 1. الإعدادات الأساسية والمتغيرات العامة
 # =============================================================================
 
-TOKEN = os.environ.get('TOKEN')
+TOKEN = os.environ.get('TOKEN', '').strip()
 if not TOKEN:
-    print("❌ خطأ: لم يتم العثور على TOKEN في متغيرات البيئة")
-    print("✅ يرجى إضافة TOKEN = قيمة التوكن الخاص بك")
-    TOKEN = input("أدخل التوكن يدوياً للتشغيل المحلي: ").strip()
-
+    raise RuntimeError('TOKEN environment variable is required; refusing interactive token input')
 bot = telebot.TeleBot(TOKEN, parse_mode="Markdown")
-ADMIN_ID = 846938470
-CHANNEL_ID = "@Matar_ichancy"
-CHANNEL_URL = "https://t.me/Matar_ichancy"
+_admin_id_raw = os.environ.get('ADMIN_ID', '').strip()
+if not _admin_id_raw:
+    raise RuntimeError('ADMIN_ID environment variable is required; refusing to use a hard-coded administrator')
+try:
+    ADMIN_ID = int(_admin_id_raw)
+except ValueError as exc:
+    raise RuntimeError('ADMIN_ID must be a numeric Telegram user ID') from exc
+if ADMIN_ID <= 0:
+    raise RuntimeError('ADMIN_ID must be a positive Telegram user ID')
+CHANNEL_ID = os.environ.get('CHANNEL_ID', '@Matar_ichancy')
+CHANNEL_URL = os.environ.get('CHANNEL_URL', 'https://t.me/Matar_ichancy')
 
 # متغيرات عامة للتتبع
 user_states = {}           # حالة المستخدمين (للمحادثات متعددة الخطوات)
@@ -54,6 +60,7 @@ user_section = {}          # القسم الحالي للمستخدم
 SPAM_DELAY = 1.5           # ثانية بين كل رسالة
 RETRY_ATTEMPTS = 3         # عدد محاولات إعادة التنفيذ
 RETRY_DELAY = 3            # دقائق بين كل محاولة
+RETRY_SYSTEM_ENABLED = os.environ.get('ENABLE_RETRY_SYSTEM', '0').strip() == '1'
 LARGE_CHARGE_THRESHOLD = 1000000  # حد الشحن الكبير (سيرياتل)
 LARGE_SHAM_THRESHOLD = 10000      # حد الشحن الكبير (شام كاش - بالعملة الجديدة)
 
@@ -62,8 +69,8 @@ LARGE_SHAM_THRESHOLD = 10000      # حد الشحن الكبير (شام كاش 
 # =============================================================================
 
 # إنشاء مجلد للسجلات إذا لم يكن موجوداً
-if not os.path.exists('logs'):
-    os.makedirs('logs')
+LOG_DIR = os.environ.get('LOG_DIR', 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
 
 # تنسيق موحد للسجلات
 log_format = logging.Formatter(
@@ -74,35 +81,35 @@ log_format = logging.Formatter(
 # مسجل رئيسي
 logger = logging.getLogger('MatarBot')
 logger.setLevel(logging.INFO)
-main_handler = RotatingFileHandler('logs/matar_bot.log', maxBytes=10*1024*1024, backupCount=5)
+main_handler = RotatingFileHandler(os.path.join(LOG_DIR, 'matar_bot.log'), maxBytes=10*1024*1024, backupCount=5)
 main_handler.setFormatter(log_format)
 logger.addHandler(main_handler)
 
 # مسجل للأخطاء الحرجة
 error_logger = logging.getLogger('MatarBot.Error')
 error_logger.setLevel(logging.ERROR)
-error_handler = RotatingFileHandler('logs/errors.log', maxBytes=10*1024*1024, backupCount=5)
+error_handler = RotatingFileHandler(os.path.join(LOG_DIR, 'errors.log'), maxBytes=10*1024*1024, backupCount=5)
 error_handler.setFormatter(log_format)
 error_logger.addHandler(error_handler)
 
 # مسجل للمعاملات المالية
 finance_logger = logging.getLogger('MatarBot.Finance')
 finance_logger.setLevel(logging.INFO)
-finance_handler = RotatingFileHandler('logs/finance.log', maxBytes=10*1024*1024, backupCount=5)
+finance_handler = RotatingFileHandler(os.path.join(LOG_DIR, 'finance.log'), maxBytes=10*1024*1024, backupCount=5)
 finance_handler.setFormatter(log_format)
 finance_logger.addHandler(finance_handler)
 
 # مسجل للإجراءات الإدارية
 admin_logger = logging.getLogger('MatarBot.Admin')
 admin_logger.setLevel(logging.INFO)
-admin_handler = RotatingFileHandler('logs/admin.log', maxBytes=10*1024*1024, backupCount=5)
+admin_handler = RotatingFileHandler(os.path.join(LOG_DIR, 'admin.log'), maxBytes=10*1024*1024, backupCount=5)
 admin_handler.setFormatter(log_format)
 admin_logger.addHandler(admin_handler)
 
 # مسجل لنظام إعادة المحاولة
 retry_logger = logging.getLogger('MatarBot.Retry')
 retry_logger.setLevel(logging.INFO)
-retry_handler = RotatingFileHandler('logs/retry.log', maxBytes=5*1024*1024, backupCount=3)
+retry_handler = RotatingFileHandler(os.path.join(LOG_DIR, 'retry.log'), maxBytes=5*1024*1024, backupCount=3)
 retry_handler.setFormatter(log_format)
 retry_logger.addHandler(retry_handler)
 
@@ -205,7 +212,8 @@ class RetrySystem:
         """
         تنفيذ الطلب (يتم تخصيصها حسب النوع)
         """
-        # سيتم ملؤها لاحقاً حسب نوع الطلب
+        # لا يوجد تنفيذ موثوق لأنواع الطلبات في هذه النسخة؛ لا نعيد محاولة مالية وهمية.
+        retry_logger.warning('RetrySystem disabled: execute_request has no registered handlers')
         return False
 
 # تهيئة نظام إعادة المحاولة
@@ -399,11 +407,15 @@ admin_logger_system = AdminLogger()
 # =============================================================================
 
 def setup_database():
-    """
-    إنشاء جميع جداول قاعدة البيانات مع العلاقات - نظام ثابت ودائم
-    """
-    # استخدام WAL mode لضمان سلامة البيانات حتى عند انقطاع الكهرباء
-    conn = sqlite3.connect("matar_ultimate.db", check_same_thread=False)
+    """إنشاء الجداول دون حذف أو إعادة ضبط بيانات موجودة."""
+    # مسار واحد تستخدمه القاعدة والإحصائيات والنسخ الاحتياطي معاً.
+    global DB_PATH
+    DB_PATH = os.path.abspath(os.environ.get('DATABASE_PATH', 'matar_ultimate.db'))
+    os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
+    global BACKUP_DIR
+    BACKUP_DIR = os.path.abspath(os.environ.get('BACKUP_DIR', os.path.join(os.path.dirname(DB_PATH) or '.', 'backups')))
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
     cursor = conn.cursor()
     
     # تفعيل WAL mode لأقصى درجات الأمان
@@ -709,7 +721,8 @@ def setup_database():
         processed_by INTEGER,
         processed_at TEXT,
         notification_msg_id INTEGER,
-        txn_receipt TEXT
+        txn_receipt TEXT,
+        reserved INTEGER NOT NULL DEFAULT 0
     )""")
     
     # ===== ربط API متعدد =====
@@ -823,12 +836,36 @@ def setup_database():
             (btn[0], btn[1], btn[2], btn[3], btn[4], btn[5], btn[6], btn[7], btn[8], btn[9], btn[10], btn[11], btn[12],
              datetime.now().strftime("%Y-%m-%d %H:%M:%S"), btn[14]))
     
+    # ترحيل آمن لقواعد البيانات القديمة دون حذف بياناتها.
+    withdraw_columns = {row[1] for row in cursor.execute("PRAGMA table_info(pending_withdraws)").fetchall()}
+    if 'reserved' not in withdraw_columns:
+        cursor.execute("ALTER TABLE pending_withdraws ADD COLUMN reserved INTEGER NOT NULL DEFAULT 0")
+
     conn.commit()
     logger.info("✅ تم إنشاء قاعدة البيانات بنجاح مع 30+ جدول")
     return conn, cursor
 
 # تهيئة قاعدة البيانات
 conn, cursor = setup_database()
+
+def create_consistent_backup(created_by=None):
+    """إنشاء نسخة SQLite متسقة عبر backup API داخل مجلد دائم."""
+    import sqlite3 as _sqlite3
+    import os as _os
+    filename = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.db"
+    destination = _os.path.join(BACKUP_DIR, filename)
+    with db_lock:
+        target = _sqlite3.connect(destination)
+        try:
+            conn.backup(target)
+            target.commit()
+        finally:
+            target.close()
+    size = _os.path.getsize(destination)
+    cursor.execute("INSERT INTO backups(backup_name, backup_type, file_path, created_at, created_by, size) VALUES (?,?,?,?,?,?)", (filename, 'manual', destination, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), created_by, size))
+    conn.commit()
+    return destination
+db_lock = RLock()
 
 # =============================================================================
 # 8. الدوال المساعدة الأساسية
@@ -897,40 +934,96 @@ def log_transaction(user_id, type, amount, method, status, commission=0, net_amo
     
     return receipt
 
+def create_pending_withdraw_atomic(user_id, method, account, amount, commission, net_amount,
+                                   currency, details=""):
+    """حجز رصيد المستخدم وإنشاء طلب السحب وسجلّه في معاملة SQLite واحدة."""
+    try:
+        amount = float(amount)
+        commission = float(commission)
+        net_amount = float(net_amount)
+    except (TypeError, ValueError):
+        return None, 'invalid_amount'
+    if not all(math.isfinite(v) for v in (amount, commission, net_amount)) or amount <= 0 or commission < 0 or net_amount < 0 or commission > amount:
+        return None, 'invalid_amount'
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    receipt = generate_receipt_number('WDR')
+    with db_lock:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            debit = conn.execute(
+                "UPDATE users SET balance=balance-?, last_active=? WHERE user_id=? AND balance>=?",
+                (amount, now, user_id, amount))
+            if debit.rowcount != 1:
+                conn.rollback()
+                return None, 'insufficient_balance'
+            conn.execute("""INSERT INTO transactions
+                (user_id,type,amount,commission,net_amount,method,status,transaction_date,admin_id,details,receipt_number,external_ref)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (user_id, 'withdraw_request', amount, commission, net_amount, method, 'pending', now,
+                 None, details, receipt, ''))
+            cur = conn.execute("""INSERT INTO pending_withdraws
+                (user_id,method,account,amount,commission,net_amount,currency,status,created_at,txn_receipt,reserved)
+                VALUES (?,?,?,?,?,?,?,?,?,?,1)""",
+                (user_id, method, account, amount, commission, net_amount, currency, 'pending', now, receipt))
+            withdraw_id = cur.lastrowid
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    finance_logger.info(f'Withdrawal reserved: {receipt} - User: {user_id} - Amount: {amount}')
+    return (withdraw_id, receipt), 'ok'
+
+def _atomic_balance_update(table, column, user_id, amount, add=True):
+    """تعديل رصيد ذري وآمن؛ يمنع السالب ويعمل بعد إعادة التشغيل."""
+    amount = float(amount)
+    if not math.isfinite(amount) or amount <= 0:
+        raise ValueError('amount must be a finite positive number')
+    if table not in ('users', 'cashier_balance') or column not in ('balance', 'site_balance'):
+        raise ValueError('invalid balance target')
+    owner_col = 'user_id' if table == 'users' else 'admin_id'
+    with db_lock:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            # For additions the balance check is bypassed; for deductions it is enforced.
+            if add:
+                sql = f"UPDATE {table} SET {column}={column}+? WHERE {owner_col}=?"
+                cur = conn.execute(sql, (amount, user_id))
+            else:
+                sql = f"UPDATE {table} SET {column}={column}-? WHERE {owner_col}=? AND {column}>=?"
+                cur = conn.execute(sql, (amount, user_id, amount))
+            if cur.rowcount != 1:
+                raise ValueError('user not found or insufficient balance')
+            row = conn.execute(f"SELECT {column} FROM {table} WHERE {owner_col}=?", (user_id,)).fetchone()
+            conn.commit()
+            return float(row[0])
+        except Exception:
+            conn.rollback()
+            raise
+
 def update_user_balance(user_id, amount, add=True):
-    """تحديث رصيد المستخدم"""
-    cursor.execute("SELECT balance FROM users WHERE user_id=?", (user_id,))
-    result = cursor.fetchone()
-    if result:
-        new_balance = result[0] + amount if add else result[0] - amount
-        cursor.execute("UPDATE users SET balance=?, last_active=? WHERE user_id=?",
-                      (new_balance, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user_id))
-        conn.commit()
-        return new_balance
-    return None
+    """تحديث رصيد المستخدم بصورة ذرية ومن دون السماح برصيد سالب."""
+    try:
+        with db_lock:
+            value = _atomic_balance_update('users', 'balance', user_id, amount, add)
+            conn.execute("UPDATE users SET last_active=? WHERE user_id=?", (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), user_id))
+            conn.commit()
+            return value
+    except ValueError:
+        return None
 
 def update_site_balance(user_id, amount, add=True):
-    """تحديث رصيد الموقع للمستخدم"""
-    cursor.execute("SELECT site_balance FROM users WHERE user_id=?", (user_id,))
-    result = cursor.fetchone()
-    if result:
-        new_balance = result[0] + amount if add else result[0] - amount
-        cursor.execute("UPDATE users SET site_balance=? WHERE user_id=?", (new_balance, user_id))
-        conn.commit()
-        return new_balance
-    return None
+    """تحديث رصيد Ichancy الداخلي بصورة ذرية ومن دون رصيد سالب."""
+    try:
+        return _atomic_balance_update('users', 'site_balance', user_id, amount, add)
+    except ValueError:
+        return None
 
 def update_cashier_balance(amount, add=True, admin_id=ADMIN_ID):
-    """تحديث رصيد الكاشيرة"""
-    cursor.execute("SELECT balance FROM cashier_balance WHERE admin_id=?", (admin_id,))
-    result = cursor.fetchone()
-    if result:
-        new_balance = result[0] + amount if add else result[0] - amount
-        cursor.execute("UPDATE cashier_balance SET balance=?, last_updated=? WHERE admin_id=?",
-                      (new_balance, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), admin_id))
-        conn.commit()
-        return new_balance
-    return None
+    """تحديث رصيد الكاشيرة بصورة ذرية ومن دون رصيد سالب."""
+    try:
+        return _atomic_balance_update('cashier_balance', 'balance', admin_id, amount, add)
+    except ValueError:
+        return None
 
 def check_bot_status():
     """التحقق من حالة البوت"""
@@ -1201,6 +1294,69 @@ def log_admin_action(admin_id, action_type, details, target_user=None, amount=No
 # 9. نظام الإجراءات المتقدم (Action System)
 # =============================================================================
 
+def redeem_gift_atomic(user_id, code):
+    """استرداد هدية وتسجيل استخدامها وتحديث الرصيد ضمن قفل واحد."""
+    now = datetime.now()
+    with db_lock:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            gift = conn.execute("SELECT value, limit_count, used_count, expires_at, auto_returned, created_by FROM gifts WHERE code=?", (code,)).fetchone()
+            if not gift:
+                conn.rollback(); return 'not_found', 0
+            value, limit_count, used_count, expires_at, auto_returned, created_by = gift
+            if conn.execute("SELECT 1 FROM gift_usage WHERE user_id=? AND code=?", (user_id, code)).fetchone():
+                conn.rollback(); return 'already_used', 0
+            if limit_count is None or value is None or float(value) <= 0:
+                conn.rollback(); return 'invalid', 0
+            if used_count >= limit_count:
+                conn.rollback(); return 'exhausted', 0
+            if expires_at:
+                try:
+                    expired = now > datetime.strptime(expires_at, '%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    expired = True
+                if expired:
+                    if not auto_returned and created_by:
+                        refund = float(value) * max(0, int(limit_count) - int(used_count))
+                        conn.execute("UPDATE cashier_balance SET balance=balance+?, last_updated=? WHERE admin_id=?", (refund, now.strftime('%Y-%m-%d %H:%M:%S'), created_by))
+                        conn.execute("UPDATE gifts SET auto_returned=1, returned_at=? WHERE code=?", (now.strftime('%Y-%m-%d %H:%M:%S'), code))
+                    conn.commit(); return 'expired', 0
+            cur = conn.execute("UPDATE users SET balance=balance+?, last_active=? WHERE user_id=? AND deleted=0", (float(value), now.strftime('%Y-%m-%d %H:%M:%S'), user_id))
+            if cur.rowcount != 1:
+                conn.rollback(); return 'user_not_found', 0
+            cur = conn.execute("UPDATE gifts SET used_count=used_count+1 WHERE code=? AND used_count < limit_count", (code,))
+            if cur.rowcount != 1:
+                conn.rollback(); return 'exhausted', 0
+            try:
+                conn.execute("INSERT INTO gift_usage(user_id, code, used_at) VALUES (?,?,?)", (user_id, code, now.strftime('%Y-%m-%d %H:%M:%S')))
+            except sqlite3.IntegrityError:
+                conn.rollback(); return 'already_used', 0
+            conn.commit(); return 'ok', float(value)
+        except Exception:
+            conn.rollback(); raise
+
+def transfer_internal_balance(user_id, amount, direction):
+    """تحويل ذري بين رصيد البوت ورصيد Ichancy الداخلي فقط."""
+    amount = float(amount)
+    if not math.isfinite(amount) or amount <= 0 or direction not in ("to_site", "to_bot"):
+        return None
+    with db_lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if direction == "to_site":
+                cur = conn.execute("UPDATE users SET balance=balance-?, site_balance=site_balance+?, last_active=? WHERE user_id=? AND balance>=?", (amount, amount, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), user_id, amount))
+            else:
+                cur = conn.execute("UPDATE users SET site_balance=site_balance-?, balance=balance+?, last_active=? WHERE user_id=? AND site_balance>=?", (amount, amount, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), user_id, amount))
+            if cur.rowcount != 1:
+                conn.rollback()
+                return None
+            row = conn.execute("SELECT balance, site_balance FROM users WHERE user_id=?", (user_id,)).fetchone()
+            conn.commit()
+            return float(row[0]), float(row[1])
+        except Exception:
+            conn.rollback()
+            raise
+
 class ActionSystem:
     """
     نظام الإجراءات الموحد - يربط الأزرار بالوظائف
@@ -1465,78 +1621,26 @@ class ActionSystem:
     
     @staticmethod
     def process_charge_ichancy(message, bot_balance):
-        """معالجة تعبئة حساب Ichancy"""
-        uid = message.from_user.id
-        chat_id = message.chat.id
-        
+        """تعبئة الرصيد الداخلي بمعاملة ذرية؛ لا تدّعي تحويلاً خارجياً."""
+        uid, chat_id = message.from_user.id, message.chat.id
         if message.text == '🔙 العودة للقائمة الرئيسية':
-            bot.send_message(chat_id, "القائمة الرئيسية:", reply_markup=get_main_keyboard(uid))
-            return
-        
+            bot.send_message(chat_id, "القائمة الرئيسية:", reply_markup=get_main_keyboard(uid)); return
         try:
             amount = float(message.text)
-            
             if amount <= 0:
-                bot.send_message(chat_id, "❌ **المبلغ يجب أن يكون أكبر من 0**", parse_mode="Markdown")
-                return
-            
-            if amount > bot_balance:
-                bot.send_message(chat_id, 
-                    f"❌ **رصيدك غير كافٍ!**\n"
-                    f"💰 رصيدك: `{bot_balance:,.0f}` ل.س\n"
-                    f"💵 المبلغ المطلوب: `{amount:,.0f}` ل.س", 
-                    parse_mode="Markdown")
-                return
-            
-            # التحقق من وضع API
-            api_mode = get_db_setting('ichancy_api_mode') or 'off'
-            
-            if api_mode == 'on':
-                # مستقبلاً: اتصال بـ API حقيقي
-                bot.send_message(chat_id, "⏳ جاري الاتصال بالموقع...", parse_mode="Markdown")
-                # سيتم إضافة كود API هنا لاحقاً
-                
-                # محاكاة نجاح
-                time.sleep(1)
-                
-                # تنفيذ التعبئة
-                cursor.execute("UPDATE users SET balance = balance - ?, site_balance = site_balance + ? WHERE user_id=?", 
-                              (amount, amount, uid))
-                conn.commit()
-                
-                cursor.execute("SELECT balance, site_balance FROM users WHERE user_id=?", (uid,))
-                new = cursor.fetchone()
-                
-                bot.send_message(chat_id, 
-                    f"✅ **تمت التعبئة بنجاح! (وضع API)**\n\n"
-                    f"💰 رصيد البوت الجديد: `{new[0]:,.0f}` ل.س\n"
-                    f"🌐 رصيد الموقع الجديد: `{new[1]:,.0f}` NSP", 
-                    parse_mode="Markdown")
-            else:
-                # حالياً: تعبئة وهمية
-                cursor.execute("UPDATE users SET balance = balance - ?, site_balance = site_balance + ? WHERE user_id=?", 
-                              (amount, amount, uid))
-                conn.commit()
-                
-                cursor.execute("SELECT balance, site_balance FROM users WHERE user_id=?", (uid,))
-                new = cursor.fetchone()
-                
-                bot.send_message(chat_id, 
-                    f"✅ **تمت التعبئة بنجاح!**\n\n"
-                    f"💰 رصيد البوت الجديد: `{new[0]:,.0f}` ل.س\n"
-                    f"🌐 رصيد الموقع الجديد: `{new[1]:,.0f}` NSP", 
-                    parse_mode="Markdown")
-            
-            # تسجيل المعاملة
-            receipt = log_transaction(uid, "ichancy_charge", amount, "internal", "success")
-            finance_logger.info(f"تعبئة Ichancy: {uid} - {amount} - {receipt}")
-            
-            # العودة لعرض معلومات الحساب
+                raise ValueError
+            if get_db_setting('ichancy_api_mode') == 'on':
+                bot.send_message(chat_id, "⚠️ تكامل Ichancy الآلي غير مهيأ فعلياً؛ لم يتم تنفيذ أي خصم.", parse_mode='Markdown'); return
+            balances = transfer_internal_balance(uid, amount, 'to_site')
+            if balances is None:
+                bot.send_message(chat_id, "❌ رصيد البوت غير كافٍ أو الحساب غير موجود.", parse_mode='Markdown'); return
+            receipt = log_transaction(uid, 'ichancy_charge', amount, 'internal', 'success')
+            finance_logger.info(f'تعبئة Ichancy داخلية: {uid} - {amount} - {receipt}')
+            bot.send_message(chat_id, f"✅ **تم تسجيل التعبئة الداخلية يدوياً**\n\n💰 رصيد البوت: `{balances[0]:,.0f}` ل.س\n🌐 رصيد Ichancy الداخلي: `{balances[1]:,.0f}`", parse_mode='Markdown')
             ActionSystem.show_ichancy_account(uid, chat_id)
-            
-        except ValueError:
-            bot.send_message(chat_id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
-    
+        except (ValueError, TypeError):
+            bot.send_message(chat_id, "❌ **الرجاء إدخال مبلغ موجب صحيح**", parse_mode='Markdown')
+
     @staticmethod
     def withdraw_ichancy(uid, chat_id):
         """بدء عملية سحب من حساب Ichancy (من الموقع إلى البوت)"""
@@ -1552,75 +1656,26 @@ class ActionSystem:
     
     @staticmethod
     def process_withdraw_ichancy(message, site_balance):
-        """معالجة سحب من حساب Ichancy"""
-        uid = message.from_user.id
-        chat_id = message.chat.id
-        
+        """سحب من الرصيد الداخلي بمعاملة ذرية؛ لا يدّعي تحويلاً خارجياً."""
+        uid, chat_id = message.from_user.id, message.chat.id
         if message.text == '🔙 العودة للقائمة الرئيسية':
-            bot.send_message(chat_id, "القائمة الرئيسية:", reply_markup=get_main_keyboard(uid))
-            return
-        
+            bot.send_message(chat_id, "القائمة الرئيسية:", reply_markup=get_main_keyboard(uid)); return
         try:
             amount = float(message.text)
-            
             if amount <= 0:
-                bot.send_message(chat_id, "❌ **المبلغ يجب أن يكون أكبر من 0**", parse_mode="Markdown")
-                return
-            
-            if amount > site_balance:
-                bot.send_message(chat_id,
-                    f"❌ **رصيد الموقع غير كافٍ!**\n"
-                    f"🌐 رصيد الموقع: `{site_balance:,.0f}` NSP\n"
-                    f"💵 المبلغ المطلوب: `{amount:,.0f}` NSP",
-                    parse_mode="Markdown")
-                return
-            
-            # التحقق من وضع API
-            api_mode = get_db_setting('ichancy_api_mode') or 'off'
-            
-            if api_mode == 'on':
-                # مستقبلاً: اتصال بـ API حقيقي
-                bot.send_message(chat_id, "⏳ جاري الاتصال بالموقع...", parse_mode="Markdown")
-                time.sleep(1)
-                
-                # تنفيذ السحب
-                cursor.execute("UPDATE users SET site_balance = site_balance - ?, balance = balance + ? WHERE user_id=?", 
-                              (amount, amount, uid))
-                conn.commit()
-                
-                cursor.execute("SELECT balance, site_balance FROM users WHERE user_id=?", (uid,))
-                new = cursor.fetchone()
-                
-                bot.send_message(chat_id,
-                    f"✅ **تم السحب بنجاح! (وضع API)**\n\n"
-                    f"💰 رصيد البوت الجديد: `{new[0]:,.0f}` ل.س\n"
-                    f"🌐 رصيد الموقع الجديد: `{new[1]:,.0f}` NSP",
-                    parse_mode="Markdown")
-            else:
-                # حالياً: سحب وهمي
-                cursor.execute("UPDATE users SET site_balance = site_balance - ?, balance = balance + ? WHERE user_id=?", 
-                              (amount, amount, uid))
-                conn.commit()
-                
-                cursor.execute("SELECT balance, site_balance FROM users WHERE user_id=?", (uid,))
-                new = cursor.fetchone()
-                
-                bot.send_message(chat_id,
-                    f"✅ **تم السحب بنجاح!**\n\n"
-                    f"💰 رصيد البوت الجديد: `{new[0]:,.0f}` ل.س\n"
-                    f"🌐 رصيد الموقع الجديد: `{new[1]:,.0f}` NSP",
-                    parse_mode="Markdown")
-            
-            # تسجيل المعاملة
-            receipt = log_transaction(uid, "ichancy_withdraw", amount, "internal", "success")
-            finance_logger.info(f"سحب من Ichancy: {uid} - {amount} - {receipt}")
-            
-            # العودة لعرض معلومات الحساب
+                raise ValueError
+            if get_db_setting('ichancy_api_mode') == 'on':
+                bot.send_message(chat_id, "⚠️ تكامل Ichancy الآلي غير مهيأ فعلياً؛ لم يتم تنفيذ أي إضافة.", parse_mode='Markdown'); return
+            balances = transfer_internal_balance(uid, amount, 'to_bot')
+            if balances is None:
+                bot.send_message(chat_id, "❌ رصيد Ichancy الداخلي غير كافٍ أو الحساب غير موجود.", parse_mode='Markdown'); return
+            receipt = log_transaction(uid, 'ichancy_withdraw', amount, 'internal', 'success')
+            finance_logger.info(f'سحب Ichancy داخلي: {uid} - {amount} - {receipt}')
+            bot.send_message(chat_id, f"✅ **تم تسجيل السحب الداخلي يدوياً**\n\n💰 رصيد البوت: `{balances[0]:,.0f}` ل.س\n🌐 رصيد Ichancy الداخلي: `{balances[1]:,.0f}`", parse_mode='Markdown')
             ActionSystem.show_ichancy_account(uid, chat_id)
-            
-        except ValueError:
-            bot.send_message(chat_id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
-    
+        except (ValueError, TypeError):
+            bot.send_message(chat_id, "❌ **الرجاء إدخال مبلغ موجب صحيح**", parse_mode='Markdown')
+
     @staticmethod
     def delete_ichancy_account(uid, chat_id):
         """بدء عملية حذف حساب Ichancy"""
@@ -1718,52 +1773,33 @@ class ActionSystem:
     
     @staticmethod
     def process_gift_amount(message, target):
-        """معالجة مبلغ الإهداء"""
-        uid = message.from_user.id
-        chat_id = message.chat.id
-        
+        """إهداء ذري يمنع خصم المرسل دون إضافة المستلم."""
+        uid, chat_id = message.from_user.id, message.chat.id
         if message.text == '🔙 العودة للقائمة الرئيسية':
-            bot.send_message(chat_id, "القائمة الرئيسية:", reply_markup=get_main_keyboard(uid))
-            return
-        
+            bot.send_message(chat_id, "القائمة الرئيسية:", reply_markup=get_main_keyboard(uid)); return
         try:
             amount = float(message.text)
-            min_gift = float(get_db_setting('min_gift_amount') or 10)
-            max_gift = float(get_db_setting('max_gift_amount') or 1000000)
-            
-            if amount < min_gift:
-                bot.send_message(chat_id, f"❌ **الحد الأدنى للإهداء هو {min_gift:,.0f} ل.س**", parse_mode="Markdown")
-                return
-            
-            if amount > max_gift:
-                bot.send_message(chat_id, f"❌ **الحد الأقصى للإهداء هو {max_gift:,.0f} ل.س**", parse_mode="Markdown")
-                return
-            
-            cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
-            sender_bal = cursor.fetchone()
-            
-            if not sender_bal or sender_bal[0] < amount:
-                bot.send_message(chat_id, f"❌ **رصيدك غير كافٍ!**\n💰 رصيدك: `{sender_bal[0] if sender_bal else 0:,.0f}` ل.س", parse_mode="Markdown")
-                return
-            
-            # تنفيذ الإهداء
-            update_user_balance(uid, amount, add=False)
-            update_user_balance(target, amount, add=True)
-            
-            cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
-            new_sender = cursor.fetchone()[0]
-            
-            bot.send_message(chat_id, f"✅ **تم إرسال {amount:,.0f} ل.س إلى {target}**\n💰 رصيدك الجديد: `{new_sender:,.0f}` ل.س", parse_mode="Markdown")
-            
-            sender_name = get_user_custom_name(uid) or f"المستخدم {uid}"
-            bot.send_message(target, f"🎁 **أهداك {sender_name} {amount:,.0f} ل.س**", parse_mode="Markdown")
-            
-            receipt = log_transaction(uid, "gift", amount, "internal", "success", details=f"To: {target}")
-            finance_logger.info(f"إهداء: {uid} -> {target} - {amount} - {receipt}")
-            
-        except ValueError:
-            bot.send_message(chat_id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
-    
+            if amount <= 0: raise ValueError
+            with db_lock:
+                conn.execute('BEGIN IMMEDIATE')
+                try:
+                    cur = conn.execute("UPDATE users SET balance=balance-? WHERE user_id=? AND deleted=0 AND balance>=?", (amount, uid, amount))
+                    if cur.rowcount != 1:
+                        conn.rollback(); bot.send_message(chat_id, "❌ رصيدك غير كافٍ.", parse_mode='Markdown'); return
+                    cur = conn.execute("UPDATE users SET balance=balance+? WHERE user_id=? AND deleted=0", (amount, target))
+                    if cur.rowcount != 1:
+                        conn.rollback(); bot.send_message(chat_id, "❌ المستخدم المستهدف غير موجود.", parse_mode='Markdown'); return
+                    conn.commit()
+                except Exception:
+                    conn.rollback(); raise
+            receipt = log_transaction(uid, 'gift', amount, 'internal', 'success', details=f'To: {target}')
+            finance_logger.info(f'إهداء ذري: {uid} -> {target} - {amount} - {receipt}')
+            bot.send_message(chat_id, f"✅ **تم إرسال {amount:,.0f} ل.س إلى {target}**", parse_mode='Markdown')
+            try: bot.send_message(target, f"🎁 **تم إهداؤك {amount:,.0f} ل.س**", parse_mode='Markdown')
+            except Exception as exc: error_logger.warning(f'تعذر إشعار مستلم الهدية {target}: {exc}')
+        except (ValueError, TypeError):
+            bot.send_message(chat_id, "❌ **الرجاء إدخال مبلغ موجب صحيح**", parse_mode='Markdown')
+
     @staticmethod
     def redeem_gift(uid, chat_id):
         """بدء عملية استخدام كود هدية"""
@@ -1772,71 +1808,26 @@ class ActionSystem:
     
     @staticmethod
     def process_redeem_gift(message):
-        """معالجة استخدام كود هدية مع التحقق من الصلاحية"""
-        uid = message.from_user.id
-        chat_id = message.chat.id
-        code = message.text.strip().upper()
-        
+        """استرداد كود هدية بمعاملة ذرية تمنع الاستخدام المكرر والرصيد الوهمي."""
+        uid, chat_id = message.from_user.id, message.chat.id
+        code = (message.text or '').strip().upper()
         if code == '🔙 العودة للقائمة الرئيسية':
-            bot.send_message(chat_id, "القائمة الرئيسية:", reply_markup=get_main_keyboard(uid))
-            return
-        
-        cursor.execute("SELECT value, limit_count, used_count, type, expires_at, auto_returned FROM gifts WHERE code=?", (code,))
-        gift = cursor.fetchone()
-        
-        if not gift:
-            bot.send_message(chat_id, "❌ **الكود غير صحيح**", parse_mode="Markdown")
-            return
-        
-        value, limit_count, used_count, gtype, expires_at, auto_returned = gift
-        
-        # التحقق من الصلاحية
-        if expires_at:
-            try:
-                expires = datetime.strptime(expires_at, "%Y-%m-%d %H:%M:%S")
-                if datetime.now() > expires:
-                    # التحقق مما إذا كان قد تم إرجاع الرصيد تلقائياً
-                    if not auto_returned:
-                        # إرجاع الرصيد للكاشيرة
-                        cursor.execute("SELECT created_by FROM gifts WHERE code=?", (code,))
-                        creator = cursor.fetchone()
-                        if creator:
-                            update_cashier_balance(value * (limit_count - used_count), add=True, admin_id=creator[0])
-                            cursor.execute("UPDATE gifts SET auto_returned=1, returned_at=? WHERE code=?", 
-                                          (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), code))
-                            conn.commit()
-                            notifier.send_to_admin("💰 إرجاع رصيد كود منتهي", 
-                                                  f"الكود {code} انتهت صلاحيته وتم إرجاع {value * (limit_count - used_count)} ل.س للكاشيرة")
-                    
-                    bot.send_message(chat_id, "❌ **هذا الكود منتهي الصلاحية**", parse_mode="Markdown")
-                    return
-            except:
-                pass
-        
-        # التحقق من الاستخدام المسبق
-        cursor.execute("SELECT * FROM gift_usage WHERE user_id=? AND code=?", (uid, code))
-        if cursor.fetchone():
-            bot.send_message(chat_id, "❌ **لقد استخدمت هذا الكود من قبل**", parse_mode="Markdown")
-            return
-        
-        # التحقق من العدد المتبقي
-        if used_count >= limit_count:
-            bot.send_message(chat_id, "❌ **لقد استُنفد عدد استخدامات هذا الكود**", parse_mode="Markdown")
-            return
-        
-        # تنفيذ الإهداء
-        amount = value
-        update_user_balance(uid, amount, add=True)
-        
-        cursor.execute("UPDATE gifts SET used_count = used_count + 1 WHERE code=?", (code,))
-        cursor.execute("INSERT INTO gift_usage (user_id, code, used_at) VALUES (?,?,?)", 
-                      (uid, code, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        conn.commit()
-        
-        bot.send_message(chat_id, f"🎉 **تهانينا! تم شحن {amount:,.0f} ل.س إلى رصيدك**", parse_mode="Markdown")
-        log_transaction(uid, "gift_redeem", amount, "gift", "success")
-        finance_logger.info(f"استخدام كود هدية: {uid} - {code} - {amount}")
-    
+            bot.send_message(chat_id, "القائمة الرئيسية:", reply_markup=get_main_keyboard(uid)); return
+        status, amount = redeem_gift_atomic(uid, code)
+        messages = {
+            'not_found': '❌ **الكود غير صحيح**',
+            'already_used': '❌ **لقد استخدمت هذا الكود من قبل**',
+            'exhausted': '❌ **لقد استُنفد عدد استخدامات هذا الكود**',
+            'expired': '❌ **هذا الكود منتهي الصلاحية**',
+            'user_not_found': '❌ **حساب المستخدم غير موجود**',
+            'invalid': '❌ **بيانات كود الهدية غير صالحة**',
+        }
+        if status != 'ok':
+            bot.send_message(chat_id, messages.get(status, '❌ تعذر استخدام الكود'), parse_mode='Markdown'); return
+        bot.send_message(chat_id, f"🎉 **تهانينا! تم شحن {amount:,.0f} ل.س إلى رصيدك**", parse_mode='Markdown')
+        log_transaction(uid, 'gift_redeem', amount, 'gift', 'success')
+        finance_logger.info(f'استخدام كود هدية: {uid} - {code}')
+
     @staticmethod
     def show_transactions(uid, chat_id):
         """عرض آخر معاملات المستخدم"""
@@ -1953,7 +1944,7 @@ class ActionSystem:
             text += f"\n   👥 إجمالي الإحالات: {r[2]}"
             text += f"\n   💰 أرباح الدورة: {r[3]:,.0f} ل.س"
             text += f"\n   💵 إجمالي الأرباح: {r[4]:,.0f} ل.س"
-            text += f"\n   [💰 إرسال مبلغ]\n"
+            text += "\n   [💰 إرسال مبلغ]\n"
         
         bot.send_message(chat_id, text, parse_mode="Markdown")
     
@@ -2329,9 +2320,12 @@ class ActionSystem:
 # =============================================================================
 
 def send_copyable_text(chat_id, text, caption=""):
-    """إرسال نص قابل للنسخ - النسخ يتم بالضغط مرة واحدة على النص"""
-    # النص داخل backticks يُنسخ بضغطة واحدة في تيليغرام
-    pass
+    """إرسال قيمة قابلة للنسخ داخل كتلة code آمنة."""
+    import html
+    safe_text = html.escape(str(text))
+    safe_caption = html.escape(str(caption)) if caption else ""
+    body = f"{safe_caption}\n\n<code>{safe_text}</code>" if safe_caption else f"<code>{safe_text}</code>"
+    return bot.send_message(chat_id, body, parse_mode="HTML")
 
 def _send_copyable_text_OLD(chat_id, text, caption=""):
     """إرسال نص قابل للنسخ بنقرة واحدة"""
@@ -2346,42 +2340,30 @@ def _send_copyable_text_OLD(chat_id, text, caption=""):
 # =============================================================================
 
 def get_main_keyboard(uid):
-    """
-    بناء القائمة الرئيسية حسب الطلب
-    """
+    """بناء القائمة الرئيسية من قاعدة البيانات مع احترام الصلاحيات."""
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    
-    # الصف الأول - Ichancy منفرد
-    markup.row(types.KeyboardButton('⚽ Ichancy ⚽'))
-    
-    # الصف الثاني
-    markup.row(
-        types.KeyboardButton('💳 الشحن في البوت'),
-        types.KeyboardButton('💸 السحب من البوت')
-    )
-    
-    # الصف الثالث
-    markup.row(
-        types.KeyboardButton('🎁 اهداء رصيد'),
-        types.KeyboardButton('🎫 كود هدية')
-    )
-    
-    # الصف الرابع
-    markup.row(
-        types.KeyboardButton('💰 الرصيد'),
-        types.KeyboardButton('👥 دعوة الأصدقاء')
-    )
-    
-    # الصف الخامس
-    markup.row(
-        types.KeyboardButton('📜 الشروط والاحكام'),
-        types.KeyboardButton('📞 التواصل مع الدعم')
-    )
-    
-    # الصف السادس - إدارة البوت للمالك والمشرفين
-    if uid == ADMIN_ID or is_moderator(uid):
-        markup.row(types.KeyboardButton('🔐 إدارة البوت'))
-    
+    cursor.execute("""SELECT button_text, requires_admin, requires_moderator
+                      FROM dynamic_buttons
+                      WHERE parent_button='main' AND level=1 AND is_active=1
+                      ORDER BY sort_order ASC, id ASC""")
+    rows = cursor.fetchall()
+    visible = []
+    for text, requires_admin, requires_moderator in rows:
+        if requires_admin and uid != ADMIN_ID:
+            continue
+        if requires_moderator and uid != ADMIN_ID and not is_moderator(uid):
+            continue
+        visible.append(text)
+    # التوافق مع قواعد بيانات قديمة لم تُملأ أزرارها الافتراضية بعد.
+    if not visible:
+        visible = ['⚽ Ichancy ⚽', '💰 الرصيد', '💳 الشحن في البوت',
+                   '💸 السحب من البوت', '👥 دعوة الأصدقاء', '📞 التواصل مع الدعم',
+                   '📜 الشروط والاحكام']
+        if uid == ADMIN_ID or is_moderator(uid):
+            visible.append('🔐 إدارة البوت')
+    for i in range(0, len(visible), 2):
+        row = [types.KeyboardButton(x) for x in visible[i:i + 2]]
+        markup.row(*row)
     return markup
 
 def get_dynamic_keyboard(parent='main', level=1):
@@ -2720,7 +2702,6 @@ def get_full_admin_keyboard():
     keyboard = types.InlineKeyboardMarkup(row_width=2)
     
     room_id = get_db_setting('operations_room_id')
-    room_status = f"✅ غرفة عمليات نشطة" if room_id else "⚠️ لا توجد غرفة عمليات"
     
     keyboard.add(
         types.InlineKeyboardButton("📝 إدارة الأزرار", callback_data="admin_buttons"),
@@ -4273,7 +4254,7 @@ def handle_start(message):
         markup.add(types.InlineKeyboardButton("📢 اشترك في القناة", url=CHANNEL_URL))
         markup.add(types.InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_sub_after_start"))
         
-        welcome_text = f"""
+        welcome_text = """
 🎯 **أهلاً وسهلاً بك في بوت Matar** 🌧️
 
 البوت الرسمي لموقع Ichancy ✅
@@ -4460,7 +4441,7 @@ def handle_all_callbacks(call):
         binance_address = get_db_setting('binance_address') or 'غير محدد'
         binance_id = get_db_setting('binance_pay_id') or ''
         
-        msg_text = f"💱 **طريقة الشحن عبر Binance:**\n\n"
+        msg_text = "💱 **طريقة الشحن عبر Binance:**\n\n"
         if binance_id:
             msg_text += (f"🆔 **Binance Pay ID:**\n"
                          f"*(اضغط للنسخ)*\n`{binance_id}`\n\n")
@@ -5227,46 +5208,64 @@ def handle_all_callbacks(call):
 
     # ===== معالجة أوامر غرفة العمليات =====
     if data.startswith('ops_execute_charge_'):
+        if not require_ops_permission(call, 'can_handle_charges'):
+            return
         charge_id = int(data.split('_')[-1])
         handle_ops_execute_charge(call, charge_id)
         return
     
     if data.startswith('ops_cancel_charge_'):
+        if not require_ops_permission(call, 'can_handle_charges'):
+            return
         charge_id = int(data.split('_')[-1])
         handle_ops_cancel_charge(call, charge_id)
         return
     
     if data.startswith('ops_set_amount_charge_'):
+        if not require_ops_permission(call, 'can_handle_charges'):
+            return
         charge_id = int(data.split('_')[-1])
         handle_ops_set_amount_charge(call, charge_id)
         return
     
     if data.startswith('ops_done_charge_'):
+        if not require_ops_permission(call, 'can_handle_charges'):
+            return
         charge_id = int(data.split('_')[-1])
         handle_ops_done_charge(call, charge_id)
         return
     
     if data.startswith('ops_execute_withdraw_'):
+        if not require_ops_permission(call, 'can_handle_withdraws'):
+            return
         withdraw_id = int(data.split('_')[-1])
         handle_ops_execute_withdraw(call, withdraw_id)
         return
     
     if data.startswith('ops_cancel_withdraw_'):
+        if not require_ops_permission(call, 'can_handle_withdraws'):
+            return
         withdraw_id = int(data.split('_')[-1])
         handle_ops_cancel_withdraw(call, withdraw_id)
         return
     
     if data.startswith('ops_send_money_'):
+        if not require_ops_permission(call, 'can_handle_withdraws'):
+            return
         withdraw_id = int(data.split('_')[-1])
         handle_ops_send_money(call, withdraw_id)
         return
     
     if data.startswith('ops_done_withdraw_'):
+        if not require_ops_permission(call, 'can_handle_withdraws'):
+            return
         withdraw_id = int(data.split('_')[-1])
         handle_ops_done_withdraw(call, withdraw_id)
         return
     
     if data.startswith('ops_syriatel_code_'):
+        if not require_ops_permission(call, 'can_handle_charges'):
+            return
         # اختيار كود سيرياتل من قائمة بعد إرسال رقم العملية
         parts = data.split('_')
         charge_id = int(parts[-1])
@@ -5335,7 +5334,7 @@ def handle_all_callbacks(call):
         pname = provider_names.get(provider, provider)
         bot.edit_message_text(f"➕ **إضافة API جديد لـ {pname}**\n\n"
                               f"أرسل البيانات بالتنسيق:\n`اسم,مفتاح_API,رابط_Endpoint`\n\n"
-                              f"مثال: `SyrCash_Main,sk_live_xxx,https://api.syriatel.cash/v1`",
+                              f"أدخل اسم الاتصال والمفتاح وEndpoint الرسمي الموثق من مزود الخدمة",
                               call.message.chat.id, call.message.message_id, parse_mode="Markdown")
         bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_add_api_config, provider)
         return
@@ -5452,13 +5451,9 @@ def handle_all_callbacks(call):
             bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
             return
         try:
-            import shutil
-            backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-            shutil.copy2('matar_ultimate.db', backup_name)
-            cursor.execute("INSERT INTO backups(backup_name, backup_type, file_path, created_at, created_by) VALUES (?,?,?,?,?)",
-                          (backup_name, 'manual', backup_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), uid))
-            conn.commit()
-            with open(backup_name, 'rb') as f:
+            backup_path = create_consistent_backup(uid)
+            backup_name = os.path.basename(backup_path)
+            with open(backup_path, 'rb') as f:
                 bot.send_document(call.message.chat.id, f, caption=f"💾 نسخة احتياطية: {backup_name}")
             bot.answer_callback_query(call.id, "✅ تم إنشاء النسخة الاحتياطية!", show_alert=False)
         except Exception as e:
@@ -5796,7 +5791,7 @@ def handle_all_callbacks(call):
         auto_verify = get_db_setting('auto_verify_charges') or '1'
         usdt_status = get_db_setting('usdt_status') or 'متوقف'
         binance_status = get_db_setting('binance_status') or 'متوقف'
-        text = f"""💳 **حالة خدمات الدفع:**
+        text = """💳 **حالة خدمات الدفع:**
 
 📱 **سيرياتل API:** {'🟢 مفعل' if syriatel_api == '1' else '🔴 معطل'}
 🏦 **شام API:** {'🟢 مفعل' if sham_api == '1' else '🔴 معطل'}
@@ -5822,11 +5817,10 @@ def handle_all_callbacks(call):
         return
 
     if data == 'backup_now':
-        import shutil
-        backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
         try:
-            shutil.copy2('matar_ultimate.db', backup_name)
-            bot.send_document(call.message.chat.id, open(backup_name, 'rb'),
+            backup_path = create_consistent_backup(uid)
+            backup_name = os.path.basename(backup_path)
+            bot.send_document(call.message.chat.id, open(backup_path, 'rb'),
                               caption=f"✅ **نسخة احتياطية:**\n📁 `{backup_name}`",
                               parse_mode="Markdown")
         except Exception as e:
@@ -5835,7 +5829,7 @@ def handle_all_callbacks(call):
 
     if data == 'export_db':
         try:
-            with open('matar_ultimate.db', 'rb') as f:
+            with open(DB_PATH, 'rb') as f:
                 bot.send_document(call.message.chat.id, f,
                                   caption="📤 **قاعدة البيانات الحالية**",
                                   parse_mode="Markdown")
@@ -5954,7 +5948,7 @@ def process_gift_value_step(message):
         return
     try:
         value = float(message.text.strip())
-        if value <= 0:
+        if not math.isfinite(value) or value <= 0:
             bot.send_message(message.chat.id, "❌ **القيمة يجب أن تكون أكبر من 0**", parse_mode="Markdown")
             return
         user_states[uid]['gift_value'] = value
@@ -5989,8 +5983,12 @@ def process_cancel_gift_code(message):
     if not gift:
         bot.send_message(message.chat.id, "❌ **الكود غير موجود**", parse_mode="Markdown")
         return
-    remaining = (gift[2] - gift[1]) * (gift[2] or 0)
-    cursor.execute("UPDATE gifts SET limit_count=used_count, auto_returned=1 WHERE code=?", (code,))
+    remaining = max(0, gift[3] - gift[2]) * float(gift[1] or 0)
+    if remaining > 0 and not gift[4]:
+        if update_cashier_balance(remaining, add=True, admin_id=uid) is None:
+            bot.send_message(message.chat.id, "❌ تعذر إعادة رصيد الكود؛ لم يتم إلغاؤه.", parse_mode="Markdown")
+            return
+    cursor.execute("UPDATE gifts SET limit_count=used_count, auto_returned=1, returned_at=? WHERE code=? AND auto_returned=0", (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), code))
     conn.commit()
     bot.send_message(message.chat.id, f"✅ **تم إلغاء الكود:** `{code}`", parse_mode="Markdown")
 
@@ -6091,37 +6089,14 @@ def process_connect_syriatel_api(message):
     uid = message.from_user.id
     number = message.text.strip()
     
-    # حفظ معلومات الاتصال
-    cursor.execute("""INSERT OR REPLACE INTO api_connections 
-        (name, api_key, endpoint, is_active, created_at, updated_at)
-        VALUES (?,?,?,?,?,?)""",
-        ('syriatel', number, 'https://api.syriatel.cash', 1,
-         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-         datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
-    
-    update_db_setting('syriatel_api_enabled', '1', uid)
-    
-    bot.send_message(message.chat.id, f"✅ **تم ربط سيرياتل API بنجاح**\n📱 الرقم: `{number}`", parse_mode="Markdown")
-    log_admin_action(uid, 'connect_api', f'تم ربط سيرياتل API: {number}')
+    bot.send_message(message.chat.id, "⚠️ لم يتم تفعيل API سيرياتل: لا توجد وثائق أو Endpoint موثوق في الإعدادات. أرسل إعداداً موثقاً من مزود الخدمة أولاً.", parse_mode="Markdown")
+    log_admin_action(uid, 'connect_api_rejected', 'محاولة تفعيل API سيرياتل دون وثائق/Endpoint موثوق')
 
 def process_connect_sham_api(message):
-    """ربط شام API"""
+    """رفض تفعيل API شام دون وثائق وEndpoint حقيقي قابل للاختبار."""
     uid = message.from_user.id
-    address = message.text.strip()
-    
-    cursor.execute("""INSERT OR REPLACE INTO api_connections 
-        (name, api_key, endpoint, is_active, created_at, updated_at)
-        VALUES (?,?,?,?,?,?)""",
-        ('sham', address, 'https://api.sham.cash', 1,
-         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-         datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
-    
-    update_db_setting('sham_api_enabled', '1', uid)
-    
-    bot.send_message(message.chat.id, f"✅ **تم ربط شام API بنجاح**\n🏦 العنوان: `{address}`", parse_mode="Markdown")
-    log_admin_action(uid, 'connect_api', f'تم ربط شام API: {address}')
+    bot.send_message(message.chat.id, "⚠️ لم يتم تفعيل API شام: لا توجد وثائق أو Endpoint موثوق في الإعدادات. أرسل إعداداً موثقاً من مزود الخدمة أولاً.", parse_mode="Markdown")
+    log_admin_action(uid, 'connect_api_rejected', 'محاولة تفعيل API شام دون وثائق/Endpoint موثوق')
 
 # =============================================================================
 # 21. الراوتر الرئيسي للرسائل
@@ -6308,7 +6283,7 @@ def main_router(message):
             pend_w = cursor.fetchone()[0]
             
             import os
-            db_size = os.path.getsize('matar_ultimate.db') / 1024
+            db_size = os.path.getsize(DB_PATH) / 1024
             
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("💾 نسخة احتياطية الآن", callback_data="manual_backup"))
@@ -6496,15 +6471,113 @@ def main_router(message):
 # دوال معالجة غرفة العمليات
 # =============================================================================
 
+def require_ops_permission(call, permission):
+    """تحقق مركزي لكل callback مالي صادر من غرفة العمليات."""
+    uid = call.from_user.id
+    if uid == ADMIN_ID or check_permission(uid, permission):
+        return True
+    bot.answer_callback_query(call.id, "❌ لا تملك صلاحية تنفيذ هذا الإجراء.", show_alert=True)
+    admin_logger.warning(f'رفض callback مالي: uid={uid}, permission={permission}, data={call.data}')
+    return False
+
+def complete_pending_charge(charge_id, admin_id, amount=None):
+    """إيداع شحن واحد فقط، مع قفل قاعدة البيانات والتحقق من رقم العملية."""
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    with db_lock:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            row = conn.execute("SELECT user_id, amount, receipt_number, status FROM pending_charges WHERE id=?", (charge_id,)).fetchone()
+            if not row or row[3] == 'completed':
+                conn.rollback()
+                return None, 'already_completed'
+            user_id, stored_amount, receipt, status = row
+            value = float(amount if amount is not None else stored_amount or 0)
+            if not math.isfinite(value) or value <= 0:
+                conn.rollback()
+                return None, 'invalid_amount'
+            if conn.execute("SELECT 1 FROM processed_transactions WHERE receipt_number=?", (receipt,)).fetchone():
+                conn.rollback()
+                return None, 'duplicate_receipt'
+            cur = conn.execute("UPDATE users SET balance=balance+?, last_active=? WHERE user_id=?", (value, now, user_id))
+            if cur.rowcount != 1:
+                conn.rollback()
+                return None, 'user_not_found'
+            cur = conn.execute("UPDATE pending_charges SET status='completed', amount=?, processed_by=?, processed_at=? WHERE id=? AND status IN ('pending','processing')", (value, admin_id, now, charge_id))
+            if cur.rowcount != 1:
+                conn.rollback()
+                return None, 'already_completed'
+            conn.execute("INSERT INTO processed_transactions(receipt_number,user_id,amount,processed_at) VALUES (?,?,?,?)", (receipt, user_id, value, now))
+            transaction_receipt = generate_receipt_number('CHG')
+            conn.execute("""INSERT INTO transactions
+                (user_id,type,amount,commission,net_amount,method,status,transaction_date,admin_id,details,receipt_number,external_ref)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (user_id, 'charge', value, 0, value, 'manual', 'success', now, admin_id,
+                 'شحن معتمد من غرفة العمليات', transaction_receipt, receipt or ''))
+            new_balance = conn.execute("SELECT balance FROM users WHERE user_id=?", (user_id,)).fetchone()[0]
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    finance_logger.info(f'Charge completed: {transaction_receipt} - User: {user_id} - Amount: {value}')
+    return float(new_balance), 'ok'
+
+def complete_pending_withdraw(withdraw_id, admin_id):
+    """إتمام السحب مرة واحدة؛ الطلبات الجديدة محجوز رصيدها مسبقاً، والقديمة تُخصم عند الإتمام."""
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    with db_lock:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            row = conn.execute("SELECT user_id, amount, net_amount, status, txn_receipt, COALESCE(reserved,0), processed_by FROM pending_withdraws WHERE id=?", (withdraw_id,)).fetchone()
+            if not row:
+                conn.rollback()
+                return None, 'not_found'
+            user_id, amount, net_amount, status, receipt, reserved, claimed_by = row
+            if status == 'completed':
+                conn.rollback()
+                return None, 'already_completed'
+            if status not in ('pending', 'processing'):
+                conn.rollback()
+                return None, 'invalid_status'
+            if status == 'processing' and claimed_by not in (None, admin_id) and admin_id != ADMIN_ID:
+                conn.rollback()
+                return None, 'claimed_by_other'
+            amount = float(amount or 0)
+            if not math.isfinite(amount) or amount <= 0:
+                conn.rollback()
+                return None, 'invalid_amount'
+            if not reserved:
+                cur = conn.execute("UPDATE users SET balance=balance-?, last_active=? WHERE user_id=? AND balance>=?", (amount, now, user_id, amount))
+                if cur.rowcount != 1:
+                    conn.rollback()
+                    return None, 'insufficient_balance'
+            cur = conn.execute("UPDATE pending_withdraws SET status='completed', processed_by=?, processed_at=? WHERE id=? AND status IN ('pending','processing')", (admin_id, now, withdraw_id))
+            if cur.rowcount != 1:
+                conn.rollback()
+                return None, 'already_completed'
+            if receipt:
+                conn.execute("UPDATE transactions SET status='success', admin_id=? WHERE receipt_number=? AND type='withdraw_request' AND status='pending'", (admin_id, receipt))
+            new_balance = conn.execute("SELECT balance FROM users WHERE user_id=?", (user_id,)).fetchone()[0]
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return float(new_balance), 'ok'
+
 def process_syriatel_charge_amount(message, charge_id):
     """استلام مبلغ الشحن من الزبون بعد اختيار الكود"""
     uid = message.from_user.id
     try:
         amount = float(message.text.strip())
-        
-        cursor.execute("UPDATE pending_charges SET amount=? WHERE id=?", (amount, charge_id))
-        conn.commit()
-        
+        if not math.isfinite(amount) or amount <= 0:
+            raise ValueError
+        with db_lock:
+            cursor.execute("UPDATE pending_charges SET amount=? WHERE id=? AND status IN ('pending','processing')", (amount, charge_id))
+            if cursor.rowcount != 1:
+                conn.rollback()
+                bot.send_message(message.chat.id, '❌ طلب الشحن غير موجود أو تمت معالجته مسبقاً.')
+                return
+            conn.commit()
+        #
         cursor.execute("SELECT receipt_number, syriatel_code FROM pending_charges WHERE id=?", (charge_id,))
         row = cursor.fetchone()
         receipt, code = row if row else ('', '')
@@ -6642,83 +6715,53 @@ def handle_ops_set_amount_charge(call, charge_id):
     bot.register_next_step_handler(msg, process_ops_charge_user, charge_id, user_id, call)
 
 def process_ops_charge_user(message, charge_id, user_id, original_call):
-    """تنفيذ شحن رصيد الزبون من غرفة العمليات"""
+    """تنفيذ شحن رصيد الزبون مرة واحدة وبمعاملة ذرية."""
     executor_uid = message.from_user.id
     executor_name = get_moderator_name(executor_uid)
-    
     try:
         amount = float(message.text.strip())
-        
-        # شحن رصيد الزبون
-        new_balance = update_user_balance(user_id, amount, add=True)
-        
-        # تعليم الطلب كمنجز
-        cursor.execute("UPDATE pending_charges SET status='completed', amount=?, processed_by=?, processed_at=? WHERE id=?",
-                       (amount, executor_uid, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), charge_id))
-        
-        # حفظ في processed_transactions
-        cursor.execute("SELECT receipt_number FROM pending_charges WHERE id=?", (charge_id,))
-        receipt_row = cursor.fetchone()
-        if receipt_row:
-            cursor.execute("INSERT OR IGNORE INTO processed_transactions(receipt_number, user_id, amount, processed_at) VALUES (?,?,?,?)",
-                          (receipt_row[0], user_id, amount, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        
-        conn.commit()
-        
-        log_transaction(user_id, "charge", amount, "manual", "success", admin_id=executor_uid)
-        log_admin_action(executor_uid, "شحن رصيد", f"شحن {amount:,.0f} ل.س للمستخدم {user_id}", target_user=user_id, amount=amount)
-        
-        # إشعار الزبون
+        if not math.isfinite(amount) or amount <= 0:
+            raise ValueError
+        new_balance, status = complete_pending_charge(charge_id, executor_uid, amount)
+        if status != 'ok':
+            bot.send_message(message.chat.id, "⚠️ لم يتم الشحن: الطلب منجز مسبقاً أو رقم العملية مكرر أو البيانات غير صالحة.", parse_mode='Markdown')
+            return
         try:
-            bot.send_message(user_id,
-                             f"✅ **تم شحن رصيدك بنجاح!**\n\n"
-                             f"💰 تم إضافة: `{amount:,.0f}` ل.س\n"
-                             f"💳 رصيدك الجديد: `{new_balance:,.0f}` ل.س",
-                             parse_mode="Markdown")
+            bot.send_message(user_id, f"✅ **تم شحن رصيدك بنجاح!**\n\n💰 تم إضافة: `{amount:,.0f}` ل.س\n💳 رصيدك الجديد: `{new_balance:,.0f}` ل.س", parse_mode='Markdown')
         except Exception:
             pass
-        
-        # تحديث رسالة غرفة العمليات - اللون الأخضر
         try:
             bot.edit_message_reply_markup(original_call.message.chat.id, original_call.message.message_id, reply_markup=None)
-            bot.send_message(original_call.message.chat.id,
-                             f"✅🟢 **{executor_name}** شحن `{amount:,.0f}` ل.س للمستخدم {user_id}\n"
-                             f"💳 رصيده الجديد: `{new_balance:,.0f}` ل.س\n"
-                             f"✅ **تم تنفيذ طلب الشحن #{charge_id} بنجاح**",
-                             parse_mode="Markdown")
+            bot.send_message(original_call.message.chat.id, f"✅🟢 **{executor_name}** شحن `{amount:,.0f}` ل.س للمستخدم {user_id}\n💳 رصيده الجديد: `{new_balance:,.0f}` ل.س\n✅ **تم تنفيذ طلب الشحن #{charge_id} بنجاح**", parse_mode='Markdown')
         except Exception:
             pass
-        
-        bot.send_message(message.chat.id, f"✅ **تم شحن {amount:,.0f} ل.س بنجاح للمستخدم {user_id}**", parse_mode="Markdown")
-        
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
+        log_admin_action(executor_uid, 'شحن رصيد', f'شحن {amount:,.0f} ل.س للمستخدم {user_id}', target_user=user_id, amount=amount)
+        bot.send_message(message.chat.id, f"✅ **تم شحن {amount:,.0f} ل.س بنجاح للمستخدم {user_id}**", parse_mode='Markdown')
+    except (ValueError, TypeError):
+        bot.send_message(message.chat.id, "❌ **الرجاء إدخال مبلغ موجب صحيح**", parse_mode='Markdown')
 
 def handle_ops_done_charge(call, charge_id):
-    """تعليم طلب الشحن كمنجز"""
+    """إتمام الشحن فقط بعد وجود مبلغ صالح، مع منع التكرار."""
     uid = call.from_user.id
-    executor_name = get_moderator_name(uid)
-    
-    cursor.execute("SELECT status, user_id FROM pending_charges WHERE id=?", (charge_id,))
-    row = cursor.fetchone()
-    if not row or row[0] not in ('pending', 'processing'):
-        bot.answer_callback_query(call.id, "⚠️ الطلب معالج مسبقاً!", show_alert=True)
+    row = cursor.execute("SELECT amount, method FROM pending_charges WHERE id=?", (charge_id,)).fetchone()
+    if not row or not row[0] or not math.isfinite(float(row[0])) or float(row[0]) <= 0:
+        bot.answer_callback_query(call.id, '⚠️ أدخل مبلغاً صالحاً أولاً عبر زر تنفيذ الشحن.', show_alert=True)
         return
-    
-    user_id = row[1]
-    cursor.execute("UPDATE pending_charges SET status='completed', processed_by=?, processed_at=? WHERE id=?",
-                   (uid, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), charge_id))
-    conn.commit()
-    
+    method = str(row[1] or '').strip().lower()
+    if 'usdt' in method or 'binance' in method:
+        bot.answer_callback_query(call.id, '⚠️ هذا الطلب بالدولار؛ استخدم زر تنفيذ الشحن وأدخل قيمة الرصيد بالليرة السورية بعد التحقق من التحويل.', show_alert=True)
+        return
+    new_balance, status = complete_pending_charge(charge_id, uid, float(row[0]))
+    if status != 'ok':
+        bot.answer_callback_query(call.id, '⚠️ الطلب منجز مسبقاً أو غير صالح.', show_alert=True)
+        return
+    user_id = cursor.execute("SELECT user_id FROM pending_charges WHERE id=?", (charge_id,)).fetchone()[0]
     try:
+        bot.send_message(user_id, f'✅ **تم شحن رصيدك بنجاح!**\n💰 المبلغ: `{float(row[0]):,.0f}` ل.س\n💳 رصيدك الجديد: `{new_balance:,.0f}` ل.س', parse_mode='Markdown')
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-        bot.send_message(call.message.chat.id,
-                         f"✅🟢 **{executor_name}** أكد تنفيذ طلب الشحن #{charge_id}",
-                         parse_mode="Markdown")
     except Exception:
         pass
-    
-    bot.answer_callback_query(call.id, "✅ تم تعليم الطلب كمنجز", show_alert=False)
+    bot.answer_callback_query(call.id, '✅ تم الشحن وتسجيل العملية', show_alert=False)
 
 def handle_ops_execute_withdraw(call, withdraw_id):
     """تنفيذ طلب سحب من غرفة العمليات"""
@@ -6737,11 +6780,12 @@ def handle_ops_execute_withdraw(call, withdraw_id):
         bot.answer_callback_query(call.id, "⚠️ هذا الطلب معالج مسبقاً!", show_alert=True)
         return
     
-    cursor.execute("UPDATE pending_withdraws SET status='processing', processed_by=? WHERE id=? AND status='pending'",
-                   (uid, withdraw_id))
-    conn.commit()
+    with db_lock:
+        claim_cur = conn.execute("UPDATE pending_withdraws SET status='processing', processed_by=? WHERE id=? AND status='pending'",
+                                 (uid, withdraw_id))
+        conn.commit()
     
-    if cursor.rowcount == 0:
+    if claim_cur.rowcount == 0:
         bot.answer_callback_query(call.id, "⚠️ يتم تنفيذ هذا الطلب من شخص آخر!", show_alert=True)
         return
     
@@ -6773,35 +6817,77 @@ def handle_ops_cancel_withdraw(call, withdraw_id):
     msg = bot.send_message(call.message.chat.id,
                            f"❌ **إلغاء طلب السحب #{withdraw_id}**\n\nاكتب سبب الإلغاء:",
                            parse_mode="Markdown")
-    bot.register_next_step_handler(msg, process_ops_cancel_withdraw_reason, withdraw_id, user_id, amount, call)
+    bot.register_next_step_handler(msg, process_ops_cancel_withdraw_reason, withdraw_id, user_id, amount, call, uid)
 
-def process_ops_cancel_withdraw_reason(message, withdraw_id, user_id, amount, original_call):
-    """معالجة سبب إلغاء السحب"""
-    reason = message.text.strip()
+def cancel_pending_withdraw_atomic(withdraw_id, executor_uid, reason):
+    """إلغاء ذري لطلب سحب؛ يعيد المبلغ فقط للطلبات التي حجزته فعلاً."""
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    reason = (reason or '').strip()[:1000]
+    if not reason:
+        return None, 'empty_reason'
+    with db_lock:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            row = conn.execute("SELECT user_id, amount, status, COALESCE(reserved,0), txn_receipt, processed_by FROM pending_withdraws WHERE id=?", (withdraw_id,)).fetchone()
+            if not row:
+                conn.rollback()
+                return None, 'not_found'
+            target_uid, amount, status, reserved, receipt, claimed_by = row
+            if status not in ('pending', 'processing'):
+                conn.rollback()
+                return None, 'invalid_status'
+            if status == 'processing' and claimed_by not in (None, executor_uid) and executor_uid != ADMIN_ID:
+                conn.rollback()
+                return None, 'claimed_by_other'
+            cur = conn.execute("UPDATE pending_withdraws SET status='cancelled', processed_by=?, processed_at=? WHERE id=? AND status IN ('pending','processing')", (executor_uid, now, withdraw_id))
+            if cur.rowcount != 1:
+                conn.rollback()
+                return None, 'already_processed'
+            if reserved:
+                conn.execute("UPDATE users SET balance=balance+?, last_active=? WHERE user_id=?", (float(amount), now, target_uid))
+            if receipt:
+                conn.execute("UPDATE transactions SET status='cancelled', admin_id=?, details=COALESCE(details,'') || ? WHERE receipt_number=? AND type='withdraw_request' AND status='pending'", (executor_uid, '\nسبب الإلغاء: ' + reason, receipt))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return {'user_id': target_uid, 'amount': float(amount), 'reserved': bool(reserved), 'receipt': receipt}, 'ok'
+
+def process_ops_cancel_withdraw_reason(message, withdraw_id, user_id, amount, original_call, expected_executor_uid):
+    """إلغاء ذري للطلب؛ إعادة الرصيد فقط إذا كان محجوزاً فعلياً."""
+    reason = (message.text or '').strip()[:1000]
     executor_uid = message.from_user.id
+    if executor_uid != expected_executor_uid:
+        bot.send_message(message.chat.id, '❌ هذا الإجراء مخصص للمشرف الذي بدأ الإلغاء.')
+        return
     executor_name = get_moderator_name(executor_uid)
-    
-    # إرجاع المبلغ للزبون
-    update_user_balance(user_id, amount, add=True)
-    
-    cursor.execute("UPDATE pending_withdraws SET status='cancelled', processed_by=?, processed_at=? WHERE id=?",
-                   (executor_uid, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), withdraw_id))
-    conn.commit()
-    
+    if not reason or reason == '🔙 العودة للقائمة الرئيسية':
+        bot.send_message(message.chat.id, 'تم إلغاء خطوة إدخال السبب؛ لم يتغير طلب السحب.')
+        return
+    result, cancel_status = cancel_pending_withdraw_atomic(withdraw_id, executor_uid, reason)
+    if cancel_status != 'ok':
+        messages = {
+            'not_found': '❌ الطلب غير موجود.',
+            'invalid_status': '⚠️ الطلب لم يعد قابلاً للإلغاء؛ ربما عولج من مشرف آخر.',
+            'claimed_by_other': '❌ الطلب مستلم من مشرف آخر؛ لا يمكن إلغاؤه من حسابك.',
+            'already_processed': '⚠️ تم تحديث الطلب من جهة أخرى؛ لم يتغير الرصيد.',
+            'empty_reason': '❌ يجب إدخال سبب للإلغاء.'
+        }
+        bot.send_message(message.chat.id, messages.get(cancel_status, '❌ تعذر إلغاء الطلب.'))
+        return
+    target_uid, reserved = result['user_id'], result['reserved']
     try:
-        bot.send_message(user_id,
-                         f"❌ **تم إلغاء طلب السحب الخاص بك**\n\n"
-                         f"📝 السبب: {reason}\n"
-                         f"✅ تم إرجاع المبلغ إلى رصيدك.",
-                         parse_mode="Markdown")
+        bot.send_message(target_uid,
+            f"❌ **تم إلغاء طلب السحب الخاص بك**\n\n📝 السبب: {reason}\n" +
+            ('✅ تم إعادة المبلغ المحجوز إلى رصيدك.' if reserved else 'لم يكن المبلغ محجوزاً مسبقاً، لذلك لم تتم إضافة أي مبلغ إلى الرصيد.'),
+            parse_mode="Markdown")
     except Exception:
-        pass
-    
+        logger.exception('تعذر إخطار المستخدم بإلغاء السحب %s', withdraw_id)
     try:
         bot.edit_message_reply_markup(original_call.message.chat.id, original_call.message.message_id, reply_markup=None)
         bot.send_message(original_call.message.chat.id,
-                         f"❌ **{executor_name}** ألغى طلب السحب #{withdraw_id}\n📝 السبب: {reason}\n✅ تم إرجاع المبلغ.",
-                         parse_mode="Markdown")
+            f"❌ **{executor_name}** ألغى طلب السحب #{withdraw_id}\n📝 السبب: {reason}\n" +
+            ('✅ أُعيد المبلغ المحجوز.' if reserved else 'ℹ️ الطلب القديم لم يكن محجوز الرصيد.'), parse_mode="Markdown")
     except Exception:
         pass
 
@@ -6827,50 +6913,28 @@ def handle_ops_send_money(call, withdraw_id):
                      f"⬆️ اضغط **تم التنفيذ** بعد إتمام التحويل.",
                      parse_mode="Markdown")
     
-    # تحديث الكاشيرة
-    update_cashier_balance(net_amount, add=False)
+    # لا يُخصم رصيد الكاشيرة هنا؛ الخصم لا يتم إلا بعد زر (تم التنفيذ) وبمعاملة آمنة.
 
 def handle_ops_done_withdraw(call, withdraw_id):
-    """تعليم طلب السحب كمنجز"""
+    """إتمام السحب بعد التحويل اليدوي وبخصم ذري مرة واحدة."""
     uid = call.from_user.id
-    executor_name = get_moderator_name(uid)
-    
-    cursor.execute("SELECT status, user_id, amount, net_amount FROM pending_withdraws WHERE id=?", (withdraw_id,))
-    row = cursor.fetchone()
-    if not row or row[0] not in ('pending', 'processing'):
-        bot.answer_callback_query(call.id, "⚠️ الطلب معالج مسبقاً!", show_alert=True)
+    result, status = complete_pending_withdraw(withdraw_id, uid)
+    if status != 'ok':
+        msg = ('⚠️ الطلب منجز مسبقاً.' if status == 'already_completed' else ('❌ الطلب مستلم من مشرف آخر.' if status == 'claimed_by_other' else '❌ تعذر إتمام السحب: الرصيد غير كافٍ أو الطلب غير صالح.'))
+        bot.answer_callback_query(call.id, msg, show_alert=True)
         return
-    
-    user_id, amount, net_amount = row[1], row[2], row[3]
-    
-    # خصم المبلغ من رصيد الزبون وتعليم كمنجز
-    update_user_balance(user_id, amount, add=False)
-    cursor.execute("UPDATE pending_withdraws SET status='completed', processed_by=?, processed_at=? WHERE id=?",
-                   (uid, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), withdraw_id))
-    conn.commit()
-    
+    row = cursor.execute("SELECT user_id, net_amount FROM pending_withdraws WHERE id=?", (withdraw_id,)).fetchone()
+    user_id, net_amount = row
     try:
-        bot.send_message(user_id,
-                         f"✅ **تم تنفيذ طلب السحب بنجاح!**\n\n"
-                         f"💵 تم إرسال: `{net_amount:,.0f}` ل.س إلى حسابك.",
-                         parse_mode="Markdown")
-    except Exception:
-        pass
-    
-    try:
+        bot.send_message(user_id, f'✅ **تم تنفيذ طلب السحب بنجاح!**\n\n💵 تم إرسال: `{net_amount:,.0f}` ل.س إلى حسابك.', parse_mode='Markdown')
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
-        bot.send_message(call.message.chat.id,
-                         f"✅🟢 **{executor_name}** أنجز طلب السحب #{withdraw_id}\n"
-                         f"💵 أرسل {net_amount:,.0f} ل.س للمستخدم {user_id}",
-                         parse_mode="Markdown")
     except Exception:
         pass
-    
-    bot.answer_callback_query(call.id, "✅ تم تعليم الطلب كمنجز")
+    bot.answer_callback_query(call.id, '✅ تم تسجيل السحب', show_alert=False)
 
 def handle_ops_syriatel_code_select(call, charge_id, code):
-    """اختيار كود سيرياتل من الرسالة (مستقبلي)"""
-    pass
+    """رفض مسار قديم غير مكتمل بدلاً من تجاهل الضغط بصمت."""
+    bot.answer_callback_query(call.id, "⚠️ هذا المسار غير مفعّل؛ استخدم إدخال مبلغ الشحن اليدوي.", show_alert=True)
 
 # =============================================================================
 # دوال معالجة الشحن والسحب المفقودة (إضافة ضرورية)
@@ -7005,8 +7069,15 @@ def process_usdt_charge_amount(message, charge_id, receipt):
     uid = message.from_user.id
     try:
         amount_usd = float(message.text.strip())
-        cursor.execute("UPDATE pending_charges SET amount=? WHERE id=?", (amount_usd, charge_id))
-        conn.commit()
+        if not math.isfinite(amount_usd) or amount_usd <= 0:
+            raise ValueError
+        with db_lock:
+            cur = conn.execute("UPDATE pending_charges SET amount=? WHERE id=? AND status IN ('pending','processing')", (amount_usd, charge_id))
+            if cur.rowcount != 1:
+                conn.rollback()
+                bot.send_message(message.chat.id, '❌ طلب الشحن غير موجود أو تمت معالجته مسبقاً.')
+                return
+            conn.commit()
 
         bot.send_message(message.chat.id,
                          f"✅ **طلب الشحن عبر USDT قيد المعالجة**\n\n"
@@ -7056,8 +7127,15 @@ def process_binance_charge_amount(message, charge_id, receipt):
     uid = message.from_user.id
     try:
         amount_usd = float(message.text.strip())
-        cursor.execute("UPDATE pending_charges SET amount=? WHERE id=?", (amount_usd, charge_id))
-        conn.commit()
+        if not math.isfinite(amount_usd) or amount_usd <= 0:
+            raise ValueError
+        with db_lock:
+            cur = conn.execute("UPDATE pending_charges SET amount=? WHERE id=? AND status IN ('pending','processing')", (amount_usd, charge_id))
+            if cur.rowcount != 1:
+                conn.rollback()
+                bot.send_message(message.chat.id, '❌ طلب الشحن غير موجود أو تمت معالجته مسبقاً.')
+                return
+            conn.commit()
 
         bot.send_message(message.chat.id,
                          f"✅ **طلب الشحن عبر Binance قيد المعالجة**\n\n"
@@ -7093,6 +7171,8 @@ def process_usdt_withdraw_amount(message, account):
     uid = message.from_user.id
     try:
         amount = float(message.text.strip())
+        if not math.isfinite(amount) or amount <= 0:
+            raise ValueError
         commission_pct = float(get_db_setting('withdraw_commission') or '10')
         cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
         bal = cursor.fetchone()
@@ -7102,16 +7182,11 @@ def process_usdt_withdraw_amount(message, account):
             return
         commission = amount * commission_pct / 100
         net_amount = amount - commission
-        txn_receipt = log_transaction(uid, "withdraw_request", amount, "usdt", "pending",
-                                      commission=commission, net_amount=net_amount,
-                                      details=f"USDT wallet: {account}")
-        cursor.execute("""INSERT INTO pending_withdraws
-            (user_id, method, account, amount, commission, net_amount, currency, status, created_at, txn_receipt)
-            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (uid, 'USDT', account, amount, commission, net_amount, 'USDT',
-             'pending', datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
-        conn.commit()
-        withdraw_id = cursor.lastrowid
+        created, create_status = create_pending_withdraw_atomic(uid, 'USDT', account, amount, commission, net_amount, 'USDT', details=f"USDT wallet: {account}")
+        if create_status != 'ok':
+            bot.send_message(message.chat.id, '❌ رصيدك غير كافٍ أو مبلغ السحب غير صالح.')
+            return
+        withdraw_id, txn_receipt = created
         bot.send_message(message.chat.id,
                          f"✅ **تم استلام طلب السحب عبر USDT**\n\n"
                          f"🔷 العنوان: `{account}`\n"
@@ -7144,6 +7219,8 @@ def process_binance_withdraw_amount(message, account):
     uid = message.from_user.id
     try:
         amount = float(message.text.strip())
+        if not math.isfinite(amount) or amount <= 0:
+            raise ValueError
         commission_pct = float(get_db_setting('withdraw_commission') or '10')
         cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
         bal = cursor.fetchone()
@@ -7153,16 +7230,11 @@ def process_binance_withdraw_amount(message, account):
             return
         commission = amount * commission_pct / 100
         net_amount = amount - commission
-        txn_receipt = log_transaction(uid, "withdraw_request", amount, "binance", "pending",
-                                      commission=commission, net_amount=net_amount,
-                                      details=f"Binance: {account}")
-        cursor.execute("""INSERT INTO pending_withdraws
-            (user_id, method, account, amount, commission, net_amount, currency, status, created_at, txn_receipt)
-            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (uid, 'Binance', account, amount, commission, net_amount, 'USD',
-             'pending', datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
-        conn.commit()
-        withdraw_id = cursor.lastrowid
+        created, create_status = create_pending_withdraw_atomic(uid, 'Binance', account, amount, commission, net_amount, 'USD', details=f"Binance: {account}")
+        if create_status != 'ok':
+            bot.send_message(message.chat.id, '❌ رصيدك غير كافٍ أو مبلغ السحب غير صالح.')
+            return
+        withdraw_id, txn_receipt = created
         bot.send_message(message.chat.id,
                          f"✅ **تم استلام طلب السحب عبر Binance**\n\n"
                          f"💱 الحساب: `{account}`\n"
@@ -7204,6 +7276,8 @@ def process_syria_withdraw_amount(message, account):
     uid = message.from_user.id
     try:
         amount = float(message.text.strip())
+        if not math.isfinite(amount) or amount <= 0:
+            raise ValueError
 
         min_withdraw = float(get_db_setting('min_withdraw_syria') or '25000')
         max_withdraw = float(get_db_setting('max_withdraw_syria') or '500000')
@@ -7226,18 +7300,11 @@ def process_syria_withdraw_amount(message, account):
         commission = amount * commission_pct / 100
         net_amount = amount - commission
 
-        txn_receipt = log_transaction(uid, "withdraw_request", amount, "syriatel", "pending",
-                                      commission=commission, net_amount=net_amount,
-                                      details=f"محفظة: {account}")
-        
-        # حفظ في pending_withdraws
-        cursor.execute("""INSERT INTO pending_withdraws
-            (user_id, method, account, amount, commission, net_amount, currency, status, created_at, txn_receipt)
-            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (uid, 'سيرياتل كاش', account, amount, commission, net_amount, 'ليرة سورية',
-             'pending', datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
-        conn.commit()
-        withdraw_id = cursor.lastrowid
+        created, create_status = create_pending_withdraw_atomic(uid, 'سيرياتل كاش', account, amount, commission, net_amount, 'ليرة سورية', details=f"محفظة: {account}")
+        if create_status != 'ok':
+            bot.send_message(message.chat.id, '❌ رصيدك غير كافٍ أو مبلغ السحب غير صالح.')
+            return
+        withdraw_id, txn_receipt = created
 
         bot.send_message(message.chat.id,
                          f"✅ **تم استلام طلب السحب عبر سيرياتل كاش**\n\n"
@@ -7286,6 +7353,8 @@ def process_sham_withdraw_amount(message, account, currency):
     uid = message.from_user.id
     try:
         amount = float(message.text.strip())
+        if not math.isfinite(amount) or amount <= 0:
+            raise ValueError
 
         min_withdraw = float(get_db_setting('min_withdraw_sham') or '25000')
         max_withdraw = float(get_db_setting('max_withdraw_sham') or '5000000')
@@ -7308,17 +7377,11 @@ def process_sham_withdraw_amount(message, account, currency):
         commission = amount * commission_pct / 100
         net_amount = amount - commission
 
-        txn_receipt = log_transaction(uid, "withdraw_request", amount, "sham", "pending",
-                                      commission=commission, net_amount=net_amount,
-                                      details=f"عنوان: {account} | عملة: {currency}")
-        
-        cursor.execute("""INSERT INTO pending_withdraws
-            (user_id, method, account, amount, commission, net_amount, currency, status, created_at, txn_receipt)
-            VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (uid, 'شام كاش', account, amount, commission, net_amount, currency,
-             'pending', datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
-        conn.commit()
-        withdraw_id = cursor.lastrowid
+        created, create_status = create_pending_withdraw_atomic(uid, 'شام كاش', account, amount, commission, net_amount, currency, details=f"عنوان: {account} | عملة: {currency}")
+        if create_status != 'ok':
+            bot.send_message(message.chat.id, '❌ رصيدك غير كافٍ أو مبلغ السحب غير صالح.')
+            return
+        withdraw_id, txn_receipt = created
 
         bot.send_message(message.chat.id,
                          f"✅ **تم استلام طلب السحب عبر شام كاش**\n\n"
@@ -7400,7 +7463,8 @@ def process_referral_pay(message):
         parts = message.text.strip().split(',')
         target = int(parts[0].strip())
         amount = float(parts[1].strip())
-        update_user_balance(target, amount, add=True)
+        if amount <= 0 or update_user_balance(target, amount, add=True) is None:
+            raise ValueError('invalid target or amount')
         log_transaction(target, "referral_pay", amount, "admin", "success", admin_id=uid)
         bot.send_message(message.chat.id, f"✅ **تم إرسال {amount:,.0f} ل.س لأرباح الإحالة للمستخدم** `{target}`", parse_mode="Markdown")
         try:
@@ -7467,7 +7531,11 @@ def keep_alive():
     logger.info("🌐 Flask server started for keep-alive")
 
 def start_retry_system():
-    """تشغيل نظام إعادة المحاولة في خلفية"""
+    """تشغيل الإعادة فقط عند تفعيلها صراحة مع handlers موثقة."""
+    if not RETRY_SYSTEM_ENABLED:
+        logger.warning('Retry system disabled by default; no financial request will be retried blindly')
+        return
+    retry_system.running = True
     def retry_loop():
         while True:
             try:
