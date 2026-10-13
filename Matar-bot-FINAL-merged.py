@@ -47,6 +47,9 @@ if ADMIN_ID <= 0:
     raise RuntimeError('ADMIN_ID must be a positive Telegram user ID')
 CHANNEL_ID = os.environ.get('CHANNEL_ID', '@Matar_ichancy')
 CHANNEL_URL = os.environ.get('CHANNEL_URL', 'https://t.me/Matar_ichancy')
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
+GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash').strip() or 'gemini-2.5-flash'
+AI_CHAT_MAX_MESSAGES = 40
 
 # متغيرات عامة للتتبع
 user_states = {}           # حالة المستخدمين (للمحادثات متعددة الخطوات)
@@ -603,6 +606,32 @@ def setup_database():
         permissions TEXT
     )""")
     
+    # ترحيل آمن لصلاحية المساعد للمشرفين في قواعد البيانات القديمة
+    try:
+        moderator_columns = {row[1] for row in cursor.execute("PRAGMA table_info(moderators)").fetchall()}
+        if 'can_use_ai' not in moderator_columns:
+            cursor.execute("ALTER TABLE moderators ADD COLUMN can_use_ai INTEGER DEFAULT 0")
+    except Exception as exc:
+        logger.warning(f"تعذر ترحيل صلاحية المساعد: {exc}")
+
+    # ===== المحادثة الدائمة مع المساعد الذكي =====
+    cursor.execute("""CREATE TABLE IF NOT EXISTS ai_conversations(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        role TEXT NOT NULL CHECK(role IN ('user','assistant','system')),
+        content TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )""")
+    cursor.execute("""CREATE INDEX IF NOT EXISTS idx_ai_conversations_user
+                     ON ai_conversations(user_id, id)""")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS ai_settings(
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at TEXT,
+        updated_by INTEGER
+    )""")
+    cursor.execute("INSERT OR IGNORE INTO ai_settings(key,value,updated_at,updated_by) VALUES ('enabled','1',datetime('now'),?)", (ADMIN_ID,))
+
     # ===== نظام الإعدادات =====
     cursor.execute("""CREATE TABLE IF NOT EXISTS settings(
         key TEXT PRIMARY KEY,
@@ -1133,13 +1162,15 @@ def get_moderator_permissions(user_id):
             'can_access_full_admin': 1,
             'can_manage_moderators': 1,
             'can_withdraw_site_to_bot': 1,
-            'can_manage_wheel': 1
+            'can_manage_wheel': 1,
+            'can_use_ai': 1
         }
     
     cursor.execute("""SELECT can_reply_tickets, can_handle_charges, can_handle_withdraws,
                       can_send_broadcast, can_manage_users, can_charge_withdraw_users,
                       can_view_stats, can_manage_buttons, can_access_full_admin, can_manage_moderators,
-                      COALESCE(can_withdraw_site_to_bot,0), COALESCE(can_manage_wheel,0)
+                      COALESCE(can_withdraw_site_to_bot,0), COALESCE(can_manage_wheel,0),
+                      COALESCE(can_use_ai,0)
                       FROM moderators WHERE user_id=?""", (user_id,))
     result = cursor.fetchone()
     if result:
@@ -1155,7 +1186,8 @@ def get_moderator_permissions(user_id):
             'can_access_full_admin': result[8],
             'can_manage_moderators': result[9],
             'can_withdraw_site_to_bot': result[10],
-            'can_manage_wheel': result[11]
+            'can_manage_wheel': result[11],
+            'can_use_ai': result[12]
         }
     return {}
 
@@ -1259,12 +1291,7 @@ def notify_operations_room_charge(user_id, method, receipt, amount, syriatel_cod
         
         markup = types.InlineKeyboardMarkup(row_width=2)
         markup.add(
-            types.InlineKeyboardButton("✅ تنفيذ الطلب", callback_data=f"ops_execute_charge_{charge_id}"),
-            types.InlineKeyboardButton("❌ إلغاء مع سبب", callback_data=f"ops_cancel_charge_{charge_id}")
-        )
-        markup.add(
-            types.InlineKeyboardButton("💵 شحن + إدخال مبلغ", callback_data=f"ops_set_amount_charge_{charge_id}"),
-            types.InlineKeyboardButton("🟢 تم التنفيذ", callback_data=f"ops_done_charge_{charge_id}")
+            types.InlineKeyboardButton("✅ تنفيذ الطلب", callback_data=f"ops_execute_charge_{charge_id}")
         )
         
         bot.send_message(room_id, text, reply_markup=markup, parse_mode="Markdown")
@@ -1297,12 +1324,7 @@ def notify_operations_room_withdraw(user_id, method, account, amount, net_amount
     
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("✅ تنفيذ الأمر", callback_data=f"ops_execute_withdraw_{withdraw_id}"),
-        types.InlineKeyboardButton("❌ إلغاء مع سبب", callback_data=f"ops_cancel_withdraw_{withdraw_id}")
-    )
-    markup.add(
-        types.InlineKeyboardButton("💳 إرسال المبلغ", callback_data=f"ops_send_money_{withdraw_id}"),
-        types.InlineKeyboardButton("✔️ تم التنفيذ", callback_data=f"ops_done_withdraw_{withdraw_id}")
+        types.InlineKeyboardButton("✅ تنفيذ الطلب", callback_data=f"ops_execute_withdraw_{withdraw_id}")
     )
     
     try:
@@ -1319,8 +1341,21 @@ def charge_processing_keyboard(charge_id):
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("💵 إدخال/تعديل المبلغ", callback_data=f"ops_set_amount_charge_{charge_id}"),
-        types.InlineKeyboardButton("🟢 تم التنفيذ", callback_data=f"ops_done_charge_{charge_id}"),
-        types.InlineKeyboardButton("❌ إلغاء مع سبب", callback_data=f"ops_cancel_charge_{charge_id}")
+        types.InlineKeyboardButton("✅ تنفيذ", callback_data=f"ops_done_charge_{charge_id}"),
+        types.InlineKeyboardButton("❌ رفض", callback_data=f"ops_cancel_charge_{charge_id}"),
+        types.InlineKeyboardButton("🤖 المساعد", callback_data="ai_chat")
+    )
+    return markup
+
+
+def withdraw_processing_keyboard(withdraw_id):
+    """لوحة المرحلة الثانية للسحب بعد استلام الطلب من مشرف واحد."""
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("💳 إرسال المبلغ", callback_data=f"ops_send_money_{withdraw_id}"),
+        types.InlineKeyboardButton("✅ تنفيذ", callback_data=f"ops_done_withdraw_{withdraw_id}"),
+        types.InlineKeyboardButton("❌ رفض", callback_data=f"ops_cancel_withdraw_{withdraw_id}"),
+        types.InlineKeyboardButton("🤖 المساعد", callback_data="ai_chat")
     )
     return markup
 
@@ -2564,8 +2599,7 @@ def _send_copyable_text_OLD(chat_id, text, caption=""):
 # =============================================================================
 
 def get_main_keyboard(uid):
-    """بناء القائمة الرئيسية من قاعدة البيانات مع احترام الصلاحيات."""
-    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    """بناء القائمة الرئيسية بترتيب ثابت واضح، مع قراءة حالة الأزرار من قاعدة البيانات."""
     cursor.execute("""SELECT button_text, requires_admin, requires_moderator
                       FROM dynamic_buttons
                       WHERE parent_button='main' AND level=1 AND is_active=1
@@ -2578,16 +2612,35 @@ def get_main_keyboard(uid):
         if requires_moderator and uid != ADMIN_ID and not is_moderator(uid):
             continue
         visible.append(text)
-    # التوافق مع قواعد بيانات قديمة لم تُملأ أزرارها الافتراضية بعد.
     if not visible:
         visible = ['⚽ Ichancy ⚽', '🎡 عجلة الحظ', '💰 الرصيد', '💳 الشحن في البوت',
                    '💸 السحب من البوت', '👥 دعوة الأصدقاء', '📞 التواصل مع الدعم',
                    '📜 الشروط والاحكام']
         if uid == ADMIN_ID or is_moderator(uid):
             visible.append('🔐 إدارة البوت')
-    for i in range(0, len(visible), 2):
-        row = [types.KeyboardButton(x) for x in visible[i:i + 2]]
-        markup.row(*row)
+    if (uid == ADMIN_ID or check_permission(uid, 'can_use_ai')) and '🤖 المساعد الذكي' not in visible:
+        visible.append('🤖 المساعد الذكي')
+
+    # الصف الأول منفرد، ثم الصفوف المطلوبة بصرياً. في Telegram يظهر أول عنصر
+    # في الصف جهة اليمين للواجهات العربية.
+    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
+    preferred_rows = [
+        ['⚽ Ichancy ⚽'],
+        ['💳 الشحن في البوت', '💸 السحب من البوت'],
+        ['🎁 اهداء رصيد', '💰 الرصيد'],
+        ['🎡 عجلة الحظ', '🎫 كود هدية'],
+    ]
+    used = set()
+    for row in preferred_rows:
+        present = [x for x in row if x in visible and x not in used]
+        if present:
+            markup.row(*(types.KeyboardButton(x) for x in present))
+            used.update(present)
+
+    # الأزرار الأخرى تبقى ديناميكية وتظهر بعد التصميم الأساسي.
+    remaining = [x for x in visible if x not in used]
+    for i in range(0, len(remaining), 2):
+        markup.row(*(types.KeyboardButton(x) for x in remaining[i:i + 2]))
     return markup
 
 def get_dynamic_keyboard(parent='main', level=1):
@@ -2897,8 +2950,8 @@ def get_admin_main_keyboard(is_owner=False, uid=None):
         markup.add('📋 قاعدة البيانات', '💬 تذاكر الدعم')
         markup.add('👥 المشرفين', '📊 نظام الإحالات')
         markup.add('📝 إدارة الأزرار', '🔔 إعدادات الإشعارات')
-        markup.add('📋 سجل الإجراءات', '⚙️ إعدادات متقدمة')
-        markup.add('🛠️ إدارة البوت بالكامل')
+        markup.add('🤖 المساعد الذكي', '📋 سجل الإجراءات')
+        markup.add('⚙️ إعدادات متقدمة')
         markup.add('🔙 العودة للقائمة الرئيسية')
     else:
         # عرض الأزرار حسب صلاحيات المشرف
@@ -2916,6 +2969,8 @@ def get_admin_main_keyboard(is_owner=False, uid=None):
             markup.add('👥 إدارة المستخدمين')
         if perms.get('can_view_stats', 0):
             markup.add('📊 الإحصائيات')
+        if perms.get('can_use_ai', 0):
+            markup.add('🤖 المساعد الذكي')
 
         markup.add('🔙 العودة للقائمة الرئيسية')
 
@@ -4542,6 +4597,43 @@ def handle_all_callbacks(call):
     """معالج شامل لجميع الكول باكات - نسخة مصححة"""
     uid = call.from_user.id
     data = call.data
+
+    # ===== المساعد الذكي =====
+    if data == 'ai_chat':
+        bot.answer_callback_query(call.id)
+        start_ai_chat(uid, call.message.chat.id)
+        return
+    if data == 'ai_status':
+        bot.answer_callback_query(call.id)
+        ai_status(uid, call.message.chat.id)
+        return
+    if data == 'ai_toggle':
+        bot.answer_callback_query(call.id)
+        toggle_ai(uid, call.message.chat.id)
+        return
+    if data == 'ai_permissions':
+        bot.answer_callback_query(call.id)
+        show_ai_permissions(uid, call.message.chat.id)
+        return
+    if data.startswith('ai_perm_'):
+        bot.answer_callback_query(call.id)
+        try:
+            moderator_id = int(data[8:])
+        except ValueError:
+            bot.send_message(call.message.chat.id, '❌ معرف المشرف غير صالح.')
+            return
+        toggle_ai_permission(uid, call.message.chat.id, moderator_id)
+        return
+    if data == 'ai_clear':
+        bot.answer_callback_query(call.id)
+        clear_ai_chat(uid, call.message.chat.id)
+        return
+    if data == 'ai_back':
+        bot.answer_callback_query(call.id)
+        user_mode.pop(uid, None)
+        if ai_allowed(uid):
+            bot.send_message(call.message.chat.id, '🔙 تم الرجوع.', reply_markup=get_admin_main_keyboard(uid == ADMIN_ID, uid))
+        return
 
     # ===== 1. معالج النسخ (يجب أن يكون الأول) =====
     if data.startswith('copy_'):
@@ -6355,6 +6447,221 @@ def process_custom_expiry(message, value, count, gift_type):
         bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
 
 # =============================================================================
+# 20. المساعد الذكي المجاني الاختياري (Gemini)
+# =============================================================================
+
+AI_BUTTON = '🤖 المساعد الذكي'
+AI_CHAT_STATE = 'ai_chat'
+
+
+def ai_allowed(uid):
+    return uid == ADMIN_ID or check_permission(uid, 'can_use_ai')
+
+
+def ai_is_enabled():
+    row = conn.execute("SELECT value FROM ai_settings WHERE key='enabled'").fetchone()
+    return bool(row and str(row[0]) == '1')
+
+
+def ai_keyboard(uid=None):
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton('💬 محادثة مع المساعد', callback_data='ai_chat'),
+        types.InlineKeyboardButton('📊 حالة المساعد', callback_data='ai_status'),
+        types.InlineKeyboardButton('🗑 حذف المحادثة', callback_data='ai_clear'),
+        types.InlineKeyboardButton('🔙 رجوع', callback_data='ai_back')
+    )
+    if uid == ADMIN_ID:
+        markup.add(
+            types.InlineKeyboardButton('⏯ تشغيل/إيقاف', callback_data='ai_toggle'),
+            types.InlineKeyboardButton('🔐 صلاحيات المشرفين', callback_data='ai_permissions')
+        )
+    return markup
+
+
+def show_ai_menu(uid, chat_id):
+    if not ai_allowed(uid):
+        bot.send_message(chat_id, '❌ لا تملك صلاحية استخدام المساعد الذكي.')
+        return
+    key_state = '🟢 متاح' if GEMINI_API_KEY and ai_is_enabled() else '🟡 غير مفعّل حتى إضافة GEMINI_API_KEY'
+    bot.send_message(
+        chat_id,
+        '🤖 **المساعد الذكي**\n\n'
+        'يمكنك استخدامه لمراجعة حالة البوت، فهم الأخطاء، واقتراح تعديلات على الواجهات والإعدادات.\n'
+        'أي عملية مالية أو حذف أو تغيير حساس يحتاج تأكيداً صريحاً ولا ينفذه المساعد تلقائياً.\n\n'
+        f'الحالة: {key_state}',
+        reply_markup=ai_keyboard(uid), parse_mode='Markdown'
+    )
+
+
+def toggle_ai(uid, chat_id):
+    if uid != ADMIN_ID:
+        bot.send_message(chat_id, '❌ هذا الإعداد للمالك فقط.')
+        return
+    current = ai_is_enabled()
+    conn.execute("UPDATE ai_settings SET value=?,updated_at=?,updated_by=? WHERE key='enabled'", ('0' if current else '1', datetime.now().strftime('%Y-%m-%d %H:%M:%S'), uid))
+    conn.commit()
+    log_admin_action(uid, 'ai_toggle', 'تغيير حالة المساعد إلى ' + ('متوقف' if current else 'مفعل'))
+    bot.send_message(chat_id, '✅ تم ' + ('إيقاف' if current else 'تفعيل') + ' المساعد.')
+
+
+def show_ai_permissions(uid, chat_id):
+    if uid != ADMIN_ID:
+        bot.send_message(chat_id, '❌ هذا الإعداد للمالك فقط.')
+        return
+    rows = conn.execute("SELECT user_id, COALESCE(custom_name,''), COALESCE(can_use_ai,0) FROM moderators ORDER BY user_id").fetchall()
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    if not rows:
+        bot.send_message(chat_id, 'لا يوجد مشرفون مضافون حالياً.')
+        return
+    for moderator_id, name, enabled in rows:
+        label = ('✅ ' if enabled else '❌ ') + (name or str(moderator_id))
+        markup.add(types.InlineKeyboardButton(label, callback_data=f'ai_perm_{moderator_id}'))
+    markup.add(types.InlineKeyboardButton('🔙 رجوع', callback_data='ai_back'))
+    bot.send_message(chat_id, '🔐 اختر المشرف الذي تريد تبديل صلاحية المساعد له:', reply_markup=markup)
+
+
+def toggle_ai_permission(uid, chat_id, moderator_id):
+    if uid != ADMIN_ID:
+        bot.send_message(chat_id, '❌ هذا الإعداد للمالك فقط.')
+        return
+    row = conn.execute("SELECT can_use_ai FROM moderators WHERE user_id=?", (moderator_id,)).fetchone()
+    if not row:
+        bot.send_message(chat_id, '❌ المشرف غير موجود.')
+        return
+    new_value = 0 if int(row[0] or 0) else 1
+    conn.execute("UPDATE moderators SET can_use_ai=? WHERE user_id=?", (new_value, moderator_id))
+    conn.commit()
+    log_admin_action(uid, 'ai_permission', f'تغيير صلاحية المساعد للمشرف {moderator_id} إلى {new_value}')
+    show_ai_permissions(uid, chat_id)
+
+
+def _ai_history(uid):
+    rows = conn.execute(
+        "SELECT role, content FROM ai_conversations WHERE user_id=? ORDER BY id DESC LIMIT ?",
+        (uid, AI_CHAT_MAX_MESSAGES)
+    ).fetchall()
+    return list(reversed(rows))
+
+
+def _ai_context(uid):
+    # بيانات تشغيلية محدودة، بلا مفاتيح أو أسرار أو كلمات مرور.
+    pending_c = conn.execute("SELECT COUNT(*) FROM pending_charges WHERE status='pending'").fetchone()[0]
+    pending_w = conn.execute("SELECT COUNT(*) FROM pending_withdraws WHERE status='pending'").fetchone()[0]
+    users = conn.execute("SELECT COUNT(*) FROM users WHERE deleted=0").fetchone()[0]
+    services = {}
+    for key in ('syriatel_status', 'sham_status', 'usdt_status', 'binance_status', 'bot_status'):
+        services[key] = get_db_setting(key)
+    return json.dumps({
+        'requester_id': uid,
+        'bot_status': services.get('bot_status'),
+        'services_status': services,
+        'pending_charges': pending_c,
+        'pending_withdraws': pending_w,
+        'active_users': users,
+        'restriction': 'لا توجد صلاحية مباشرة لتنفيذ أموال أو قراءة الأسرار'
+    }, ensure_ascii=False)
+
+
+def _ai_prompt(uid):
+    return (
+        'أنت مساعد إدارة آمن لبوت Telegram اسمه Matar. أجب بالعربية بوضوح واختصار. '
+        'يمكنك شرح الإعدادات، تحليل الأخطاء، واقتراح تعديلات. لا تدّع تنفيذ أي تعديل أو API أو عملية مالية. '
+        'إذا طلب المستخدم تغييراً، اعرض خطة ومعاينة واطلب تأكيداً صريحاً. لا تطلب أو تكشف TOKEN أو مفاتيح API أو كلمات مرور. '
+        'بيانات التشغيل الحالية الآمنة: ' + _ai_context(uid)
+    )
+
+
+def call_gemini(uid):
+    if not GEMINI_API_KEY or not ai_is_enabled():
+        return None, 'المساعد غير مفعّل حالياً. أضف GEMINI_API_KEY في Render ثم أعد التشغيل.'
+    history = _ai_history(uid)
+    contents = []
+    for role, content in history:
+        contents.append({'role': 'model' if role == 'assistant' else 'user', 'parts': [{'text': content}]})
+    payload = {
+        'system_instruction': {'parts': [{'text': _ai_prompt(uid)}]},
+        'contents': contents,
+        'generationConfig': {'temperature': 0.2, 'maxOutputTokens': 1200}
+    }
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent'
+    try:
+        response = requests.post(url, params={'key': GEMINI_API_KEY}, json=payload, timeout=35)
+        if response.status_code != 200:
+            logger.warning('Gemini HTTP %s: %s', response.status_code, response.text[:300])
+            return None, 'تعذر الاتصال بالمساعد حالياً. تحقق من المفتاح أو الحصة المجانية.'
+        data = response.json()
+        parts = data.get('candidates', [{}])[0].get('content', {}).get('parts', [])
+        answer = ''.join(part.get('text', '') for part in parts).strip()
+        if not answer:
+            return None, 'وصل رد فارغ من المساعد. حاول مرة أخرى.'
+        return answer, None
+    except requests.RequestException:
+        return None, 'تعذر الاتصال بالمساعد حالياً. سيبقى البوت الأساسي يعمل بشكل طبيعي.'
+    except Exception as exc:
+        error_logger.error('AI response error: %s', exc)
+        return None, 'حدث خطأ داخلي أثناء معالجة طلب المساعد.'
+
+
+def ai_store(uid, role, content):
+    conn.execute(
+        "INSERT INTO ai_conversations(user_id,role,content,created_at) VALUES (?,?,?,?)",
+        (uid, role, str(content), datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    )
+    # إبقاء السجل محدوداً لكل مستخدم حتى لا تكبر قاعدة البيانات بلا نهاية.
+    conn.execute("DELETE FROM ai_conversations WHERE user_id=? AND id NOT IN (SELECT id FROM ai_conversations WHERE user_id=? ORDER BY id DESC LIMIT ?)", (uid, uid, AI_CHAT_MAX_MESSAGES))
+    conn.commit()
+
+
+def start_ai_chat(uid, chat_id):
+    if not ai_allowed(uid):
+        bot.send_message(chat_id, '❌ لا تملك صلاحية استخدام المساعد الذكي.')
+        return
+    user_mode[uid] = AI_CHAT_STATE
+    bot.send_message(chat_id, '💬 **بدأت محادثة دائمة مع المساعد.**\nأرسل طلبك الآن، أو اضغط «إلغاء» للخروج.', parse_mode='Markdown')
+
+
+def clear_ai_chat(uid, chat_id):
+    if not ai_allowed(uid):
+        return
+    conn.execute("DELETE FROM ai_conversations WHERE user_id=?", (uid,))
+    conn.commit()
+    user_mode.pop(uid, None)
+    bot.send_message(chat_id, '✅ تم حذف سجل محادثتك مع المساعد.')
+
+
+def ai_status(uid, chat_id):
+    if not ai_allowed(uid):
+        return
+    count = conn.execute("SELECT COUNT(*) FROM ai_conversations WHERE user_id=?", (uid,)).fetchone()[0]
+    status = '🟢 متاح' if GEMINI_API_KEY and ai_is_enabled() else '🟡 يحتاج GEMINI_API_KEY'
+    bot.send_message(chat_id, f'🤖 حالة المساعد: {status}\n📚 رسائل محفوظة: {count}\n🧠 النموذج: `{GEMINI_MODEL}`', parse_mode='Markdown')
+
+
+def process_ai_message(message):
+    uid = message.from_user.id
+    if not ai_allowed(uid):
+        user_mode.pop(uid, None)
+        return
+    text = (message.text or '').strip()
+    if text in ('❌ إلغاء', '🔙 رجوع', '🔙 العودة للقائمة الرئيسية'):
+        user_mode.pop(uid, None)
+        bot.send_message(message.chat.id, 'تم إغلاق محادثة المساعد.', reply_markup=get_main_keyboard(uid))
+        return
+    if not text:
+        bot.send_message(message.chat.id, 'أرسل رسالة نصية للمساعد.')
+        return
+    ai_store(uid, 'user', text)
+    bot.send_chat_action(message.chat.id, 'typing')
+    answer, error = call_gemini(uid)
+    if error:
+        bot.send_message(message.chat.id, '⚠️ ' + error)
+        return
+    ai_store(uid, 'assistant', answer)
+    bot.send_message(message.chat.id, answer, reply_markup=ai_keyboard(uid))
+
+
+# =============================================================================
 # 20. دوال ربط API
 # =============================================================================
 
@@ -6375,6 +6682,11 @@ def process_connect_sham_api(message):
 # =============================================================================
 # 21. الراوتر الرئيسي للرسائل
 # =============================================================================
+
+@bot.message_handler(commands=['ai'])
+def handle_ai_command(message):
+    show_ai_menu(message.from_user.id, message.chat.id)
+
 
 @bot.message_handler(func=lambda m: True)
 def main_router(message):
@@ -6420,7 +6732,7 @@ def main_router(message):
         '📝 إنشاء حساب جديد', '➕ تعبئة في حسابي', '➖ سحب من حسابي',
         '🗑 حذف الحساب', '🛠️ إدارة البوت بالكامل', '⚙️ إعدادات متقدمة',
         '📝 إدارة الأزرار', '📊 نظام الإحالات', '📋 سجل الإجراءات',
-        '🔔 إعدادات الإشعارات', '📨 رسالة جماعية',
+        '🔔 إعدادات الإشعارات', '📨 رسالة جماعية', '🤖 المساعد الذكي',
     }
     
     if text in MAIN_NAVIGATION_BUTTONS:
@@ -6428,6 +6740,11 @@ def main_router(message):
         bot.clear_step_handler_by_chat_id(message.chat.id)
         reset_user_state(uid)
     
+    # ===== محادثة المساعد الدائمة =====
+    if user_mode.get(uid) == AI_CHAT_STATE:
+        process_ai_message(message)
+        return
+
     # التحقق من وضع الإدارة
     if user_mode.get(uid) == 'button_management':
         # وضع إدارة الأزرار
@@ -6480,6 +6797,10 @@ def main_router(message):
     elif text == '📞 التواصل مع الدعم':
         ActionSystem.execute_action(uid, message.chat.id, 'start_support')
     
+    # المساعد الذكي
+    elif text == AI_BUTTON:
+        show_ai_menu(uid, message.chat.id)
+
     # زر إدارة البوت
     elif text == '🔐 إدارة البوت':
         ActionSystem.execute_action(uid, message.chat.id, 'show_admin_panel')
@@ -7076,7 +7397,7 @@ def handle_ops_execute_withdraw(call, withdraw_id):
         return
     
     try:
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
+        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=withdraw_processing_keyboard(withdraw_id))
         bot.send_message(call.message.chat.id,
                          f"⚙️ **{executor_name}** يقوم بتنفيذ طلب السحب #{withdraw_id}\n"
                          f"👤 المستخدم: {user_id} | 💵 الصافي: {net_amount:,.0f} ل.س\n"
