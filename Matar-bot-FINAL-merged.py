@@ -12,6 +12,7 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 import random
+import secrets
 import string
 import time
 import hashlib
@@ -418,6 +419,31 @@ def setup_database():
     global BACKUP_DIR
     BACKUP_DIR = os.path.abspath(os.environ.get('BACKUP_DIR', os.path.join(os.path.dirname(DB_PATH) or '.', 'backups')))
     os.makedirs(BACKUP_DIR, exist_ok=True)
+
+    # حماية إضافية: خذ لقطة SQLite متسقة من قاعدة موجودة قبل أي CREATE/ALTER.
+    # هذا لا يستبدل القرص الدائم، لكنه يمنع ضياع آخر نسخة سليمة أثناء النشر.
+    if os.path.isfile(DB_PATH) and os.path.getsize(DB_PATH) > 0:
+        startup_backup = os.path.join(
+            BACKUP_DIR,
+            f"pre_startup_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.db"
+        )
+        source = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+        target = sqlite3.connect(startup_backup, check_same_thread=False, timeout=30)
+        try:
+            source.backup(target)
+            target.commit()
+            logger.info("✅ تم إنشاء نسخة حماية قبل تشغيل/ترحيل القاعدة: %s", startup_backup)
+        except Exception as exc:
+            logger.error("تعذر إنشاء نسخة الحماية قبل التشغيل: %s", exc)
+            try:
+                target.close()
+                os.remove(startup_backup)
+            except OSError:
+                pass
+        finally:
+            source.close()
+            target.close()
+
     conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
     cursor = conn.cursor()
     
@@ -980,6 +1006,20 @@ def reset_user_state(uid):
     user_section.pop(uid, None)
     withdraw_sessions.pop(uid, None)
     bot.clear_step_handler_by_chat_id(chat_id=uid)
+
+
+def generate_unique_account_name(requested_name, max_attempts=100):
+    """توليد اسم حساب فريد مع لاحقة عشوائية، دون تعديل أي رصيد أو سجل مستخدم."""
+    requested_name = (requested_name or '').strip()
+    # أسماء Ichancy المقترحة تكون لاتينية/رقمية؛ نحافظ على الإدخال المفيد
+    # ونمنع المحارف التي قد تكسر التكامل مع API خارجي لاحقاً.
+    base = re.sub(r'[^A-Za-z0-9_]', '', requested_name)[:24] or 'user'
+    for _ in range(max_attempts):
+        suffix = ''.join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(6))
+        candidate = f"{base}_{suffix}"
+        if not cursor.execute("SELECT 1 FROM users WHERE acc_name=? LIMIT 1", (candidate,)).fetchone():
+            return candidate
+    raise RuntimeError('تعذر توليد اسم حساب فريد بعد عدة محاولات')
 
 def get_db_setting(key_name):
     """الحصول على إعداد من قاعدة البيانات"""
@@ -1827,7 +1867,7 @@ class ActionSystem:
     
     @staticmethod
     def process_account_name(message):
-        """معالجة اسم الحساب وإضافة Matar- تلقائياً"""
+        """تنظيف اسم الحساب وإضافة لاحقة عشوائية تمنع التشابه والتكرار."""
         uid = message.from_user.id
         chat_id = message.chat.id
         
@@ -1835,9 +1875,8 @@ class ActionSystem:
             bot.send_message(chat_id, "القائمة الرئيسية:", reply_markup=get_main_keyboard(uid))
             return
         
-        # إضافة Matar- تلقائياً
         original_name = message.text.strip()
-        account_name = f"Matar-{original_name}"
+        account_name = generate_unique_account_name(original_name)
         
         msg = bot.send_message(chat_id, "🔑 **أدخل كلمة المرور للحساب:**", parse_mode="Markdown")
         bot.register_next_step_handler(msg, ActionSystem.process_account_password, account_name)
@@ -1849,9 +1888,24 @@ class ActionSystem:
         chat_id = message.chat.id
         password = message.text.strip()
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+
+        if not password:
+            msg = bot.send_message(chat_id, "❌ كلمة المرور لا يمكن أن تكون فارغة. أرسل كلمة مرور جديدة:")
+            bot.register_next_step_handler(msg, ActionSystem.process_account_password, account_name)
+            return
+
+        # لا تسمح بإنشاء حساب جديد فوق حساب قائم؛ فهذا كان سبباً مباشراً
+        # في إعادة الكتابة غير المقصودة للبيانات أثناء الاختبار.
+        existing = cursor.execute(
+            "SELECT acc_name, deleted FROM users WHERE user_id=?", (uid,)
+        ).fetchone()
+        if existing and existing[0] and not existing[1]:
+            bot.send_message(chat_id, "⚠️ لديك حساب Ichancy موجود مسبقاً. لم يتم تغيير الحساب أو الرصيد.")
+            ActionSystem.show_ichancy_account(uid, chat_id)
+            return
+
         cursor.execute("""UPDATE users SET 
-            acc_name=?, acc_password=?, created_at=?, site_balance=0, deleted=0 
+            acc_name=?, acc_password=?, created_at=COALESCE(created_at, ?), deleted=0
             WHERE user_id=?""", (account_name, password, created_at, uid))
         conn.commit()
         

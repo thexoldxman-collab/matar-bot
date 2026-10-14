@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: matar-bot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python Matar-bot-FINAL-merged.py
+    envVars:
+      - key: TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DATABASE_PATH
+        value: /var/data/matar_ultimate.db
+      - key: BACKUP_DIR
+        value: /var/data/backups
+      - key: LOG_DIR
+        value: /var/data/logs
+    disk:
+      name: matar-data
+      mountPath: /var/data
+      sizeGB: 1

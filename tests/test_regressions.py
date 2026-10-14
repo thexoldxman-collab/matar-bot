@@ -88,6 +88,66 @@ class RegressionTests(unittest.TestCase):
         columns = {row[1] for row in self.m.cursor.execute('PRAGMA table_info(moderators)').fetchall()}
         self.assertIn('can_use_ai', columns)
 
+    def test_account_name_is_random_unique_and_sanitized(self):
+        m = self.m
+        first = m.generate_unique_account_name('ali')
+        self.assertRegex(first, r'^ali_[a-z0-9]{6}$')
+        m.cursor.execute(
+            "INSERT INTO users(user_id, acc_name, balance, site_balance, deleted) VALUES (?,?,?,?,?)",
+            (810001, first, 10, 20, 0),
+        )
+        m.conn.commit()
+        second = m.generate_unique_account_name('ali')
+        self.assertRegex(second, r'^ali_[a-z0-9]{6}$')
+        self.assertNotEqual(first, second)
+
+    def test_account_creation_preserves_existing_balances(self):
+        m = self.m
+        uid = 810002
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id, acc_name, acc_password, balance, site_balance, deleted, created_at) VALUES (?,?,?,?,?,?,?)",
+            (uid, None, None, 12345, 67890, 0, '2026-01-01 00:00:00'),
+        )
+        m.conn.commit()
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=uid),
+            chat=SimpleNamespace(id=uid),
+            text='new-password',
+        )
+        with patch.object(m.bot, 'send_message'), \
+             patch.object(m.bot, 'register_next_step_handler'), \
+             patch.object(m.notifier, 'notify_new_user'), \
+             patch.object(m.ActionSystem, 'show_ichancy_account'):
+            m.ActionSystem.process_account_password(message, 'ali_ab12cd')
+        row = m.cursor.execute(
+            "SELECT acc_name, acc_password, balance, site_balance, created_at FROM users WHERE user_id=?",
+            (uid,),
+        ).fetchone()
+        self.assertEqual(row, ('ali_ab12cd', 'new-password', 12345.0, 67890.0, '2026-01-01 00:00:00'))
+
+    def test_existing_account_cannot_be_overwritten_by_create_flow(self):
+        m = self.m
+        uid = 810003
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id, acc_name, acc_password, balance, site_balance, deleted) VALUES (?,?,?,?,?,?)",
+            (uid, 'old_name_x1', 'old-pass', 99, 88, 0),
+        )
+        m.conn.commit()
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=uid),
+            chat=SimpleNamespace(id=uid),
+            text='new-password',
+        )
+        with patch.object(m.bot, 'send_message') as send, \
+             patch.object(m.ActionSystem, 'show_ichancy_account'):
+            m.ActionSystem.process_account_password(message, 'new_name_y2')
+        row = m.cursor.execute(
+            "SELECT acc_name, acc_password, balance, site_balance FROM users WHERE user_id=?",
+            (uid,),
+        ).fetchone()
+        self.assertEqual(row, ('old_name_x1', 'old-pass', 99.0, 88.0))
+        self.assertTrue(any('موجود مسبقاً' in str(call.args[1]) for call in send.call_args_list))
+
 
 if __name__ == '__main__':
     unittest.main()
