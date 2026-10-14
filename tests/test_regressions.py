@@ -160,6 +160,27 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(row, ('old_name_x1', 'old-pass', 99.0, 88.0))
         self.assertTrue(any('موجود مسبقاً' in str(call.args[1]) for call in send.call_args_list))
 
+    def test_account_creation_creates_missing_user_row_and_verifies_save(self):
+        m = self.m
+        uid = 810004
+        m.cursor.execute("DELETE FROM users WHERE user_id=?", (uid,))
+        m.conn.commit()
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=uid, first_name='New', username='new_user'),
+            chat=SimpleNamespace(id=uid),
+            text='new-password',
+        )
+        with patch.object(m.bot, 'send_message'), \
+             patch.object(m.bot, 'register_next_step_handler'), \
+             patch.object(m.notifier, 'notify_new_user'), \
+             patch.object(m.ActionSystem, 'show_ichancy_account'):
+            m.ActionSystem.process_account_password(message, 'new_ab12cd')
+        row = m.cursor.execute(
+            "SELECT first_name, username, acc_name, acc_password, balance, site_balance, deleted FROM users WHERE user_id=?",
+            (uid,),
+        ).fetchone()
+        self.assertEqual(row, ('New', 'new_user', 'new_ab12cd', 'new-password', 0.0, 0.0, 0))
+
 
 if __name__ == '__main__':
     unittest.main()

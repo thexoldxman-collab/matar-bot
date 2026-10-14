@@ -1894,20 +1894,45 @@ class ActionSystem:
             bot.register_next_step_handler(msg, ActionSystem.process_account_password, account_name)
             return
 
-        # لا تسمح بإنشاء حساب جديد فوق حساب قائم؛ فهذا كان سبباً مباشراً
-        # في إعادة الكتابة غير المقصودة للبيانات أثناء الاختبار.
-        existing = cursor.execute(
-            "SELECT acc_name, deleted FROM users WHERE user_id=?", (uid,)
-        ).fetchone()
-        if existing and existing[0] and not existing[1]:
-            bot.send_message(chat_id, "⚠️ لديك حساب Ichancy موجود مسبقاً. لم يتم تغيير الحساب أو الرصيد.")
-            ActionSystem.show_ichancy_account(uid, chat_id)
-            return
+        # قد يصل المستخدم إلى زر إنشاء الحساب من لوحة قديمة أو قبل اكتمال
+        # /start؛ لذلك لا نفترض أن صفه موجود. أنشئ الصف دون المساس بأي صف
+        # موجود أو رصيد سابق، ثم حدّث بيانات الحساب فقط.
+        with db_lock:
+            cursor.execute("""INSERT OR IGNORE INTO users
+                (user_id, first_name, username, created_at, dark_mode)
+                VALUES (?,?,?,?,0)""",
+                (uid, getattr(message.from_user, 'first_name', None),
+                 getattr(message.from_user, 'username', None), created_at))
 
-        cursor.execute("""UPDATE users SET 
-            acc_name=?, acc_password=?, created_at=COALESCE(created_at, ?), deleted=0
-            WHERE user_id=?""", (account_name, password, created_at, uid))
-        conn.commit()
+            # لا تسمح بإنشاء حساب جديد فوق حساب قائم؛ فهذا كان سبباً مباشراً
+            # في إعادة الكتابة غير المقصودة للبيانات أثناء الاختبار.
+            existing = cursor.execute(
+                "SELECT acc_name, deleted FROM users WHERE user_id=?", (uid,)
+            ).fetchone()
+            if existing and existing[0] and not existing[1]:
+                conn.rollback()
+                bot.send_message(chat_id, "⚠️ لديك حساب Ichancy موجود مسبقاً. لم يتم تغيير الحساب أو الرصيد.")
+                ActionSystem.show_ichancy_account(uid, chat_id)
+                return
+
+            cursor.execute("""UPDATE users SET
+                acc_name=?, acc_password=?, created_at=COALESCE(created_at, ?), deleted=0
+                WHERE user_id=?""", (account_name, password, created_at, uid))
+            if cursor.rowcount != 1:
+                conn.rollback()
+                error_logger.error("فشل حفظ حساب Ichancy للمستخدم %s: لم يتأثر أي صف", uid)
+                bot.send_message(chat_id, "❌ تعذر حفظ الحساب. لم يتم تأكيد الإنشاء، حاول مرة أخرى.")
+                return
+
+            saved = cursor.execute(
+                "SELECT acc_name, acc_password FROM users WHERE user_id=? AND deleted=0", (uid,)
+            ).fetchone()
+            if not saved or saved[0] != account_name or saved[1] != password:
+                conn.rollback()
+                error_logger.error("فشل التحقق من حفظ حساب Ichancy للمستخدم %s", uid)
+                bot.send_message(chat_id, "❌ تعذر التحقق من حفظ الحساب. لم يتم تأكيد الإنشاء.")
+                return
+            conn.commit()
         
         bot.send_message(chat_id, "✅ **تم إنشاء الحساب بنجاح!**", parse_mode="Markdown")
         
