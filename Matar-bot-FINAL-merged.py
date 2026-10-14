@@ -8390,7 +8390,9 @@ if __name__ == "__main__":
     logger.info("=" * 60)
     logger.info("🚀 MATAR ULTIMATE BOT - ENTERPRISE EDITION v5.0 (FIXED)")
     logger.info("=" * 60)
-    logger.info(f"✅ التوكن: {TOKEN[:10]}...{TOKEN[-5:]}")
+    # لا تسجل التوكن، ولو جزئياً، لأن سجلات Render قد تكون مرئية للمستخدمين
+    # المخولين في مساحة العمل أو محفوظة ضمن سجل النشر.
+    logger.info("✅ تم تحميل بيانات التشغيل السرية دون تسجيلها")
     logger.info(f"✅ معرف المالك: {ADMIN_ID}")
     logger.info(f"✅ القناة: {CHANNEL_ID}")
     logger.info("=" * 60)
@@ -8426,7 +8428,7 @@ if __name__ == "__main__":
     print("🚀 MATAR ULTIMATE BOT - ENTERPRISE EDITION v5.0 (FIXED)")
     print("=" * 60)
     print("✅ البوت شغال وجاهز للاستخدام!")
-    print("📝 توكن: " + TOKEN[:10] + "..." + TOKEN[-5:])
+    print("🔐 تم تحميل التوكن بأمان دون طباعته")
     print("👤 المالك: " + str(ADMIN_ID))
     print("=" * 60)
     
