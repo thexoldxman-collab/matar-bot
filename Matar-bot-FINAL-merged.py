@@ -5229,15 +5229,19 @@ def handle_all_callbacks(call):
         lines = format_buttons_tree()
         if not lines:
             safe_answer_callback(call.id, 'لا توجد أزرار في قاعدة البيانات', show_alert=True)
-            bot.send_message(call.message.chat.id, "📋 **لا توجد أزرار في قاعدة البيانات**", parse_mode="Markdown")
+            bot.send_message(call.message.chat.id, "📋 لا توجد أزرار في قاعدة البيانات", parse_mode="")
             return
         safe_answer_callback(call.id)
+        # أسماء الأزرار يحددها المدير وقد تحتوي _ أو * أو محارف أخرى
+        # تكسر Markdown؛ لذلك نرسل الشجرة كنص عادي، ونقصها حسب حد Telegram.
         text = "📋 شجرة الأزرار الحالية:\n\n" + '\n'.join(lines[:180])
         if len(lines) > 180:
             text += '\n\n⚠️ تم عرض أول 180 فرعاً فقط.'
+        if len(text) > 3900:
+            text = text[:3890].rsplit('\n', 1)[0] + '\n…\n⚠️ تم اختصار العرض لطول رسالة Telegram.'
         keyboard = types.InlineKeyboardMarkup()
         keyboard.add(types.InlineKeyboardButton('🔙 رجوع لإدارة الأزرار', callback_data='admin_buttons'))
-        bot.send_message(call.message.chat.id, text, reply_markup=keyboard)
+        bot.send_message(call.message.chat.id, text, reply_markup=keyboard, parse_mode="")
         return
 
     if data == 'set_button_action':

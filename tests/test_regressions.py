@@ -59,6 +59,18 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(sent)
         self.assertIn('جذر اختبار', sent[-1][0][1])
         self.assertIn('فرع اختبار', sent[-1][0][1])
+        self.assertEqual(sent[-1][1].get('parse_mode'), '')
+
+    def test_button_tree_plain_text_handles_markdown_characters(self):
+        m = self.m
+        m.add_new_button('اسم_يحوي*محارف[خاصة]', action='show_balance', parent='main', admin_id=m.ADMIN_ID)
+        sent = []
+        with patch.object(m.bot, 'answer_callback_query'), \
+             patch.object(m.bot, 'send_message', side_effect=lambda *a, **kw: sent.append((a, kw))):
+            m.handle_all_callbacks(self.fake_call('list_buttons'))
+        self.assertTrue(sent)
+        self.assertEqual(sent[-1][1].get('parse_mode'), '')
+        self.assertLessEqual(len(sent[-1][0][1]), 4096)
 
     def test_reset_user_state_clears_every_transient_mode(self):
         m = self.m
