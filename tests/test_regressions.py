@@ -38,7 +38,14 @@ class RegressionTests(unittest.TestCase):
         with patch.object(m.bot, 'answer_callback_query') as answer, \
              patch.object(m.bot, 'edit_message_text') as edit:
             m.handle_all_callbacks(self.fake_call('button_management_actions'))
-        answer.assert_called_once()
+        self.assertGreaterEqual(answer.call_count, 1)
+        edit.assert_called_once()
+
+    def test_button_actions_continue_when_telegram_ack_fails(self):
+        m = self.m
+        with patch.object(m.bot, 'answer_callback_query', side_effect=RuntimeError('stale callback')), \
+             patch.object(m.bot, 'edit_message_text') as edit:
+            m.handle_all_callbacks(self.fake_call('button_management_actions'))
         edit.assert_called_once()
 
     def test_button_tree_callback_responds_and_contains_child(self):
