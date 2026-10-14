@@ -940,6 +940,8 @@ def setup_database():
         cursor.execute('ALTER TABLE moderators ADD COLUMN can_withdraw_site_to_bot INTEGER DEFAULT 0')
     if 'can_manage_wheel' not in moderator_columns:
         cursor.execute('ALTER TABLE moderators ADD COLUMN can_manage_wheel INTEGER DEFAULT 0')
+    if 'can_use_ai' not in moderator_columns:
+        cursor.execute('ALTER TABLE moderators ADD COLUMN can_use_ai INTEGER DEFAULT 0')
 
     conn.commit()
     logger.info("✅ تم إنشاء قاعدة البيانات بنجاح مع 30+ جدول")
@@ -972,9 +974,11 @@ db_lock = RLock()
 # =============================================================================
 
 def reset_user_state(uid):
-    """إعادة تعيين حالة المستخدم لمنع التعليق"""
-    if uid in user_states:
-        del user_states[uid]
+    """إلغاء كل الحالات المؤقتة للمستخدم قبل الانتقال لوظيفة أخرى."""
+    user_states.pop(uid, None)
+    user_mode.pop(uid, None)
+    user_section.pop(uid, None)
+    withdraw_sessions.pop(uid, None)
     bot.clear_step_handler_by_chat_id(chat_id=uid)
 
 def get_db_setting(key_name):
@@ -2830,6 +2834,26 @@ def get_buttons_tree(parent='main', level=0):
     
     return tree
 
+
+def format_buttons_tree(parent='main', level=0, seen=None):
+    """تنسيق شجرة الأزرار كنص قابل للقراءة مع حماية من حلقات الأب/الابن."""
+    seen = set() if seen is None else seen
+    cursor.execute("""SELECT id, button_text, action, is_active, sort_order
+                      FROM dynamic_buttons WHERE parent_button=?
+                      ORDER BY sort_order ASC, id ASC""", (parent,))
+    rows = cursor.fetchall()
+    lines = []
+    for row_id, text, action, active, order in rows:
+        marker = '✅' if active else '❌'
+        indent = '  ' * level
+        lines.append(f"{indent}{marker} {order}. {text} — {action or 'بدون وظيفة'}")
+        if row_id in seen:
+            lines.append(f"{indent}  ⚠️ حلقة مكررة")
+            continue
+        seen.add(row_id)
+        lines.extend(format_buttons_tree(text, level + 1, seen))
+    return lines
+
 def add_new_button(button_text, action=None, parent='main', level=1, message_text=None, photo_id=None, admin_id=ADMIN_ID):
     """إضافة زر جديد"""
     button_name = f"btn_{int(time.time())}_{random.randint(1000, 9999)}"
@@ -3020,7 +3044,7 @@ def get_buttons_management_keyboard():
             btn_label = f"{status_icon}{level_prefix} {b[0]}"
             keyboard.add(types.InlineKeyboardButton(btn_label, callback_data=f"btn_select_{b[0]}"))
     
-    keyboard.add(types.InlineKeyboardButton("━━━ 🔧 الإجراءات ━━━", callback_data="noop"))
+    keyboard.add(types.InlineKeyboardButton("━━━ 🔧 الإجراءات ━━━", callback_data="button_management_actions"))
     keyboard.add(
         types.InlineKeyboardButton("➕ إضافة زر جديد", callback_data="add_button_new"),
         types.InlineKeyboardButton("📋 عرض شجرة الأزرار", callback_data="list_buttons"),
@@ -4839,6 +4863,25 @@ def handle_all_callbacks(call):
         bot.answer_callback_query(call.id)
         return
 
+    if data == 'button_management_actions':
+        bot.answer_callback_query(call.id)
+        keyboard = types.InlineKeyboardMarkup(row_width=2)
+        keyboard.add(
+            types.InlineKeyboardButton('➕ إضافة زر جديد', callback_data='add_button_new'),
+            types.InlineKeyboardButton('📋 عرض شجرة الأزرار', callback_data='list_buttons'),
+            types.InlineKeyboardButton('🔄 تحديث القائمة', callback_data='admin_buttons'),
+            types.InlineKeyboardButton('🔙 رجوع للإدارة', callback_data='back_to_full_admin')
+        )
+        try:
+            bot.edit_message_text(
+                '🔧 **إجراءات إدارة الأزرار**\n\nاختر العملية المطلوبة:',
+                call.message.chat.id, call.message.message_id,
+                reply_markup=keyboard, parse_mode='Markdown'
+            )
+        except Exception:
+            bot.send_message(call.message.chat.id, '🔧 **إجراءات إدارة الأزرار**', reply_markup=keyboard, parse_mode='Markdown')
+        return
+
     # اختيار زر للتعديل
     if data.startswith('btn_select_'):
         button_text = data[11:]
@@ -5093,15 +5136,18 @@ def handle_all_callbacks(call):
         return
 
     if data == 'list_buttons':
-        buttons = get_buttons_list()
-        if not buttons:
+        lines = format_buttons_tree()
+        if not lines:
+            bot.answer_callback_query(call.id, 'لا توجد أزرار في قاعدة البيانات', show_alert=True)
             bot.send_message(call.message.chat.id, "📋 **لا توجد أزرار في قاعدة البيانات**", parse_mode="Markdown")
             return
-        text = "📋 **قائمة الأزرار:**\n\n"
-        for b in buttons[:20]:
-            status = "✅" if b[5] == 1 else "❌"
-            text += f"{status} `{b[1]}` (المستوى: {b[3]}, الترتيب: {b[4]})\n📂 المسار: {b[6]}\n\n"
-        bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
+        bot.answer_callback_query(call.id)
+        text = "📋 شجرة الأزرار الحالية:\n\n" + '\n'.join(lines[:180])
+        if len(lines) > 180:
+            text += '\n\n⚠️ تم عرض أول 180 فرعاً فقط.'
+        keyboard = types.InlineKeyboardMarkup()
+        keyboard.add(types.InlineKeyboardButton('🔙 رجوع لإدارة الأزرار', callback_data='admin_buttons'))
+        bot.send_message(call.message.chat.id, text, reply_markup=keyboard)
         return
 
     if data == 'set_button_action':
@@ -6617,6 +6663,14 @@ def start_ai_chat(uid, chat_id):
     if not ai_allowed(uid):
         bot.send_message(chat_id, '❌ لا تملك صلاحية استخدام المساعد الذكي.')
         return
+    if not GEMINI_API_KEY or not ai_is_enabled():
+        user_mode.pop(uid, None)
+        bot.send_message(
+            chat_id,
+            '⚠️ المساعد غير مفعّل حالياً. أضف المتغير `GEMINI_API_KEY` في Render ثم أعد التشغيل.',
+            parse_mode='Markdown'
+        )
+        return
     user_mode[uid] = AI_CHAT_STATE
     bot.send_message(chat_id, '💬 **بدأت محادثة دائمة مع المساعد.**\nأرسل طلبك الآن، أو اضغط «إلغاء» للخروج.', parse_mode='Markdown')
 
@@ -6643,6 +6697,15 @@ def process_ai_message(message):
     if not ai_allowed(uid):
         user_mode.pop(uid, None)
         return
+    if not GEMINI_API_KEY or not ai_is_enabled():
+        user_mode.pop(uid, None)
+        bot.send_message(
+            message.chat.id,
+            '⚠️ المساعد غير مفعّل حالياً. أضف المتغير `GEMINI_API_KEY` في Render ثم أعد التشغيل.',
+            parse_mode='Markdown',
+            reply_markup=get_main_keyboard(uid)
+        )
+        return
     text = (message.text or '').strip()
     if text in ('❌ إلغاء', '🔙 رجوع', '🔙 العودة للقائمة الرئيسية'):
         user_mode.pop(uid, None)
@@ -6655,7 +6718,7 @@ def process_ai_message(message):
     bot.send_chat_action(message.chat.id, 'typing')
     answer, error = call_gemini(uid)
     if error:
-        bot.send_message(message.chat.id, '⚠️ ' + error)
+        bot.send_message(message.chat.id, '⚠️ ' + error, parse_mode='Markdown')
         return
     ai_store(uid, 'assistant', answer)
     bot.send_message(message.chat.id, answer, reply_markup=ai_keyboard(uid))
