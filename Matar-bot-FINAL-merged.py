@@ -4616,31 +4616,67 @@ def check_sub_after_start(call):
 # 18. معالج الكول باكات الشامل (Callback Handlers) - نسخة مصححة
 # =============================================================================
 
+def safe_answer_callback(call_id, text=None, show_alert=False):
+    """تأكيد الضغط دون السماح لخطأ Telegram بإيقاف تنفيذ الإجراء."""
+    try:
+        kwargs = {'show_alert': show_alert}
+        if text:
+            kwargs['text'] = text
+        bot.answer_callback_query(call_id, **kwargs)
+    except Exception as exc:
+        logger.warning('تعذر تأكيد callback %s: %s', call_id, exc)
+
+
+def callback_error_guard(handler):
+    """يمنع توقف callback بصمت ويسجل الخطأ ويرسل رسالة مفهومة."""
+    def guarded(call):
+        try:
+            return handler(call)
+        except Exception as exc:
+            error_logger.exception(
+                'Unhandled callback %s from %s',
+                getattr(call, 'data', '?'),
+                getattr(getattr(call, 'from_user', None), 'id', '?')
+            )
+            safe_answer_callback(getattr(call, 'id', None), 'حدث خطأ، راجع السجل.', show_alert=True)
+            try:
+                bot.send_message(
+                    call.message.chat.id,
+                    '⚠️ حدث خطأ أثناء تنفيذ هذا الزر. لم يتم تنفيذ أي عملية مالية.'
+                )
+            except Exception:
+                pass
+    return guarded
+
+
 @bot.callback_query_handler(func=lambda call: True)
+@callback_error_guard
 def handle_all_callbacks(call):
     """معالج شامل لجميع الكول باكات - نسخة مصححة"""
     uid = call.from_user.id
     data = call.data
+    # نؤكد الضغط بأمان أولاً؛ الفشل هنا لا يلغي تنفيذ الزر.
+    safe_answer_callback(call.id)
 
     # ===== المساعد الذكي =====
     if data == 'ai_chat':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         start_ai_chat(uid, call.message.chat.id)
         return
     if data == 'ai_status':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         ai_status(uid, call.message.chat.id)
         return
     if data == 'ai_toggle':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         toggle_ai(uid, call.message.chat.id)
         return
     if data == 'ai_permissions':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         show_ai_permissions(uid, call.message.chat.id)
         return
     if data.startswith('ai_perm_'):
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         try:
             moderator_id = int(data[8:])
         except ValueError:
@@ -4649,11 +4685,11 @@ def handle_all_callbacks(call):
         toggle_ai_permission(uid, call.message.chat.id, moderator_id)
         return
     if data == 'ai_clear':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         clear_ai_chat(uid, call.message.chat.id)
         return
     if data == 'ai_back':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         user_mode.pop(uid, None)
         if ai_allowed(uid):
             bot.send_message(call.message.chat.id, '🔙 تم الرجوع.', reply_markup=get_admin_main_keyboard(uid == ADMIN_ID, uid))
@@ -4662,13 +4698,13 @@ def handle_all_callbacks(call):
     # ===== 1. معالج النسخ (يجب أن يكون الأول) =====
     if data.startswith('copy_'):
         text_to_copy = data[5:]
-        bot.answer_callback_query(call.id, "📋 تم النسخ!", show_alert=False)
+        safe_answer_callback(call.id, "📋 تم النسخ!", show_alert=False)
         bot.send_message(call.message.chat.id, f"✅ **انسخ هذا النص:**\n`{text_to_copy}`", parse_mode="Markdown")
         return
 
     # ===== 2. معالج أزرار الشحن والسحب =====
     if data == 'charge_syria':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         bot.clear_step_handler_by_chat_id(uid)
         syriatel_status = get_db_setting('syriatel_status') or 'active'
         
@@ -4701,7 +4737,7 @@ def handle_all_callbacks(call):
         return
 
     if data == 'charge_sham':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         bot.clear_step_handler_by_chat_id(uid)
         sham_status = get_db_setting('sham_status') or 'active'
         
@@ -4729,19 +4765,19 @@ def handle_all_callbacks(call):
         return
 
     if data == 'withdraw_syria':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         msg = bot.send_message(call.message.chat.id, "📱 **أرسل رقم محفظة سيرياتل كاش التي تريد الاستلام عليها:**")
         bot.register_next_step_handler(msg, process_syria_withdraw_account)
         return
 
     if data == 'withdraw_sham':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         markup = get_withdraw_currency_keyboard()
         bot.send_message(call.message.chat.id, "💰 **اختر العملة:**", reply_markup=markup)
         return
 
     if data == 'charge_usdt':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         bot.clear_step_handler_by_chat_id(uid)
         usdt_status = get_db_setting('usdt_status') or 'متوقف'
         
@@ -4770,7 +4806,7 @@ def handle_all_callbacks(call):
         return
 
     if data == 'charge_binance':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         bot.clear_step_handler_by_chat_id(uid)
         binance_status = get_db_setting('binance_status') or 'متوقف'
         
@@ -4800,7 +4836,7 @@ def handle_all_callbacks(call):
         return
 
     if data == 'withdraw_usdt':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         bot.clear_step_handler_by_chat_id(uid)
         usdt_status = get_db_setting('usdt_status') or 'متوقف'
         if usdt_status != 'active':
@@ -4813,7 +4849,7 @@ def handle_all_callbacks(call):
         return
 
     if data == 'withdraw_binance':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         bot.clear_step_handler_by_chat_id(uid)
         binance_status = get_db_setting('binance_status') or 'متوقف'
         if binance_status != 'active':
@@ -4826,7 +4862,7 @@ def handle_all_callbacks(call):
         return
 
     if data == 'withdraw_sham_lyr' or data == 'withdraw_sham_usd':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         currency = "ليرة سورية" if data == 'withdraw_sham_lyr' else "دولار"
         msg = bot.send_message(call.message.chat.id, f"🏦 **أرسل عنوان محفظة شام كاش (للاستلام بـ {currency}):**")
         bot.register_next_step_handler(msg, process_sham_withdraw_account, currency)
@@ -4834,12 +4870,12 @@ def handle_all_callbacks(call):
 
     # ===== 3. معالج التأكيد والإلغاء =====
     if data == 'confirm_yes':
-        bot.answer_callback_query(call.id, "✅ تم التأكيد!")
+        safe_answer_callback(call.id, "✅ تم التأكيد!")
         bot.edit_message_text("✅ **تمت العملية بنجاح!**", call.message.chat.id, call.message.message_id)
         return
 
     if data == 'confirm_no':
-        bot.answer_callback_query(call.id, "❌ تم الإلغاء")
+        safe_answer_callback(call.id, "❌ تم الإلغاء")
         bot.edit_message_text("❌ **تم إلغاء العملية.**", call.message.chat.id, call.message.message_id)
         return
 
@@ -4854,17 +4890,17 @@ def handle_all_callbacks(call):
                 conn.commit()
             bot.send_message(call.message.chat.id, "📋 **القائمة الرئيسية:**", reply_markup=get_main_keyboard(uid), parse_mode="Markdown")
         else:
-            bot.answer_callback_query(call.id, "❌ لم تشترك بعد! اشترك ثم حاول مرة أخرى", show_alert=True)
+            safe_answer_callback(call.id, "❌ لم تشترك بعد! اشترك ثم حاول مرة أخرى", show_alert=True)
         return
 
     # ===== 5. باقي الأزرار الإدارية والداخلية =====
     # ===== نظام إدارة الأزرار الجديد =====
     if data == 'noop':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         return
 
     if data == 'button_management_actions':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         keyboard = types.InlineKeyboardMarkup(row_width=2)
         keyboard.add(
             types.InlineKeyboardButton('➕ إضافة زر جديد', callback_data='add_button_new'),
@@ -4888,7 +4924,7 @@ def handle_all_callbacks(call):
         cursor.execute("SELECT button_text, action, message_text, is_active, parent_button, level FROM dynamic_buttons WHERE button_text=?", (button_text,))
         btn = cursor.fetchone()
         if not btn:
-            bot.answer_callback_query(call.id, "❌ الزر غير موجود", show_alert=True)
+            safe_answer_callback(call.id, "❌ الزر غير موجود", show_alert=True)
             return
         status = "✅ مفعل" if btn[3] else "❌ معطل"
         parent = btn[4] or "الرئيسية"
@@ -4949,7 +4985,7 @@ def handle_all_callbacks(call):
                     break
         if action:
             update_button_full(button_text, new_action=action, admin_id=uid)
-            bot.answer_callback_query(call.id, f"✅ تم تعيين الوظيفة: {action}", show_alert=True)
+            safe_answer_callback(call.id, f"✅ تم تعيين الوظيفة: {action}", show_alert=True)
             try:
                 bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
                                               reply_markup=get_button_options_keyboard(button_text))
@@ -5025,7 +5061,7 @@ def handle_all_callbacks(call):
         button_text = data[11:]
         new_status = toggle_button_status(button_text, uid)
         status_text = "✅ مفعل" if new_status == 1 else "❌ معطل"
-        bot.answer_callback_query(call.id, f"تم التغيير: {status_text}", show_alert=True)
+        safe_answer_callback(call.id, f"تم التغيير: {status_text}", show_alert=True)
         try:
             bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
                                           reply_markup=get_button_options_keyboard(button_text))
@@ -5073,7 +5109,7 @@ def handle_all_callbacks(call):
     if data.startswith('btn_confirm_delete_'):
         button_text = data[19:]
         delete_button(button_text, uid)
-        bot.answer_callback_query(call.id, f"✅ تم حذف الزر: {button_text}", show_alert=True)
+        safe_answer_callback(call.id, f"✅ تم حذف الزر: {button_text}", show_alert=True)
         try:
             bot.edit_message_text("🔧 **إدارة الأزرار:**",
                                   call.message.chat.id, call.message.message_id,
@@ -5138,10 +5174,10 @@ def handle_all_callbacks(call):
     if data == 'list_buttons':
         lines = format_buttons_tree()
         if not lines:
-            bot.answer_callback_query(call.id, 'لا توجد أزرار في قاعدة البيانات', show_alert=True)
+            safe_answer_callback(call.id, 'لا توجد أزرار في قاعدة البيانات', show_alert=True)
             bot.send_message(call.message.chat.id, "📋 **لا توجد أزرار في قاعدة البيانات**", parse_mode="Markdown")
             return
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         text = "📋 شجرة الأزرار الحالية:\n\n" + '\n'.join(lines[:180])
         if len(lines) > 180:
             text += '\n\n⚠️ تم عرض أول 180 فرعاً فقط.'
@@ -5191,7 +5227,7 @@ def handle_all_callbacks(call):
         button_text = data[7:]
         new_status = toggle_button_status(button_text, uid)
         status_text = "مفعل ✅" if new_status == 1 else "معطل ❌"
-        bot.answer_callback_query(call.id, f"تم تغيير حالة الزر إلى: {status_text}")
+        safe_answer_callback(call.id, f"تم تغيير حالة الزر إلى: {status_text}")
         try:
             bot.edit_message_text(f"🔧 **تعديل الزر:** `{button_text}`",
                                   call.message.chat.id, call.message.message_id,
@@ -5220,7 +5256,7 @@ def handle_all_callbacks(call):
         cursor.execute("SELECT button_text, is_active FROM dynamic_buttons WHERE parent_button=?", (button_text,))
         children = cursor.fetchall()
         if not children:
-            bot.answer_callback_query(call.id, f"لا توجد أزرار فرعية تحت '{button_text}'", show_alert=True)
+            safe_answer_callback(call.id, f"لا توجد أزرار فرعية تحت '{button_text}'", show_alert=True)
         else:
             text = f"📂 **الأزرار الفرعية لـ** `{button_text}`:\n\n"
             for c in children:
@@ -5272,7 +5308,7 @@ def handle_all_callbacks(call):
         new_val = 'stopped' if current == 'active' else 'active'
         update_db_setting('syriatel_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
-        bot.answer_callback_query(call.id, f"سيرياتل كاش: {status}", show_alert=True)
+        safe_answer_callback(call.id, f"سيرياتل كاش: {status}", show_alert=True)
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
                                       reply_markup=get_payment_settings_keyboard())
         return
@@ -5282,7 +5318,7 @@ def handle_all_callbacks(call):
         new_val = 'stopped' if current == 'active' else 'active'
         update_db_setting('sham_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
-        bot.answer_callback_query(call.id, f"شام كاش: {status}", show_alert=True)
+        safe_answer_callback(call.id, f"شام كاش: {status}", show_alert=True)
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
                                       reply_markup=get_payment_settings_keyboard())
         return
@@ -5292,7 +5328,7 @@ def handle_all_callbacks(call):
         new_val = 'متوقف' if current == 'active' else 'active'
         update_db_setting('usdt_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
-        bot.answer_callback_query(call.id, f"USDT: {status}", show_alert=True)
+        safe_answer_callback(call.id, f"USDT: {status}", show_alert=True)
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
                                       reply_markup=get_payment_settings_keyboard())
         return
@@ -5302,7 +5338,7 @@ def handle_all_callbacks(call):
         new_val = 'متوقف' if current == 'active' else 'active'
         update_db_setting('binance_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
-        bot.answer_callback_query(call.id, f"Binance: {status}", show_alert=True)
+        safe_answer_callback(call.id, f"Binance: {status}", show_alert=True)
         bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
                                       reply_markup=get_payment_settings_keyboard())
         return
@@ -5455,7 +5491,7 @@ def handle_all_callbacks(call):
         new = 'maintenance' if current == 'active' else 'active'
         update_db_setting('bot_status', new, uid)
         status = "🟢 مفعل" if new == 'active' else "🔴 معطل"
-        bot.answer_callback_query(call.id, f"✅ تم تغيير حالة البوت إلى: {status}", show_alert=True)
+        safe_answer_callback(call.id, f"✅ تم تغيير حالة البوت إلى: {status}", show_alert=True)
         bot.edit_message_text("🛑 **لوحة التحكم الكامل:**", call.message.chat.id, call.message.message_id, reply_markup=get_full_admin_keyboard(), parse_mode="Markdown")
         return
 
@@ -5546,10 +5582,10 @@ def handle_all_callbacks(call):
         receipt = '_'.join(parts[2:-2])
         
         if uid != user_id_in_cb:
-            bot.answer_callback_query(call.id, "❌ هذا الزر ليس لك!", show_alert=True)
+            safe_answer_callback(call.id, "❌ هذا الزر ليس لك!", show_alert=True)
             return
         
-        bot.answer_callback_query(call.id, f"✅ تم اختيار الكود: {number}")
+        safe_answer_callback(call.id, f"✅ تم اختيار الكود: {number}")
         
         # حفظ الطلب في قاعدة البيانات
         txn_receipt = log_transaction(uid, "charge_request", 0, "syriatel", "pending", 
@@ -5573,7 +5609,7 @@ def handle_all_callbacks(call):
 
     # ===== عجلة الحظ =====
     if data == 'wheel_back':
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         bot.send_message(call.message.chat.id, '📋 القائمة الرئيسية:', reply_markup=get_main_keyboard(uid))
         return
     if data == 'wheel_spin':
@@ -5581,42 +5617,42 @@ def handle_all_callbacks(call):
         return
     if data == 'wheel_admin':
         if not check_permission(uid, 'can_manage_wheel'):
-            bot.answer_callback_query(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
-        bot.answer_callback_query(call.id)
+            safe_answer_callback(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
+        safe_answer_callback(call.id)
         bot.send_message(call.message.chat.id, wheel_status_text(), reply_markup=wheel_admin_keyboard(), parse_mode='Markdown')
         return
     if data == 'wheel_toggle':
         if not check_permission(uid, 'can_manage_wheel'):
-            bot.answer_callback_query(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
+            safe_answer_callback(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
         new_value = '0' if wheel_is_enabled() else '1'
         update_db_setting('wheel_enabled', new_value, uid)
-        bot.answer_callback_query(call.id, '✅ تم تحديث حالة العجلة')
+        safe_answer_callback(call.id, '✅ تم تحديث حالة العجلة')
         bot.send_message(call.message.chat.id, wheel_status_text(), reply_markup=wheel_admin_keyboard(), parse_mode='Markdown')
         return
     if data == 'wheel_prizes':
         if not check_permission(uid, 'can_manage_wheel'):
-            bot.answer_callback_query(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
-        bot.answer_callback_query(call.id); wheel_list_prizes(call.message.chat.id); return
+            safe_answer_callback(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
+        safe_answer_callback(call.id); wheel_list_prizes(call.message.chat.id); return
     if data == 'wheel_add':
         if not check_permission(uid, 'can_manage_wheel'):
-            bot.answer_callback_query(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
-        bot.answer_callback_query(call.id)
+            safe_answer_callback(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
+        safe_answer_callback(call.id)
         msg = bot.send_message(call.message.chat.id, 'أرسل الجائزة بهذا الشكل:\nاسم الجائزة,النوع fixed أو percent,القيمة,الوزن')
         bot.register_next_step_handler(msg, process_wheel_add_prize)
         return
     if data == 'wheel_threshold':
         if not check_permission(uid, 'can_manage_wheel'):
-            bot.answer_callback_query(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
-        bot.answer_callback_query(call.id)
+            safe_answer_callback(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
+        safe_answer_callback(call.id)
         msg = bot.send_message(call.message.chat.id, 'أرسل حد الشحن اليومي المطلوب للفة (رقم فقط):')
         bot.register_next_step_handler(msg, process_wheel_threshold)
         return
     if data.startswith('wheel_prize_toggle_'):
         if not check_permission(uid, 'can_manage_wheel'):
-            bot.answer_callback_query(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
+            safe_answer_callback(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
         rid = int(data.rsplit('_',1)[1])
         cursor.execute('UPDATE wheel_prizes SET is_active=CASE WHEN is_active=1 THEN 0 ELSE 1 END, updated_at=? WHERE id=?', (datetime.now().strftime('%Y-%m-%d %H:%M:%S'),rid)); conn.commit()
-        bot.answer_callback_query(call.id, '✅ تم تحديث الجائزة'); wheel_list_prizes(call.message.chat.id); return
+        safe_answer_callback(call.id, '✅ تم تحديث الجائزة'); wheel_list_prizes(call.message.chat.id); return
 
     # ===== معالجة أوامر غرفة العمليات =====
     if data.startswith('ops_execute_charge_'):
@@ -5688,10 +5724,10 @@ def handle_all_callbacks(call):
     # ===== معالج إنشاء غرفة العمليات =====
     if data == 'create_operations_room':
         if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
+            safe_answer_callback(call.id, "❌ للمالك فقط", show_alert=True)
             return
         set_operations_room_id(call.message.chat.id)
-        bot.answer_callback_query(call.id, "✅ تم تعيين هذه المحادثة كغرفة عمليات!", show_alert=True)
+        safe_answer_callback(call.id, "✅ تم تعيين هذه المحادثة كغرفة عمليات!", show_alert=True)
         bot.send_message(call.message.chat.id, 
                          "🏢 **تم إنشاء غرفة العمليات بنجاح!**\n\n"
                          "جميع طلبات الشحن والسحب والرسائل ستصل إلى هنا.\n"
@@ -5701,7 +5737,7 @@ def handle_all_callbacks(call):
 
     if data == 'admin_api_connect':
         if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
+            safe_answer_callback(call.id, "❌ للمالك فقط", show_alert=True)
             return
         keyboard = types.InlineKeyboardMarkup(row_width=1)
         keyboard.add(
@@ -5756,7 +5792,7 @@ def handle_all_callbacks(call):
         cursor.execute("SELECT name, provider, endpoint, is_active, is_paused FROM api_configs WHERE id=?", (api_id,))
         api = cursor.fetchone()
         if not api:
-            bot.answer_callback_query(call.id, "❌ لم يعد موجوداً", show_alert=True)
+            safe_answer_callback(call.id, "❌ لم يعد موجوداً", show_alert=True)
             return
         status = "✅ نشط" if api[3] and not api[4] else "⏸️ موقوف" if api[4] else "❌ معطل"
         keyboard = types.InlineKeyboardMarkup(row_width=2)
@@ -5776,46 +5812,46 @@ def handle_all_callbacks(call):
         api_id = int(data[13:])
         cursor.execute("UPDATE api_configs SET is_active=1, is_paused=0 WHERE id=?", (api_id,))
         conn.commit()
-        bot.answer_callback_query(call.id, "✅ تم تفعيل الاتصال", show_alert=False)
+        safe_answer_callback(call.id, "✅ تم تفعيل الاتصال", show_alert=False)
         return
 
     if data.startswith('api_pause_'):
         api_id = int(data[10:])
         cursor.execute("UPDATE api_configs SET is_paused=1 WHERE id=?", (api_id,))
         conn.commit()
-        bot.answer_callback_query(call.id, "⏸️ تم إيقاف الاتصال مؤقتاً", show_alert=False)
+        safe_answer_callback(call.id, "⏸️ تم إيقاف الاتصال مؤقتاً", show_alert=False)
         return
 
     if data.startswith('api_deactivate_'):
         api_id = int(data[15:])
         cursor.execute("UPDATE api_configs SET is_active=0 WHERE id=?", (api_id,))
         conn.commit()
-        bot.answer_callback_query(call.id, "❌ تم تعطيل الاتصال", show_alert=False)
+        safe_answer_callback(call.id, "❌ تم تعطيل الاتصال", show_alert=False)
         return
 
     if data.startswith('api_delete_'):
         api_id = int(data[11:])
         cursor.execute("DELETE FROM api_configs WHERE id=?", (api_id,))
         conn.commit()
-        bot.answer_callback_query(call.id, "🗑️ تم حذف الاتصال", show_alert=True)
+        safe_answer_callback(call.id, "🗑️ تم حذف الاتصال", show_alert=True)
         return
 
     if data == 'api_list_all':
         cursor.execute("SELECT name, provider, endpoint, is_active, is_paused FROM api_configs ORDER BY provider")
         apis = cursor.fetchall()
         if not apis:
-            bot.answer_callback_query(call.id, "لا توجد اتصالات API حالياً", show_alert=True)
+            safe_answer_callback(call.id, "لا توجد اتصالات API حالياً", show_alert=True)
             return
         text = "📋 **جميع اتصالات API:**\n\n"
         for api in apis:
             status = "✅" if api[3] and not api[4] else "⏸️" if api[4] else "❌"
             text += f"{status} {api[0]} | {api[1]}\n🌐 {api[2]}\n\n"
         bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         return
 
     if data == 'api_test_all':
-        bot.answer_callback_query(call.id, "🔌 جاري اختبار الاتصالات...", show_alert=False)
+        safe_answer_callback(call.id, "🔌 جاري اختبار الاتصالات...", show_alert=False)
         cursor.execute("SELECT name, endpoint, is_active FROM api_configs WHERE is_active=1 AND is_paused=0")
         apis = cursor.fetchall()
         results = "🔌 **نتائج اختبار الاتصالات:**\n\n"
@@ -5830,7 +5866,7 @@ def handle_all_callbacks(call):
 
     if data == 'admin_operations_room':
         if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
+            safe_answer_callback(call.id, "❌ للمالك فقط", show_alert=True)
             return
         room_id = get_db_setting('operations_room_id')
         keyboard = types.InlineKeyboardMarkup(row_width=1)
@@ -5855,21 +5891,21 @@ def handle_all_callbacks(call):
         pc = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM pending_withdraws WHERE status='pending'")
         pw = cursor.fetchone()[0]
-        bot.answer_callback_query(call.id, f"⏳ شحنات معلقة: {pc} | سحوبات معلقة: {pw}", show_alert=True)
+        safe_answer_callback(call.id, f"⏳ شحنات معلقة: {pc} | سحوبات معلقة: {pw}", show_alert=True)
         return
 
     if data == 'manual_backup':
         if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
+            safe_answer_callback(call.id, "❌ للمالك فقط", show_alert=True)
             return
         try:
             backup_path = create_consistent_backup(uid)
             backup_name = os.path.basename(backup_path)
             with open(backup_path, 'rb') as f:
                 bot.send_document(call.message.chat.id, f, caption=f"💾 نسخة احتياطية: {backup_name}")
-            bot.answer_callback_query(call.id, "✅ تم إنشاء النسخة الاحتياطية!", show_alert=False)
+            safe_answer_callback(call.id, "✅ تم إنشاء النسخة الاحتياطية!", show_alert=False)
         except Exception as e:
-            bot.answer_callback_query(call.id, f"❌ خطأ: {e}", show_alert=True)
+            safe_answer_callback(call.id, f"❌ خطأ: {e}", show_alert=True)
         return
 
     # الرجوع للوحة الإدارة الكاملة
@@ -5917,14 +5953,14 @@ def handle_all_callbacks(call):
                     cursor.execute(f"UPDATE moderators SET {db_perm}=? WHERE user_id=?", (new_val, target_mod))
                     conn.commit()
                     status = "🟢 مفعل" if new_val else "🔴 معطل"
-                    bot.answer_callback_query(call.id, f"تم التعديل: {status}", show_alert=False)
+                    safe_answer_callback(call.id, f"تم التعديل: {status}", show_alert=False)
                     log_admin_action(uid, "تعديل صلاحية", f"تعديل {db_perm} للمشرف {target_mod} إلى {new_val}")
                 else:
-                    bot.answer_callback_query(call.id, "❌ المشرف غير موجود", show_alert=True)
+                    safe_answer_callback(call.id, "❌ المشرف غير موجود", show_alert=True)
             else:
-                bot.answer_callback_query(call.id, "❌ صلاحية غير معروفة", show_alert=True)
+                safe_answer_callback(call.id, "❌ صلاحية غير معروفة", show_alert=True)
         except (IndexError, ValueError):
-            bot.answer_callback_query(call.id, "❌ خطأ في البيانات", show_alert=True)
+            safe_answer_callback(call.id, "❌ خطأ في البيانات", show_alert=True)
         return
 
     if data == 'back_to_moderators':
@@ -5936,7 +5972,7 @@ def handle_all_callbacks(call):
     # نظام الهدايا
     if data == 'admin_gifts':
         if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ هذه الميزة للمالك فقط", show_alert=True)
+            safe_answer_callback(call.id, "❌ هذه الميزة للمالك فقط", show_alert=True)
             return
         keyboard = types.InlineKeyboardMarkup(row_width=2)
         keyboard.add(
@@ -5952,7 +5988,7 @@ def handle_all_callbacks(call):
 
     if data == 'create_gift_start':
         if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
+            safe_answer_callback(call.id, "❌ للمالك فقط", show_alert=True)
             return
         keyboard = types.InlineKeyboardMarkup(row_width=2)
         keyboard.add(
@@ -5978,25 +6014,25 @@ def handle_all_callbacks(call):
                           ORDER BY created_at DESC LIMIT 10""")
         gifts = cursor.fetchall()
         if not gifts:
-            bot.answer_callback_query(call.id, "لا توجد أكواد هدايا نشطة", show_alert=True)
+            safe_answer_callback(call.id, "لا توجد أكواد هدايا نشطة", show_alert=True)
         else:
             text = "🎁 **الأكواد النشطة:**\n\n"
             for g in gifts:
                 expiry = g[5] or "بلا انتهاء"
                 text += f"🔑 `{g[0]}`\n💰 {g[1]} ل.س | {g[4]} | {g[3]}/{g[2]} مستخدم\n⏳ {expiry}\n\n"
             bot.send_message(call.message.chat.id, text, parse_mode="Markdown")
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         return
 
     if data == 'cancel_gift_code':
         bot.send_message(call.message.chat.id, "❌ **أرسل الكود الذي تريد إلغاءه:**")
         bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_cancel_gift_code)
-        bot.answer_callback_query(call.id)
+        safe_answer_callback(call.id)
         return
 
     if data == 'gift_individual':
         if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
+            safe_answer_callback(call.id, "❌ للمالك فقط", show_alert=True)
             return
         try:
             bot.edit_message_text("💰 **أدخل قيمة كود الهدية الفردي (بالليرة السورية):**",
@@ -6009,7 +6045,7 @@ def handle_all_callbacks(call):
 
     if data == 'gift_group':
         if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
+            safe_answer_callback(call.id, "❌ للمالك فقط", show_alert=True)
             return
         try:
             bot.edit_message_text("👥 **أدخل عدد الأشخاص الذين سيستخدمون الكود:**",
@@ -6023,7 +6059,7 @@ def handle_all_callbacks(call):
     # نظام الإحالات
     if data == 'admin_referrals':
         if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
+            safe_answer_callback(call.id, "❌ للمالك فقط", show_alert=True)
             return
         cursor.execute("SELECT COUNT(*) FROM referrals_log")
         total_refs = cursor.fetchone()[0]
@@ -6058,7 +6094,7 @@ def handle_all_callbacks(call):
 
     if data == 'send_referral_pay':
         if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
+            safe_answer_callback(call.id, "❌ للمالك فقط", show_alert=True)
             return
         bot.send_message(call.message.chat.id,
                          "💸 **أرسل معرف المستخدم والمبلغ بالصيغة:**\n`معرف,مبلغ`\nمثال: `123456789,5000`",
@@ -6068,7 +6104,7 @@ def handle_all_callbacks(call):
 
     if data == 'edit_payout_date':
         if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
+            safe_answer_callback(call.id, "❌ للمالك فقط", show_alert=True)
             return
         bot.send_message(call.message.chat.id, "📅 **أرسل الموعد الجديد للدفعة بصيغة:**\n`YYYY-MM-DD`", parse_mode="Markdown")
         bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_edit_payout_date)
@@ -6077,7 +6113,7 @@ def handle_all_callbacks(call):
     # ربط الكاشيرة والـ API
     if data == 'admin_cashier':
         if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
+            safe_answer_callback(call.id, "❌ للمالك فقط", show_alert=True)
             return
         cursor.execute("SELECT balance FROM cashier_balance WHERE admin_id=?", (ADMIN_ID,))
         bal = cursor.fetchone()
@@ -6089,7 +6125,7 @@ def handle_all_callbacks(call):
 
     if data == 'connect_syriatel_api':
         if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
+            safe_answer_callback(call.id, "❌ للمالك فقط", show_alert=True)
             return
         bot.send_message(call.message.chat.id, "📱 **أرسل رقم سيرياتل كاش للربط:**")
         bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_connect_syriatel_api)
@@ -6097,14 +6133,14 @@ def handle_all_callbacks(call):
 
     if data == 'connect_sham_api':
         if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
+            safe_answer_callback(call.id, "❌ للمالك فقط", show_alert=True)
             return
         bot.send_message(call.message.chat.id, "🏦 **أرسل عنوان شام كاش للربط:**")
         bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_connect_sham_api)
         return
 
     if data == 'test_api_connection':
-        bot.answer_callback_query(call.id, "🔌 اختبار الاتصال قيد التطوير", show_alert=True)
+        safe_answer_callback(call.id, "🔌 اختبار الاتصال قيد التطوير", show_alert=True)
         return
 
     if data == 'toggle_auto_verify':
@@ -6112,7 +6148,7 @@ def handle_all_callbacks(call):
         new_val = '0' if current == '1' else '1'
         update_db_setting('auto_verify_charges', new_val, uid)
         status = "مفعل ✅" if new_val == '1' else "معطل ❌"
-        bot.answer_callback_query(call.id, f"التحقق التلقائي: {status}", show_alert=True)
+        safe_answer_callback(call.id, f"التحقق التلقائي: {status}", show_alert=True)
         return
 
     if data == 'api_status':
@@ -6131,7 +6167,7 @@ def handle_all_callbacks(call):
     # إعدادات الإشعارات
     if data == 'toggle_all_notifications':
         if uid != ADMIN_ID:
-            bot.answer_callback_query(call.id, "❌ للمالك فقط", show_alert=True)
+            safe_answer_callback(call.id, "❌ للمالك فقط", show_alert=True)
             return
         cursor.execute("SELECT notify_on_charge FROM notification_settings WHERE user_id=?", (ADMIN_ID,))
         current = cursor.fetchone()
@@ -6141,7 +6177,7 @@ def handle_all_callbacks(call):
                           WHERE user_id=?""", (new_val, new_val, new_val, new_val, ADMIN_ID))
         conn.commit()
         status = "مفعلة ✅" if new_val else "معطلة ❌"
-        bot.answer_callback_query(call.id, f"جميع الإشعارات {status}", show_alert=True)
+        safe_answer_callback(call.id, f"جميع الإشعارات {status}", show_alert=True)
         return
 
     if data == 'edit_charge_threshold':
@@ -6218,7 +6254,7 @@ def handle_all_callbacks(call):
         new_val = '0' if syriatel_api == '1' else '1'
         update_db_setting('syriatel_api_enabled', new_val, uid)
         status = "مفعل ✅" if new_val == '1' else "معطل ❌"
-        bot.answer_callback_query(call.id, f"سيرياتل API: {status}", show_alert=True)
+        safe_answer_callback(call.id, f"سيرياتل API: {status}", show_alert=True)
         return
 
     if data == 'edit_retry':
@@ -6250,7 +6286,7 @@ def handle_all_callbacks(call):
         return
 
     if data in ('import_db', 'restore_backup', 'list_backups', 'auto_backup_settings'):
-        bot.answer_callback_query(call.id, "هذه الميزة قيد التطوير", show_alert=True)
+        safe_answer_callback(call.id, "هذه الميزة قيد التطوير", show_alert=True)
         return
 
     if data == 'admin_backup':
@@ -6266,7 +6302,7 @@ def handle_all_callbacks(call):
         target = int(data[4:])
         cursor.execute("UPDATE users SET status='banned' WHERE user_id=?", (target,))
         conn.commit()
-        bot.answer_callback_query(call.id, f"✅ تم حظر المستخدم {target}", show_alert=True)
+        safe_answer_callback(call.id, f"✅ تم حظر المستخدم {target}", show_alert=True)
         log_admin_action(uid, "حظر مستخدم", f"حظر {target}", target_user=target)
         return
 
@@ -6328,7 +6364,7 @@ def handle_all_callbacks(call):
         return
 
     # ===== 6. إذا لم يتم التعرف على الكول باك =====
-    bot.answer_callback_query(call.id, "هذا الزر غير مفعل أو حدث خطأ.", show_alert=False)
+    safe_answer_callback(call.id, "هذا الزر غير مفعل أو حدث خطأ.", show_alert=False)
     logger.warning(f"Callback غير معروف من المستخدم {uid}: {data}")
 
 # =============================================================================
