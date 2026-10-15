@@ -10,7 +10,7 @@ from flask import Flask
 from threading import Thread, RLock
 import os
 import sqlite3
-from matar_db import connect_database, is_postgres_connection, verify_postgres_compatibility, DB_INTEGRITY_ERRORS, AUTOINCREMENT_COLUMNS
+from matar_db import connect_database, is_postgres_connection, verify_postgres_compatibility, DB_INTEGRITY_ERRORS, restore_postgres_snapshot as restore_snapshot_data, validate_postgres_snapshot as validate_snapshot_data
 from datetime import datetime, timedelta
 import random
 import secrets
@@ -1091,50 +1091,12 @@ def restore_postgres_snapshot(snapshot_path, actor_id):
     if not is_postgres_connection(conn):
         raise RuntimeError("استعادة JSON مدعومة فقط عند استخدام PostgreSQL/Neon.")
     snapshot, row_count = _load_validated_postgres_snapshot(snapshot_path)
-    table_names = sorted(snapshot['tables'])
-    quote = lambda name: '"' + name.replace('"', '""') + '"'
-
-    with db_lock:
-        raw = conn._get_raw()
-        try:
-            raw.execute("BEGIN")
-            quoted_tables = ", ".join(quote(name) for name in table_names)
-            raw.execute(f"TRUNCATE TABLE {quoted_tables} RESTART IDENTITY CASCADE")
-            for table_name in table_names:
-                payload = snapshot['tables'][table_name]
-                columns = payload['columns']
-                rows = payload['rows']
-                if not rows:
-                    continue
-                column_sql = ", ".join(quote(column) for column in columns)
-                placeholders = ", ".join(["%s"] * len(columns))
-                insert_sql = f"INSERT INTO {quote(table_name)} ({column_sql}) VALUES ({placeholders})"
-                with raw.cursor() as table_cursor:
-                    table_cursor.executemany(insert_sql, rows)
-
-            # Explicit IDs from a snapshot do not advance PostgreSQL sequences.
-            for table_name, id_column in AUTOINCREMENT_COLUMNS.items():
-                if table_name not in snapshot['tables'] or id_column not in snapshot['tables'][table_name]['columns']:
-                    continue
-                sequence = raw.execute(
-                    "SELECT pg_get_serial_sequence(%s, %s)", (table_name, id_column)
-                ).fetchone()[0]
-                if sequence:
-                    raw.execute(
-                        f"SELECT setval(%s::regclass, GREATEST(COALESCE(MAX({quote(id_column)}),1),1), "
-                        f"MAX({quote(id_column)}) IS NOT NULL) FROM {quote(table_name)}",
-                        (sequence,),
-                    )
-            raw.commit()
-        except Exception:
-            raw.rollback()
-            raise
-
+    summary = restore_snapshot_data(conn, snapshot)
     try:
         log_admin_action(actor_id, "استعادة نسخة احتياطية", f"استعادة لقطة Neon تحتوي {row_count} صفاً")
     except Exception:
         logger.exception("Snapshot restored but secondary admin audit logging failed")
-    return len(table_names), row_count
+    return summary['tables'], summary['rows']
 
 
 def handle_backup_document(message):
