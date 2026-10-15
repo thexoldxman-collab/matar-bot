@@ -3693,7 +3693,12 @@ class GiftManager:
                 raise
 
         logger.info("تم إنشاء كود هدية: %s بقيمة %s × %s بواسطة %s", code, value, count, admin_id)
-        log_admin_action(admin_id, "إنشاء كود هدية", f"كود {code} بقيمة {value}×{count}", amount=total_amount)
+        try:
+            log_admin_action(admin_id, "إنشاء كود هدية", f"كود {code} بقيمة {value}×{count}", amount=total_amount)
+        except Exception:
+            # The gift and ledger are already committed; a secondary audit-log
+            # failure must not tell the administrator the financial action failed.
+            logger.exception("Gift created but secondary admin audit logging failed for code %s", code)
         return code
     
     @staticmethod
