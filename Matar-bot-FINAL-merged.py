@@ -3210,7 +3210,7 @@ def get_charge_methods_keyboard():
     keyboard = types.InlineKeyboardMarkup(row_width=2)
     
     sy_status = get_db_setting('syriatel_status') or 'active'
-    sh_status = get_db_setting('sham_status') or 'active'
+    sh_status = get_db_setting('sham_status') or 'متوقف'
     usdt_status = get_db_setting('usdt_status') or 'متوقف'
     bin_status = get_db_setting('binance_status') or 'متوقف'
     
