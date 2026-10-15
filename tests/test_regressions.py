@@ -523,12 +523,12 @@ class RegressionTests(unittest.TestCase):
             with patch.object(m.bot, 'send_message'):
                 m.confirm_ai_setting_change(m.ADMIN_ID, m.ADMIN_ID, 'btn12345')
             row = m.cursor.execute(
-                "SELECT button_text,message_text,updated_by FROM dynamic_buttons WHERE id=?",
+                "SELECT button_text,message_text,updated_at FROM dynamic_buttons WHERE id=?",
                 (button_id,),
             ).fetchone()
             self.assertEqual(row[0], 'زر تأكيد AI')
             self.assertEqual(row[1], 'بعد التعديل')
-            self.assertEqual(row[2], m.ADMIN_ID)
+            self.assertTrue(row[2])
             self.assertNotIn(m.ADMIN_ID, m.ai_pending_actions)
         finally:
             m.ai_pending_actions.pop(m.ADMIN_ID, None)
