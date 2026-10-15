@@ -7137,7 +7137,8 @@ def merge_ai_pr_from_bot(uid, chat_id, pr_number, callback_id=None):
             bot.send_message(chat_id, '❌ ' + message + ' لم يتم الدمج.')
             return
         # نعيد التحقق لحظة الموافقة؛ لا نثق بنتيجة فحص سابقة.
-        _github_request('POST', f'{api_root}/pulls/{pr_number}/ready_for_review', token)
+        if pr.get('draft'):
+            _github_request('POST', f'{api_root}/pulls/{pr_number}/ready_for_review', token)
         merged = _github_request('PUT', f'{api_root}/pulls/{pr_number}/merge', token, json={
             'merge_method': 'squash',
             'commit_title': f'Matar AI proposal #{pr_number}',
