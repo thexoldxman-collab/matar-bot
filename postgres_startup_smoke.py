@@ -3,6 +3,8 @@ import importlib.util
 import os
 from pathlib import Path
 
+from matar_db import restore_postgres_snapshot
+
 ROOT = Path(__file__).resolve().parent
 os.environ.setdefault("TOKEN", "123456:TESTTOKEN")
 os.environ.setdefault("ADMIN_ID", "999999")
@@ -67,6 +69,16 @@ try:
         snapshot = json.load(backup_file)
     if snapshot.get("format") != "matar-postgres-snapshot-v1" or "users" not in snapshot.get("tables", {}):
         raise SystemExit("PostgreSQL JSON snapshot validation failed.")
+
+    # Prove a deleted row can be recovered from the JSON snapshot.
+    module.conn.execute("DELETE FROM users WHERE user_id=?", (test_user_id,))
+    module.conn.commit()
+    restored = restore_postgres_snapshot(module.conn, snapshot)
+    recovered = module.conn.execute(
+        "SELECT balance,site_balance FROM users WHERE user_id=?", (test_user_id,)
+    ).fetchone()
+    if restored.get("tables") != tables or not recovered or abs(float(recovered[0]) - 80) > 0.001:
+        raise SystemExit("PostgreSQL JSON restore did not recover the expected financial state.")
 
 finally:
     module.conn.rollback()
