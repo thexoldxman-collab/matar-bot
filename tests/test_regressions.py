@@ -476,6 +476,28 @@ class RegressionTests(unittest.TestCase):
             m.update_db_setting('syriatel_api_enabled', previous_sy or '0', m.ADMIN_ID)
             m.update_db_setting('sham_api_enabled', previous_sh or '0', m.ADMIN_ID)
 
+    def test_charge_menus_refuse_missing_payment_destinations(self):
+        m = self.m
+        values = {
+            'syriatel_status': 'active', 'syriatel_numbers': '',
+            'sham_status': 'active', 'sham_address': 'sham_example@sham',
+            'usdt_status': 'active', 'usdt_address': '',
+            'binance_status': 'active', 'binance_address': '', 'binance_pay_id': '',
+        }
+        previous = {key: m.get_db_setting(key) for key in values}
+        try:
+            for key, value in values.items():
+                m.update_db_setting(key, value, m.ADMIN_ID)
+            for callback in ('charge_syria', 'charge_sham', 'charge_usdt', 'charge_binance'):
+                with patch.object(m.bot, 'answer_callback_query'), \
+                     patch.object(m.bot, 'send_message'), \
+                     patch.object(m.bot, 'register_next_step_handler') as next_step:
+                    m.handle_all_callbacks(self.fake_call(callback))
+                next_step.assert_not_called()
+        finally:
+            for key, value in previous.items():
+                m.update_db_setting(key, value or ('متوقف' if key.endswith('_status') else ''), m.ADMIN_ID)
+
     def test_crypto_charge_receipts_are_rejected_when_methods_are_disabled(self):
         m = self.m
         for method, handler, status_key, address_key, pay_id_key in (
