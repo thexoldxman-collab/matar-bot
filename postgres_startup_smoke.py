@@ -39,6 +39,9 @@ import secrets
 
 test_user_id = -int(secrets.randbelow(8_000_000_000_000_000) + 1)
 backup_path = None
+cashier_original = module.conn.execute(
+    "SELECT balance,last_updated FROM cashier_balance WHERE admin_id=?", (module.ADMIN_ID,)
+).fetchone()
 try:
     module.conn.execute(
         "INSERT INTO users(user_id,balance,site_balance,deleted,created_at) VALUES (?,?,?,?,?)",
@@ -60,9 +63,17 @@ try:
     if status != "ok":
         raise SystemExit(f"PostgreSQL withdrawal cancellation failed: {status}")
 
+    module.conn.execute(
+        "UPDATE cashier_balance SET balance=1000,last_updated=? WHERE admin_id=?",
+        ("2000-01-01 00:00:00", module.ADMIN_ID),
+    )
+    module.conn.commit()
     balance, _ = module.credit_referral_payout_atomic(test_user_id, 5, module.ADMIN_ID)
-    if abs(balance - 80) > 0.001:
-        raise SystemExit(f"PostgreSQL referral payout mismatch: {balance}")
+    cashier_after_payout = module.conn.execute(
+        "SELECT balance FROM cashier_balance WHERE admin_id=?", (module.ADMIN_ID,)
+    ).fetchone()[0]
+    if abs(balance - 80) > 0.001 or abs(float(cashier_after_payout) - 995) > 0.001:
+        raise SystemExit(f"PostgreSQL referral payout/cashier mismatch: user={balance}, cashier={cashier_after_payout}")
 
     pending_charge, status = module.create_pending_charge_atomic(
         test_user_id, "integration-test", "manual", f"PG-CI-CHARGE-{test_user_id}"
@@ -109,6 +120,11 @@ finally:
     module.conn.execute("DELETE FROM referrals_log WHERE referrer_id=? OR referred_id=?", (test_user_id, test_user_id))
     module.conn.execute("DELETE FROM referral_earnings WHERE referrer_id=? OR from_user_id=?", (test_user_id, test_user_id))
     module.conn.execute("DELETE FROM users WHERE user_id=?", (test_user_id,))
+    if cashier_original:
+        module.conn.execute(
+            "UPDATE cashier_balance SET balance=?,last_updated=? WHERE admin_id=?",
+            (cashier_original[0], cashier_original[1], module.ADMIN_ID),
+        )
     if backup_path:
         import os
         backup_name = Path(backup_path).name
