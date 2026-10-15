@@ -771,6 +771,17 @@ class RegressionTests(unittest.TestCase):
                 m.cursor.execute("SELECT amount,type FROM transactions WHERE type='gift_refund' AND external_ref=?", (code,)).fetchone(),
                 (15.0, 'gift_refund'),
             )
+            # Repeating cancellation must not refund the same code twice.
+            with patch.object(m.bot, 'send_message'):
+                m.process_cancel_gift_code(message)
+            self.assertEqual(
+                m.cursor.execute("SELECT balance FROM cashier_balance WHERE admin_id=?", (admin,)).fetchone()[0],
+                35.0,
+            )
+            self.assertEqual(
+                m.cursor.execute("SELECT COUNT(*) FROM transactions WHERE type='gift_refund' AND external_ref=?", (code,)).fetchone()[0],
+                1,
+            )
         finally:
             m.cursor.execute("DELETE FROM transactions WHERE type='gift_refund' AND external_ref=?", (code,))
             m.cursor.execute("DELETE FROM gifts WHERE code=?", (code,))
