@@ -4844,6 +4844,24 @@ def handle_all_callbacks(call):
         safe_answer_callback(call.id)
         start_ai_dev_request(uid, call.message.chat.id)
         return
+    if data.startswith('ai_pr_check_'):
+        safe_answer_callback(call.id)
+        try:
+            pr_number = int(data[len('ai_pr_check_'):])
+        except ValueError:
+            bot.send_message(call.message.chat.id, '❌ رقم طلب السحب غير صالح.')
+            return
+        check_ai_pr_from_bot(uid, call.message.chat.id, pr_number)
+        return
+    if data.startswith('ai_pr_merge_'):
+        safe_answer_callback(call.id)
+        try:
+            pr_number = int(data[len('ai_pr_merge_'):])
+        except ValueError:
+            bot.send_message(call.message.chat.id, '❌ رقم طلب السحب غير صالح.')
+            return
+        merge_ai_pr_from_bot(uid, call.message.chat.id, pr_number, call.id)
+        return
     if data == 'ai_status':
         safe_answer_callback(call.id)
         ai_status(uid, call.message.chat.id)
@@ -7036,6 +7054,110 @@ def create_ai_draft_pr(request_text, requester_uid):
         return None, str(exc)[:350] if isinstance(exc, RuntimeError) else 'تعذر إنشاء مسودة التعديل؛ لم يتم النشر أو الدمج.'
 
 
+def _ai_pr_checks_ready(check_runs):
+    """لا تسمح بالدمج إلا إذا كانت كل فحوصات GitHub ظاهرة ومنتهية بنجاح."""
+    if not isinstance(check_runs, list) or not check_runs:
+        return False, 'لم تظهر نتائج اختبارات بعد.'
+    unfinished = [item for item in check_runs if item.get('status') != 'completed']
+    failed = [item for item in check_runs if item.get('status') == 'completed' and item.get('conclusion') != 'success']
+    if unfinished:
+        return False, 'الاختبارات ما زالت قيد التشغيل.'
+    if failed:
+        return False, 'فشل فحص واحد أو أكثر؛ لن يتم الدمج.'
+    return True, 'نجحت جميع الفحوصات الظاهرة.'
+
+
+def _get_ai_pr_for_owner(pr_number, token, repository, base):
+    api_root = f'${GITHUB_API}/repos/{repository}'
+    pr = _github_request('GET', f'{api_root}/pulls/{pr_number}', token)
+    head = pr.get('head', {})
+    target = pr.get('base', {})
+    if pr.get('state') != 'open':
+        raise RuntimeError('طلب السحب مغلق بالفعل.')
+    if not str(head.get('ref', '')).startswith('matar-ai-proposal-'):
+        raise RuntimeError('هذا ليس طلب تعديل أنشأه مساعد ماتار.')
+    if target.get('ref') != base:
+        raise RuntimeError('فرع الهدف لا يطابق الفرع الأساسي المسموح.')
+    files = _github_request('GET', f'{api_root}/pulls/{pr_number}/files?per_page=100', token)
+    changed_paths = {item.get('filename') for item in files}
+    if changed_paths != {'Matar-bot-FINAL-merged.py'}:
+        raise RuntimeError('تم رفض الدمج لأن طلب السحب يحتوي ملفات خارج الملف المسموح.')
+    check_data = _github_request('GET', f'{api_root}/commits/{head.get("sha")}/check-runs?per_page=100', token)
+    ready, message = _ai_pr_checks_ready(check_data.get('check_runs', []))
+    return pr, ready, message, api_root
+
+
+def check_ai_pr_from_bot(uid, chat_id, pr_number):
+    if uid != ADMIN_ID:
+        bot.send_message(chat_id, '❌ فحص ودمج تعديلات الكود متاح للمالك فقط.')
+        return
+    config = _github_config()
+    if not config:
+        bot.send_message(chat_id, '⚠️ إعدادات GitHub غير مكتملة.')
+        return
+    token, repository, base = config
+    try:
+        pr, ready, message, _ = _get_ai_pr_for_owner(pr_number, token, repository, base)
+        if not ready:
+            bot.send_message(chat_id, '⏳ ' + message + '\nلن يتم الدمج قبل نجاح الاختبارات.')
+            return
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            '✅ أوافق على الدمج الآن',
+            callback_data=f'ai_pr_merge_{pr_number}',
+        ))
+        bot.send_message(
+            chat_id,
+            f"🟢 **{message}**\n\n"
+            f"طلب السحب: #{pr_number}\n"
+            f"التعديل: {pr.get('title','(بدون عنوان)')}\n"
+            f"راجع التغيير قبل الموافقة: {pr.get('html_url','')}\n\n"
+            'الدمج لن يتم إلا بعد ضغطك زر الموافقة أدناه. إذا كان Render مضبوطاً على النشر التلقائي من الفرع الأساسي، فقد يبدأ النشر بعد الدمج.',
+            reply_markup=markup,
+            parse_mode='Markdown',
+            disable_web_page_preview=True,
+        )
+    except Exception as exc:
+        bot.send_message(chat_id, '⚠️ ' + (str(exc)[:350] or 'تعذر فحص طلب السحب.'))
+
+
+def merge_ai_pr_from_bot(uid, chat_id, pr_number, callback_id=None):
+    if uid != ADMIN_ID:
+        bot.send_message(chat_id, '❌ الدمج متاح لمالك البوت فقط.')
+        return
+    config = _github_config()
+    if not config:
+        bot.send_message(chat_id, '⚠️ إعدادات GitHub غير مكتملة.')
+        return
+    token, repository, base = config
+    api_root = f'${GITHUB_API}/repos/{repository}'
+    try:
+        pr, ready, message, _ = _get_ai_pr_for_owner(pr_number, token, repository, base)
+        if not ready:
+            bot.send_message(chat_id, '❌ ' + message + ' لم يتم الدمج.')
+            return
+        # نعيد التحقق لحظة الموافقة؛ لا نثق بنتيجة فحص سابقة.
+        _github_request('POST', f'{api_root}/pulls/{pr_number}/ready_for_review', token)
+        merged = _github_request('PUT', f'{api_root}/pulls/{pr_number}/merge', token, json={
+            'merge_method': 'squash',
+            'commit_title': f'Matar AI proposal #{pr_number}',
+            'commit_message': 'Merged by explicit owner confirmation in Telegram after passing checks.',
+        })
+        if not merged.get('merged'):
+            bot.send_message(chat_id, '❌ رفض GitHub الدمج. لم يتم تأكيد نجاحه.')
+            return
+        log_admin_action(uid, 'ai_pr_merged', f"دمج المالك طلب المساعد #{pr_number}")
+        bot.send_message(
+            chat_id,
+            f"✅ **تم دمج التعديل #{pr_number} بعد موافقتك ونجاح الفحوصات.**\n"
+            f"معرّف الدمج: `{merged.get('sha','غير متاح')}`\n"
+            'إذا كان النشر التلقائي مفعّلاً في Render، فستبدأ عملية النشر من الفرع الأساسي.',
+            parse_mode='Markdown',
+        )
+    except Exception as exc:
+        bot.send_message(chat_id, '⚠️ لم يتم الدمج: ' + (str(exc)[:350] or 'تعذر التحقق من حالة الطلب.'))
+
+
 def start_ai_dev_request(uid, chat_id):
     if uid != ADMIN_ID:
         bot.send_message(chat_id, '❌ طلبات تعديل الكود متاحة لمالك البوت فقط.')
@@ -7069,12 +7191,18 @@ def process_ai_dev_request(message):
     if error:
         bot.send_message(message.chat.id, '⚠️ ' + error)
         return
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton(
+        '🔎 فحص الاختبارات',
+        callback_data=f"ai_pr_check_{result['number']}",
+    ))
     bot.send_message(
         message.chat.id,
         f"✅ أنشأت مسودة تعديل #{result['number']}\n"
         f"📝 {result['summary']}\n"
         f"🔎 {result['url']}\n\n"
-        'المسودة لا تغيّر النسخة المنشورة. راجعها وشغّل الاختبارات قبل الدمج.',
+        'النسخة المنشورة لم تتغير. يمكنك فحص الاختبارات من هنا؛ ولن يتم الدمج إلا بعد موافقتك الصريحة.',
+        reply_markup=markup,
         disable_web_page_preview=True,
     )
 
