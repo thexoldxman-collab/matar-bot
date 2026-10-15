@@ -234,6 +234,56 @@ class RegressionTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     m.credit_referral_payout_atomic(810005, amount, m.ADMIN_ID)
 
+    def test_internal_ichancy_transfer_updates_balances_and_ledger_atomically(self):
+        m = self.m
+        uid = 810007
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id, balance, site_balance, deleted) VALUES (?,?,?,0)",
+            (uid, 100.0, 20.0),
+        )
+        m.conn.commit()
+
+        balances = m.transfer_internal_balance(uid, 30, 'to_site')
+        self.assertEqual(balances, (70.0, 50.0))
+        charge = m.cursor.execute(
+            "SELECT type, amount, method, status FROM transactions WHERE user_id=? AND type='ichancy_charge'",
+            (uid,),
+        ).fetchone()
+        self.assertEqual(charge, ('ichancy_charge', 30.0, 'internal', 'success'))
+
+        balances = m.transfer_internal_balance(uid, 15, 'to_bot')
+        self.assertEqual(balances, (85.0, 35.0))
+        withdraw = m.cursor.execute(
+            "SELECT type, amount, method, status FROM transactions WHERE user_id=? AND type='ichancy_withdraw'",
+            (uid,),
+        ).fetchone()
+        self.assertEqual(withdraw, ('ichancy_withdraw', 15.0, 'internal', 'success'))
+
+    def test_internal_ichancy_transfer_rolls_back_balances_if_ledger_insert_fails(self):
+        m = self.m
+        uid = 810008
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id, balance, site_balance, deleted) VALUES (?,?,?,0)",
+            (uid, 100.0, 20.0),
+        )
+        m.cursor.execute("""
+            CREATE TRIGGER IF NOT EXISTS test_fail_ichancy_ledger
+            BEFORE INSERT ON transactions
+            WHEN NEW.type IN ('ichancy_charge', 'ichancy_withdraw')
+            BEGIN SELECT RAISE(ABORT, 'forced test failure'); END
+        """)
+        m.conn.commit()
+        try:
+            with self.assertRaises(Exception):
+                m.transfer_internal_balance(uid, 30, 'to_site')
+            balances = m.cursor.execute(
+                "SELECT balance, site_balance FROM users WHERE user_id=?", (uid,)
+            ).fetchone()
+            self.assertEqual(balances, (100.0, 20.0))
+        finally:
+            m.cursor.execute("DROP TRIGGER IF EXISTS test_fail_ichancy_ledger")
+            m.conn.commit()
+
 
 if __name__ == '__main__':
     unittest.main()
