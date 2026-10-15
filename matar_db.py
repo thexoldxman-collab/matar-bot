@@ -59,6 +59,21 @@ def translate_sql(sql: str) -> tuple[str | None, str | None]:
 
     query = original
     query = re.sub(r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b", "BIGSERIAL PRIMARY KEY", query, flags=re.I)
+    # Date columns are stored as TEXT by the legacy schema. When a bare text
+    # timestamp is compared to DATE('now', modifier), cast the column too.
+    def _date_comparison(match):
+        column, operator, sign, amount, unit = match.groups()
+        unit = unit.lower().rstrip('s')
+        if unit not in ('day', 'week', 'month', 'year') or int(amount) > 3650:
+            raise ValueError("Unsupported SQLite DATE comparison modifier")
+        sign = sign or '+'
+        return f"CAST({column} AS DATE) {operator} ((CURRENT_DATE {sign} INTERVAL '{int(amount)} {unit}')::date)"
+    query = re.sub(
+        r"\b([A-Za-z_][A-Za-z0-9_.]*)\s*(>=|<=|<>|!=|=|>|<)\s*DATE\s*\(\s*'now'\s*,\s*'([+-]?)(\d+)\s+(days?|weeks?|months?|years?)'\s*\)",
+        _date_comparison,
+        query,
+        flags=re.I,
+    )
     # SQLite INTEGER is signed 64-bit; PostgreSQL INTEGER is only 32-bit.
     # Telegram user/chat IDs exceed that range, and SQLite REAL is double
     # precision. Preserve both behaviors when translating table definitions.
