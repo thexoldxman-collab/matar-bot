@@ -5268,9 +5268,12 @@ def handle_all_callbacks(call):
                              "نعتذر عن الإزعاج.", parse_mode="Markdown")
             return
         
-        syriatel_numbers = get_db_setting('syriatel_numbers') or 'غير محدد'
+        syriatel_numbers = (get_db_setting('syriatel_numbers') or '').strip()
         nums = [n.strip() for n in syriatel_numbers.split(',') if n.strip()]
-        
+        if not nums:
+            bot.send_message(call.message.chat.id, "⚠️ لم يتم إعداد أرقام سيرياتل كاش؛ لم يتم إنشاء طلب شحن.")
+            return
+
         nums_text = ""
         for num in nums:
             nums_text += f"• `{num}`\n"
@@ -5301,8 +5304,11 @@ def handle_all_callbacks(call):
                              "نعتذر عن الإزعاج.", parse_mode="Markdown")
             return
         
-        sham_address = get_db_setting('sham_address') or 'غير محدد'
-        
+        sham_address = (get_db_setting('sham_address') or '').strip()
+        if not sham_address or 'example' in sham_address.lower() or sham_address == 'غير محدد':
+            bot.send_message(call.message.chat.id, "⚠️ لم يتم إعداد عنوان شام كاش صحيح؛ لم يتم إنشاء طلب شحن.")
+            return
+
         msg_text = (f"🏦 **طريقة الشحن عبر شام كاش:**\n\n"
                     f"1️⃣ افتح تطبيق شام كاش\n"
                     f"2️⃣ أرسل المبلغ إلى العنوان التالي:\n"
@@ -5341,9 +5347,12 @@ def handle_all_callbacks(call):
                              "نعتذر عن الإزعاج.", parse_mode="Markdown")
             return
         
-        usdt_address = get_db_setting('usdt_address') or 'غير محدد'
+        usdt_address = (get_db_setting('usdt_address') or '').strip()
+        if not usdt_address or usdt_address == 'غير محدد':
+            bot.send_message(call.message.chat.id, "⚠️ لم يتم إعداد عنوان محفظة USDT صحيح؛ لم يتم إنشاء طلب شحن.")
+            return
         usdt_network = get_db_setting('usdt_network') or 'TRC20'
-        
+
         msg_text = (f"🔷 **طريقة الشحن عبر USDT:**\n\n"
                     f"1️⃣ افتح محفظتك\n"
                     f"2️⃣ أرسل المبلغ إلى العنوان التالي:\n"
@@ -5370,9 +5379,12 @@ def handle_all_callbacks(call):
                              "نعتذر عن الإزعاج.", parse_mode="Markdown")
             return
         
-        binance_address = get_db_setting('binance_address') or 'غير محدد'
-        binance_id = get_db_setting('binance_pay_id') or ''
-        
+        binance_address = (get_db_setting('binance_address') or '').strip()
+        binance_id = (get_db_setting('binance_pay_id') or '').strip()
+        if (not binance_address or binance_address == 'غير محدد') and not binance_id:
+            bot.send_message(call.message.chat.id, "⚠️ لم يتم إعداد عنوان Binance أو معرّف Binance Pay؛ لم يتم إنشاء طلب شحن.")
+            return
+
         msg_text = "💱 **طريقة الشحن عبر Binance:**\n\n"
         if binance_id:
             msg_text += (f"🆔 **Binance Pay ID:**\n"
