@@ -1595,23 +1595,15 @@ def redeem_gift_atomic(user_id, code):
                 except ValueError:
                     expired = True
                 if expired:
-                    if not auto_returned and created_by:
-                        refund = float(value) * max(0, int(limit_count) - int(used_count))
-                        refund_cur = conn.execute(
-                            "UPDATE cashier_balance SET balance=balance+?, last_updated=? WHERE admin_id=?",
-                            (refund, now.strftime('%Y-%m-%d %H:%M:%S'), created_by),
-                        )
-                        if refund > 0 and refund_cur.rowcount != 1:
-                            conn.rollback()
-                            return 'refund_failed', 0
-                        gift_cur = conn.execute(
-                            "UPDATE gifts SET auto_returned=1, returned_at=? WHERE code=? AND auto_returned=0",
-                            (now.strftime('%Y-%m-%d %H:%M:%S'), code),
-                        )
-                        if gift_cur.rowcount != 1:
-                            conn.rollback()
-                            return 'refund_failed', 0
-                    conn.commit(); return 'expired', 0
+                    # Use the same refund+ledger transaction as the expiry worker.
+                    conn.rollback()
+                    refund_status, _ = close_gift_and_refund_atomic(
+                        code, created_by if created_by is not None else user_id,
+                        require_expired=True,
+                    )
+                    if refund_status in ('ok', 'already_returned'):
+                        return 'expired', 0
+                    return 'refund_failed', 0
             cur = conn.execute("UPDATE users SET balance=balance+?, last_active=? WHERE user_id=? AND deleted=0", (float(value), now.strftime('%Y-%m-%d %H:%M:%S'), user_id))
             if cur.rowcount != 1:
                 conn.rollback(); return 'user_not_found', 0
