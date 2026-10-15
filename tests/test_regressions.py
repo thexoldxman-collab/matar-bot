@@ -448,7 +448,7 @@ class RegressionTests(unittest.TestCase):
         m = self.m
         with patch.object(m.bot, 'answer_callback_query') as answer:
             m.handle_all_callbacks(self.fake_call('test_api_connection'))
-        self.assertTrue(any('غير متاح' in str(call.args) for call in answer.call_args_list))
+        self.assertTrue(any('غير متاح' in str(call) for call in answer.call_args_list))
 
     def test_ai_pr_checks_require_every_check_to_pass(self):
         m = self.m
