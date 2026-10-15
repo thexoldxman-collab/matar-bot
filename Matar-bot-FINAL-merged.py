@@ -3984,8 +3984,11 @@ def process_charge_user_amount(message, target, charge_type):
         
         log_admin_action(uid, "شحن رصيد", f"شحن {amount} {charge_type}", target_user=target, amount=amount)
         
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ **مبلغ غير صالح**", parse_mode="Markdown")
+    except ValueError as exc:
+        if "balance insufficient" in str(exc):
+            bot.send_message(message.chat.id, "❌ **المستخدم غير موجود أو الرصيد غير كافٍ لإتمام العملية.**", parse_mode="Markdown")
+        else:
+            bot.send_message(message.chat.id, "❌ **مبلغ غير صالح؛ أدخل مبلغاً موجباً.**", parse_mode="Markdown")
 
 def process_withdraw_user_step1(message):
     """الخطوة الأولى لسحب رصيد مستخدم"""
