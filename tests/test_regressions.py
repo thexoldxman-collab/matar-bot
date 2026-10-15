@@ -476,6 +476,42 @@ class RegressionTests(unittest.TestCase):
             m.update_db_setting('syriatel_api_enabled', previous_sy or '0', m.ADMIN_ID)
             m.update_db_setting('sham_api_enabled', previous_sh or '0', m.ADMIN_ID)
 
+    def test_sham_service_cannot_open_with_placeholder_address(self):
+        m = self.m
+        previous_status = m.get_db_setting('sham_status')
+        previous_address = m.get_db_setting('sham_address')
+        try:
+            m.update_db_setting('sham_status', 'متوقف', m.ADMIN_ID)
+            m.update_db_setting('sham_address', 'sham_example@sham', m.ADMIN_ID)
+            with patch.object(m.bot, 'answer_callback_query'), patch.object(m.bot, 'edit_message_reply_markup'):
+                m.handle_all_callbacks(self.fake_call('toggle_sham'))
+            self.assertNotEqual(m.get_db_setting('sham_status'), 'active')
+        finally:
+            m.update_db_setting('sham_status', previous_status or 'متوقف', m.ADMIN_ID)
+            m.update_db_setting('sham_address', previous_address or '', m.ADMIN_ID)
+
+    def test_sham_charge_receipt_is_rejected_when_destination_is_placeholder(self):
+        m = self.m
+        previous_status = m.get_db_setting('sham_status')
+        previous_address = m.get_db_setting('sham_address')
+        receipt = 'TEST-SHAM-PLACEHOLDER-REJECT'
+        try:
+            m.update_db_setting('sham_status', 'active', m.ADMIN_ID)
+            m.update_db_setting('sham_address', 'sham_example@sham', m.ADMIN_ID)
+            message = SimpleNamespace(
+                from_user=SimpleNamespace(id=810026),
+                chat=SimpleNamespace(id=810026),
+                text=receipt,
+            )
+            with patch.object(m.bot, 'send_message'):
+                m.process_sham_charge_receipt(message)
+            self.assertFalse(m.cursor.execute(
+                "SELECT 1 FROM pending_charges WHERE receipt_number=?", (receipt,)
+            ).fetchone())
+        finally:
+            m.update_db_setting('sham_status', previous_status or 'متوقف', m.ADMIN_ID)
+            m.update_db_setting('sham_address', previous_address or '', m.ADMIN_ID)
+
     def test_usdt_service_cannot_open_without_a_destination_address(self):
         m = self.m
         previous_status = m.get_db_setting('usdt_status')
