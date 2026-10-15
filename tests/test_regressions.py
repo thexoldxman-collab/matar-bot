@@ -474,6 +474,57 @@ class RegressionTests(unittest.TestCase):
         finally:
             m.ai_pending_actions.pop(m.ADMIN_ID, None)
 
+    def test_ai_button_creation_validation_rejects_duplicate_and_missing_parent(self):
+        m = self.m
+        now = '2026-10-15 00:00:00'
+        m.cursor.execute(
+            "INSERT INTO dynamic_buttons(button_name,button_text,parent_button,action,message_text,level,sort_order,is_active,created_at,updated_at,created_by,path) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ('ai_test_parent', 'قائمة AI اختبار', 'main', 'show_submenu', None, 1, 0, 1, now, now, m.ADMIN_ID, '/main/ai_test_parent'),
+        )
+        m.conn.commit()
+        try:
+            valid = m.validate_ai_button_creation(
+                'زر AI جديد', 'قائمة AI اختبار', 'رسالة تجريبية'
+            )
+            self.assertEqual(valid['kind'], 'create_button')
+            self.assertEqual(valid['parent_button'], 'قائمة AI اختبار')
+            with self.assertRaises(ValueError):
+                m.validate_ai_button_creation('قائمة AI اختبار', 'main', 'رسالة')
+            with self.assertRaises(ValueError):
+                m.validate_ai_button_creation('زر غير صالح', 'قائمة غير موجودة', 'رسالة')
+        finally:
+            m.cursor.execute("DELETE FROM dynamic_buttons WHERE button_name='ai_test_parent'")
+            m.conn.commit()
+
+    def test_ai_button_creation_requires_owner_confirmation_and_creates_message_button(self):
+        m = self.m
+        name = 'زر AI جديد للاختبار'
+        m.ai_pending_actions[m.ADMIN_ID] = {
+            'token': 'create123', 'kind': 'create_button',
+            'button_text': name, 'parent_button': 'main',
+            'message_text': 'رسالة الزر الجديدة', 'value': 'رسالة الزر الجديدة',
+            'old_value': '', 'label': 'زر جديد للاختبار',
+        }
+        try:
+            with patch.object(m.bot, 'send_message'):
+                m.confirm_ai_setting_change(123456, 123456, 'create123')
+            self.assertFalse(m.cursor.execute(
+                "SELECT 1 FROM dynamic_buttons WHERE button_text=?", (name,)
+            ).fetchone())
+            with patch.object(m.bot, 'send_message'):
+                m.confirm_ai_setting_change(m.ADMIN_ID, m.ADMIN_ID, 'create123')
+            row = m.cursor.execute(
+                "SELECT parent_button,action,message_text,is_active FROM dynamic_buttons WHERE button_text=?",
+                (name,),
+            ).fetchone()
+            self.assertEqual(row, ('main', 'send_message', 'رسالة الزر الجديدة', 1))
+            self.assertNotIn(m.ADMIN_ID, m.ai_pending_actions)
+        finally:
+            m.ai_pending_actions.pop(m.ADMIN_ID, None)
+            m.cursor.execute("DELETE FROM dynamic_buttons WHERE button_text=?", (name,))
+            m.conn.commit()
+
     def test_ai_button_change_validates_existing_button_and_duplicate_name(self):
         m = self.m
         now = '2026-10-15 00:00:00'
