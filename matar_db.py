@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import threading
+import secrets
 from typing import Any, Iterable
 
 AUTOINCREMENT_COLUMNS = {
@@ -303,6 +304,8 @@ def verify_postgres_compatibility(connection: PostgresConnection) -> None:
     All test rows are rolled back. A failed check aborts startup instead of
     allowing the bot to run with a partially compatible database backend.
     """
+    marker = "__matar_db_compatibility_check_" + secrets.token_hex(8)
+    test_chat_id = -int(secrets.randbelow(9_000_000_000_000_000) + 1)
     connection.execute("BEGIN")
     try:
         ticket = connection.execute(
@@ -321,30 +324,30 @@ def verify_postgres_compatibility(connection: PostgresConnection) -> None:
 
         connection.execute(
             "INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",
-            ("__matar_db_compatibility_check__", "first"),
+            (marker, "first"),
         )
         connection.execute(
             "INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",
-            ("__matar_db_compatibility_check__", "second"),
+            (marker, "second"),
         )
         setting = connection.execute(
             "SELECT value FROM settings WHERE key=?",
-            ("__matar_db_compatibility_check__",),
+            (marker,),
         ).fetchone()
         if not setting or setting[0] != "first":
             raise RuntimeError("Neon compatibility check failed: INSERT OR IGNORE")
 
         connection.execute(
             "INSERT OR REPLACE INTO operations_room(chat_id,created_at) VALUES (?,?)",
-            (-9876543210, "2000-01-01 00:00:00"),
+            (test_chat_id, "2000-01-01 00:00:00"),
         )
         connection.execute(
             "INSERT OR REPLACE INTO operations_room(chat_id,created_at) VALUES (?,?)",
-            (-9876543210, "2000-01-02 00:00:00"),
+            (test_chat_id, "2000-01-02 00:00:00"),
         )
         room = connection.execute(
             "SELECT created_at FROM operations_room WHERE chat_id=?",
-            (-9876543210,),
+            (test_chat_id,),
         ).fetchone()
         if not room or room[0] != "2000-01-02 00:00:00":
             raise RuntimeError("Neon compatibility check failed: INSERT OR REPLACE")
