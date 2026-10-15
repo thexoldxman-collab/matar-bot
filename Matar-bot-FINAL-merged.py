@@ -4844,6 +4844,10 @@ def handle_all_callbacks(call):
         safe_answer_callback(call.id)
         start_ai_dev_request(uid, call.message.chat.id)
         return
+    if data == 'ai_dev_last':
+        safe_answer_callback(call.id)
+        create_ai_draft_from_last_message(uid, call.message.chat.id)
+        return
     if data.startswith('ai_pr_check_'):
         safe_answer_callback(call.id)
         try:
@@ -7208,6 +7212,43 @@ def process_ai_dev_request(message):
     )
 
 
+def create_ai_draft_from_last_message(uid, chat_id):
+    """تحويل آخر طلب أرسله المالك للمساعد إلى مسودة تعديل من داخل المحادثة نفسها."""
+    if uid != ADMIN_ID:
+        bot.send_message(chat_id, '❌ تحويل الطلب إلى تعديل برمجي متاح للمالك فقط.')
+        return
+    if not _github_config():
+        bot.send_message(chat_id, '⚠️ إعدادات GitHub غير مكتملة؛ لم يتم إنشاء أي تعديل.')
+        return
+    row = conn.execute(
+        "SELECT content FROM ai_conversations WHERE user_id=? AND role='user' ORDER BY id DESC LIMIT 1",
+        (uid,),
+    ).fetchone()
+    request_text = str(row[0]).strip() if row and row[0] else ''
+    if not request_text:
+        bot.send_message(chat_id, '⚠️ لم أجد طلباً سابقاً في المحادثة لتحويله إلى تعديل.')
+        return
+    bot.send_message(chat_id, '⏳ عم حوّل آخر طلب كتبته للمساعد إلى تعديل مقترح، وسأفحص صياغته قبل رفعه.')
+    result, error = create_ai_draft_pr(request_text, uid)
+    if error:
+        bot.send_message(chat_id, '⚠️ ' + error)
+        return
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton(
+        '🔎 فحص الاختبارات',
+        callback_data=f"ai_pr_check_{result['number']}",
+    ))
+    bot.send_message(
+        chat_id,
+        f"✅ أنشأت مسودة تعديل #{result['number']}\\n"
+        f"📝 {result['summary']}\\n"
+        f"🔎 {result['url']}\\n\\n"
+        'النسخة المنشورة لم تتغير. افحص الاختبارات ثم وافق على الدمج من داخل تيليغرام إذا أردت.',
+        reply_markup=markup,
+        disable_web_page_preview=True,
+    )
+
+
 def clear_ai_chat(uid, chat_id):
     if not ai_allowed(uid):
         return
@@ -7254,7 +7295,13 @@ def process_ai_message(message):
         bot.send_message(message.chat.id, '⚠️ ' + error, parse_mode='Markdown')
         return
     ai_store(uid, 'assistant', answer)
-    bot.send_message(message.chat.id, answer, reply_markup=ai_keyboard(uid))
+    markup = ai_keyboard(uid)
+    if uid == ADMIN_ID and _github_config():
+        markup.add(types.InlineKeyboardButton(
+            '🛠 تحويل طلبي الأخير إلى تعديل',
+            callback_data='ai_dev_last',
+        ))
+    bot.send_message(message.chat.id, answer, reply_markup=markup)
 
 
 # =============================================================================
