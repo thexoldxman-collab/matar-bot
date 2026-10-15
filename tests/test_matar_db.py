@@ -51,5 +51,14 @@ class SQLTranslationTests(unittest.TestCase):
         self.assertIn("RETURNING id", sql)
 
 
+    def test_sqlite_relative_date_modifiers_translate_safely(self):
+        sql, _ = translate_sql(
+            "SELECT COUNT(*) FROM transactions WHERE transaction_date >= DATE('now', '-7 days')"
+        )
+        self.assertIn("TO_CHAR(CURRENT_DATE - INTERVAL '7 day', 'YYYY-MM-DD')", sql)
+        self.assertNotIn("DATE('now', '-7 days')", sql)
+        sql, _ = translate_sql("SELECT DATE('now', '+2 weeks')")
+        self.assertIn("TO_CHAR(CURRENT_DATE + INTERVAL '2 week', 'YYYY-MM-DD')", sql)
+
 if __name__ == "__main__":
     unittest.main()
