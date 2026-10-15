@@ -1077,6 +1077,8 @@ def handle_backup_document(message):
     try:
         file_info = bot.get_file(document.file_id)
         downloaded = bot.download_file(file_info.file_path)
+        if not downloaded or len(downloaded) > MAX_RESTORE_FILE_BYTES:
+            raise ValueError("حجم الملف غير صالح أو يتجاوز 20 ميغابايت.")
         with open(temp_path, 'wb') as target:
             target.write(downloaded)
         snapshot, row_count = _load_validated_postgres_snapshot(temp_path)
