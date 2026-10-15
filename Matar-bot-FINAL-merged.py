@@ -1634,6 +1634,83 @@ def redeem_gift_atomic(user_id, code):
         except Exception:
             conn.rollback(); raise
 
+def close_gift_and_refund_atomic(code, actor_id, require_expired=False):
+    """إغلاق/إنهاء كود هدية وإرجاع المتبقي للكاشيرة بشكل ذري."""
+    now_dt = datetime.now()
+    now = now_dt.strftime('%Y-%m-%d %H:%M:%S')
+    with db_lock:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            gift = conn.execute(
+                "SELECT value,limit_count,used_count,created_by,auto_returned,expires_at FROM gifts WHERE code=?",
+                (code,),
+            ).fetchone()
+            if not gift:
+                conn.rollback()
+                return 'not_found', 0.0
+            value, limit_count, used_count, created_by, auto_returned, expires_at = gift
+            if require_expired:
+                if auto_returned:
+                    conn.rollback()
+                    return 'already_returned', 0.0
+                if not expires_at:
+                    conn.rollback()
+                    return 'not_expired', 0.0
+                try:
+                    expiry_dt = datetime.strptime(expires_at, '%Y-%m-%d %H:%M:%S')
+                except (TypeError, ValueError):
+                    conn.rollback()
+                    return 'invalid_expiry', 0.0
+                if expiry_dt >= now_dt:
+                    conn.rollback()
+                    return 'not_expired', 0.0
+
+            remaining = max(0, int(limit_count or 0) - int(used_count or 0)) * float(value or 0)
+            if not math.isfinite(remaining) or remaining < 0:
+                conn.rollback()
+                return 'invalid_amount', 0.0
+
+            if remaining > 0 and not auto_returned:
+                if created_by is None:
+                    conn.rollback()
+                    return 'cashier_missing', 0.0
+                refund_cur = conn.execute(
+                    "UPDATE cashier_balance SET balance=balance+?, last_updated=? WHERE admin_id=?",
+                    (remaining, now, created_by),
+                )
+                if refund_cur.rowcount != 1:
+                    conn.rollback()
+                    return 'cashier_missing', 0.0
+                receipt = generate_receipt_number('GFR')
+                conn.execute(
+                    """INSERT INTO transactions
+                    (user_id,type,amount,commission,net_amount,method,status,transaction_date,
+                     admin_id,details,receipt_number,external_ref)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (created_by, 'gift_refund', remaining, 0, remaining, 'gift', 'success',
+                     now, actor_id, 'إرجاع الرصيد المتبقي من كود هدية', receipt, code),
+                )
+
+            if require_expired:
+                cur = conn.execute(
+                    "UPDATE gifts SET auto_returned=1, returned_at=? WHERE code=? AND auto_returned=0",
+                    (now, code),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE gifts SET limit_count=used_count, auto_returned=1, returned_at=COALESCE(returned_at,?) WHERE code=?",
+                    (now, code),
+                )
+            if cur.rowcount != 1:
+                conn.rollback()
+                return 'already_returned', 0.0
+            conn.commit()
+            return 'ok', float(remaining)
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def transfer_internal_balance(user_id, amount, direction):
     """تحويل داخلي وتسجيله في دفتر المعاملات ضمن معاملة واحدة."""
     try:
