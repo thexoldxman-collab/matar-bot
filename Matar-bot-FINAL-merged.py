@@ -8155,6 +8155,67 @@ def confirm_ai_setting_change(uid, chat_id, token):
         bot.send_message(chat_id, f"✅ تم تطبيق التعديل على: {AI_SETTING_ALLOWLIST[key]['label']}\\nالقيمة الجديدة: {normalized}")
         return
 
+    if kind == 'create_submenu':
+        try:
+            validated = validate_ai_submenu_creation(
+                pending.get('button_text'), pending.get('parent_button')
+            )
+        except ValueError as exc:
+            ai_pending_actions.pop(uid, None)
+            bot.send_message(chat_id, '❌ لم يتم إنشاء القائمة الفرعية: ' + str(exc))
+            return
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with db_lock:
+            conn.execute('BEGIN IMMEDIATE')
+            try:
+                duplicate = conn.execute(
+                    "SELECT 1 FROM dynamic_buttons WHERE button_text=? AND is_active=1 LIMIT 1",
+                    (validated['button_text'],),
+                ).fetchone()
+                if duplicate:
+                    conn.rollback()
+                    ai_pending_actions.pop(uid, None)
+                    bot.send_message(chat_id, '❌ يوجد زر نشط بهذا الاسم بالفعل؛ لم يتم إنشاء شيء.')
+                    return
+                parent = validated['parent_button']
+                if parent == 'main':
+                    parent_path, level = '/main', 1
+                else:
+                    parent_row = conn.execute(
+                        "SELECT path,level FROM dynamic_buttons WHERE button_text=? AND is_active=1 ORDER BY id LIMIT 1",
+                        (parent,),
+                    ).fetchone()
+                    if not parent_row:
+                        conn.rollback()
+                        ai_pending_actions.pop(uid, None)
+                        bot.send_message(chat_id, '⚠️ القائمة الأب لم تعد موجودة أو غير نشطة؛ لم يتم إنشاء القائمة.')
+                        return
+                    parent_path, parent_level = parent_row
+                    level = int(parent_level) + 1
+                max_order = conn.execute(
+                    "SELECT MAX(sort_order) FROM dynamic_buttons WHERE parent_button=? AND level=?",
+                    (parent, level),
+                ).fetchone()[0] or 0
+                button_name = 'submenu_' + str(int(time.time())) + '_' + secrets.token_hex(3)
+                path_value = parent_path + '/' + button_name
+                cur = conn.execute(
+                    """INSERT INTO dynamic_buttons
+                    (button_name,button_text,parent_button,button_type,action,message_text,photo_id,
+                     level,sort_order,created_at,updated_at,created_by,path,is_active)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1)""",
+                    (button_name, validated['button_text'], parent, 'reply', 'show_submenu',
+                     None, None, level, int(max_order) + 1, now, now, uid, path_value),
+                )
+                button_id = cur.lastrowid
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        ai_pending_actions.pop(uid, None)
+        log_admin_action(uid, 'ai_submenu_created', 'إنشاء قائمة فرعية ' + validated['button_text'] + ' (#' + str(button_id) + ')')
+        bot.send_message(chat_id, '✅ تم إنشاء القائمة الفرعية «' + validated['button_text'] + '». يمكنك الآن طلب إضافة أزرار تحتها.')
+        return
+
     if kind == 'create_button':
         try:
             validated = validate_ai_button_creation(
@@ -8337,6 +8398,15 @@ def process_ai_message(message):
                     'message_text': proposed['message_text'],
                 }
                 new_value = proposed['message_text']
+            elif kind == 'create_submenu':
+                old_value = ''
+                label = f"قائمة فرعية جديدة «{proposed['button_text']}» تحت «{proposed['parent_button']}»"
+                action_data = {
+                    'kind': 'create_submenu',
+                    'button_text': proposed['button_text'],
+                    'parent_button': proposed['parent_button'],
+                }
+                new_value = 'إنشاء قائمة فرعية فارغة'
             else:
                 bot.send_message(message.chat.id, 'لم أتعرف على نوع التعديل؛ لم يتغير شيء.')
                 return
