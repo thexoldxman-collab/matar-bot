@@ -297,5 +297,69 @@ def connect_database(database_url: str, sqlite_path: str):
     return sqlite3.connect(sqlite_path, check_same_thread=False, timeout=30)
 
 
+def verify_postgres_compatibility(connection: PostgresConnection) -> None:
+    """Exercise key legacy-SQL translations against the real database at startup.
+
+    All test rows are rolled back. A failed check aborts startup instead of
+    allowing the bot to run with a partially compatible database backend.
+    """
+    connection.execute("BEGIN")
+    try:
+        ticket = connection.execute(
+            "INSERT INTO tickets(user_id,message,status,created_at) VALUES (?,?,?,?)",
+            (-1, "__matar_database_compatibility_check__", "closed", "2000-01-01 00:00:00"),
+        )
+        ticket_id = ticket.lastrowid
+        if not ticket_id:
+            raise RuntimeError("Neon compatibility check failed: ticket_id was not returned")
+        row = connection.execute(
+            "SELECT ticket_id, DATE(created_at) FROM tickets WHERE ticket_id=?",
+            (ticket_id,),
+        ).fetchone()
+        if not row or row[0] != ticket_id or row[1] is None:
+            raise RuntimeError("Neon compatibility check failed: generated IDs or date conversion")
+
+        connection.execute(
+            "INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",
+            ("__matar_db_compatibility_check__", "first"),
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",
+            ("__matar_db_compatibility_check__", "second"),
+        )
+        setting = connection.execute(
+            "SELECT value FROM settings WHERE key=?",
+            ("__matar_db_compatibility_check__",),
+        ).fetchone()
+        if not setting or setting[0] != "first":
+            raise RuntimeError("Neon compatibility check failed: INSERT OR IGNORE")
+
+        connection.execute(
+            "INSERT OR REPLACE INTO operations_room(chat_id,created_at) VALUES (?,?)",
+            (-9876543210, "2000-01-01 00:00:00"),
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO operations_room(chat_id,created_at) VALUES (?,?)",
+            (-9876543210, "2000-01-02 00:00:00"),
+        )
+        room = connection.execute(
+            "SELECT created_at FROM operations_room WHERE chat_id=?",
+            (-9876543210,),
+        ).fetchone()
+        if not room or room[0] != "2000-01-02 00:00:00":
+            raise RuntimeError("Neon compatibility check failed: INSERT OR REPLACE")
+
+        moderator_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(moderators)").fetchall()
+        }
+        if "can_use_ai" not in moderator_columns:
+            raise RuntimeError("Neon compatibility check failed: moderator schema migration")
+        connection.execute("SELECT DATE('now'), datetime('now')").fetchone()
+        connection.rollback()
+    except Exception:
+        connection.rollback()
+        raise
+
+
 def is_postgres_connection(connection: Any) -> bool:
     return isinstance(connection, PostgresConnection)
