@@ -3706,33 +3706,28 @@ class GiftManager:
     
     @staticmethod
     def check_expired_gifts():
-        """فحص الأكواد المنتهية وإرجاع الرصيد"""
-        cursor.execute("""SELECT code, value, limit_count, used_count, created_by 
-                          FROM gifts 
-                          WHERE expires_at IS NOT NULL 
+        """فحص الأكواد المنتهية وإرجاع المتبقي وسجله ضمن معاملة واحدة."""
+        cursor.execute("""SELECT code FROM gifts
+                          WHERE expires_at IS NOT NULL
                           AND expires_at < datetime('now')
                           AND auto_returned = 0""")
-        expired = cursor.fetchall()
-        
-        for gift in expired:
-            code, value, limit_count, used_count, created_by = gift
-            remaining = (limit_count - used_count) * value
-            
+        expired_codes = [row[0] for row in cursor.fetchall()]
+
+        for code in expired_codes:
+            try:
+                status, remaining = close_gift_and_refund_atomic(code, ADMIN_ID, require_expired=True)
+            except Exception:
+                logger.exception("Expired gift refund failed for code %s", code)
+                continue
+            if status != 'ok':
+                logger.warning("Expired gift %s was not closed/refunded: %s", code, status)
+                continue
             if remaining > 0:
-                # إرجاع الرصيد للكاشيرة
-                update_cashier_balance(remaining, add=True, admin_id=created_by)
-                
-                cursor.execute("UPDATE gifts SET auto_returned=1, returned_at=? WHERE code=?", 
-                              (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), code))
-                conn.commit()
-                
-                # إشعار للمالك
                 notifier.send_to_admin(
                     "💰 إرجاع رصيد كود منتهي",
-                    f"الكود {code} انتهت صلاحيته وتم إرجاع {remaining} ل.س للكاشيرة"
+                    f"الكود {code} انتهت صلاحيته وتم إرجاع {remaining:,.2f} ل.س للكاشيرة"
                 )
-                
-                logger.info(f"تم إرجاع {remaining} ل.س للكاشيرة من كود {code}")
+                logger.info("تم إرجاع %s للكاشيرة من كود منتهي %s", remaining, code)
 
 # نهاية الرسالة الثالثة - يتبعها رسالة رابعة
 
