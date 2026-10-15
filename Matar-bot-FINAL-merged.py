@@ -7068,7 +7068,7 @@ def _ai_pr_checks_ready(check_runs):
 
 
 def _get_ai_pr_for_owner(pr_number, token, repository, base):
-    api_root = f'${GITHUB_API}/repos/{repository}'
+    api_root = f'{GITHUB_API}/repos/{repository}'
     pr = _github_request('GET', f'{api_root}/pulls/{pr_number}', token)
     head = pr.get('head', {})
     target = pr.get('base', {})
@@ -7130,7 +7130,7 @@ def merge_ai_pr_from_bot(uid, chat_id, pr_number, callback_id=None):
         bot.send_message(chat_id, '⚠️ إعدادات GitHub غير مكتملة.')
         return
     token, repository, base = config
-    api_root = f'${GITHUB_API}/repos/{repository}'
+    api_root = f'{GITHUB_API}/repos/{repository}'
     try:
         pr, ready, message, _ = _get_ai_pr_for_owner(pr_number, token, repository, base)
         if not ready:
