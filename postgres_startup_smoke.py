@@ -72,9 +72,11 @@ finally:
     module.conn.rollback()
     for table in (
         "transactions", "pending_withdraws", "wheel_spins", "wheel_bonuses",
-        "gift_usage", "ai_conversations", "referrals_log", "referral_earnings",
+        "gift_usage", "ai_conversations",
     ):
         module.conn.execute(f"DELETE FROM {table} WHERE user_id=?", (test_user_id,))
+    module.conn.execute("DELETE FROM referrals_log WHERE referrer_id=? OR referred_id=?", (test_user_id, test_user_id))
+    module.conn.execute("DELETE FROM referral_earnings WHERE referrer_id=? OR from_user_id=?", (test_user_id, test_user_id))
     module.conn.execute("DELETE FROM users WHERE user_id=?", (test_user_id,))
     if backup_path:
         import os
