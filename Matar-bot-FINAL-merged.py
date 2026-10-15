@@ -7357,16 +7357,28 @@ def require_ops_permission(call, permission):
     return False
 
 def complete_pending_charge(charge_id, admin_id, amount=None):
-    """إيداع شحن واحد فقط، مع قفل قاعدة البيانات والتحقق من رقم العملية."""
+    """إتمام طلب شحن مرة واحدة مع احترام المشرف الذي استلم الطلب."""
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     with db_lock:
         conn.execute('BEGIN IMMEDIATE')
         try:
-            row = conn.execute("SELECT user_id, amount, receipt_number, status FROM pending_charges WHERE id=?", (charge_id,)).fetchone()
-            if not row or row[3] == 'completed':
+            row = conn.execute(
+                "SELECT user_id, amount, receipt_number, status, processed_by FROM pending_charges WHERE id=?",
+                (charge_id,),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return None, 'not_found'
+            user_id, stored_amount, receipt, status, claimed_by = row
+            if status == 'completed':
                 conn.rollback()
                 return None, 'already_completed'
-            user_id, stored_amount, receipt, status = row
+            if status not in ('pending', 'processing'):
+                conn.rollback()
+                return None, 'invalid_status'
+            if status == 'processing' and claimed_by not in (None, admin_id) and admin_id != ADMIN_ID:
+                conn.rollback()
+                return None, 'claimed_by_other'
             value = float(amount if amount is not None else stored_amount or 0)
             if not math.isfinite(value) or value <= 0:
                 conn.rollback()
@@ -7374,21 +7386,33 @@ def complete_pending_charge(charge_id, admin_id, amount=None):
             if conn.execute("SELECT 1 FROM processed_transactions WHERE receipt_number=?", (receipt,)).fetchone():
                 conn.rollback()
                 return None, 'duplicate_receipt'
-            cur = conn.execute("UPDATE users SET balance=balance+?, last_active=? WHERE user_id=?", (value, now, user_id))
+            cur = conn.execute(
+                "UPDATE users SET balance=balance+?, last_active=? WHERE user_id=? AND deleted=0",
+                (value, now, user_id),
+            )
             if cur.rowcount != 1:
                 conn.rollback()
                 return None, 'user_not_found'
-            cur = conn.execute("UPDATE pending_charges SET status='completed', amount=?, processed_by=?, processed_at=? WHERE id=? AND status IN ('pending','processing')", (value, admin_id, now, charge_id))
+            cur = conn.execute(
+                "UPDATE pending_charges SET status='completed', amount=?, processed_by=?, processed_at=? "
+                "WHERE id=? AND status IN ('pending','processing')",
+                (value, admin_id, now, charge_id),
+            )
             if cur.rowcount != 1:
                 conn.rollback()
                 return None, 'already_completed'
-            conn.execute("INSERT INTO processed_transactions(receipt_number,user_id,amount,processed_at) VALUES (?,?,?,?)", (receipt, user_id, value, now))
+            conn.execute(
+                "INSERT INTO processed_transactions(receipt_number,user_id,amount,processed_at) VALUES (?,?,?,?)",
+                (receipt, user_id, value, now),
+            )
             transaction_receipt = generate_receipt_number('CHG')
-            conn.execute("""INSERT INTO transactions
+            conn.execute(
+                """INSERT INTO transactions
                 (user_id,type,amount,commission,net_amount,method,status,transaction_date,admin_id,details,receipt_number,external_ref)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (user_id, 'charge', value, 0, value, 'manual', 'success', now, admin_id,
-                 'شحن معتمد من غرفة العمليات', transaction_receipt, receipt or ''))
+                 'شحن معتمد من غرفة العمليات', transaction_receipt, receipt or ''),
+            )
             new_balance = conn.execute("SELECT balance FROM users WHERE user_id=?", (user_id,)).fetchone()[0]
             conn.commit()
         except Exception:
@@ -7396,6 +7420,52 @@ def complete_pending_charge(charge_id, admin_id, amount=None):
             raise
     finance_logger.info(f'Charge completed: {transaction_receipt} - User: {user_id} - Amount: {value}')
     return float(new_balance), 'ok'
+
+
+def cancel_pending_charge_atomic(charge_id, executor_uid, reason):
+    """إلغاء طلب شحن ذرياً ومنع إلغاء طلب مكتمل أو مستلم من مشرف آخر."""
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    reason = (reason or '').strip()[:1000]
+    if not reason:
+        return None, 'empty_reason'
+    with db_lock:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            row = conn.execute(
+                "SELECT user_id, status, processed_by, txn_receipt, receipt_number "
+                "FROM pending_charges WHERE id=?",
+                (charge_id,),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return None, 'not_found'
+            user_id, status, claimed_by, txn_receipt, receipt = row
+            if status not in ('pending', 'processing'):
+                conn.rollback()
+                return None, 'invalid_status'
+            if status == 'processing' and claimed_by not in (None, executor_uid) and executor_uid != ADMIN_ID:
+                conn.rollback()
+                return None, 'claimed_by_other'
+            cur = conn.execute(
+                "UPDATE pending_charges SET status='cancelled', processed_by=?, processed_at=? "
+                "WHERE id=? AND status IN ('pending','processing')",
+                (executor_uid, now, charge_id),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                return None, 'already_processed'
+            transaction_ref = txn_receipt or receipt
+            if transaction_ref:
+                conn.execute(
+                    "UPDATE transactions SET status='cancelled', admin_id=?, "
+                    "details=COALESCE(details,'') || ? WHERE receipt_number=? AND status='pending'",
+                    (executor_uid, '\\nسبب الإلغاء: ' + reason, transaction_ref),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return {'user_id': user_id, 'receipt_number': receipt}, 'ok'
 
 def complete_pending_withdraw(withdraw_id, admin_id):
     """إتمام السحب مرة واحدة؛ الطلبات الجديدة محجوز رصيدها مسبقاً، والقديمة تُخصم عند الإتمام."""
@@ -7519,32 +7589,50 @@ def handle_ops_execute_charge(call, charge_id):
 def handle_ops_cancel_charge(call, charge_id):
     """إلغاء طلب شحن مع سبب"""
     
-    cursor.execute("SELECT status, user_id FROM pending_charges WHERE id=?", (charge_id,))
+    uid = call.from_user.id
+    cursor.execute("SELECT status, user_id, processed_by FROM pending_charges WHERE id=?", (charge_id,))
     row = cursor.fetchone()
     if not row or row[0] not in ('pending', 'processing'):
         bot.answer_callback_query(call.id, "❌ الطلب غير موجود أو معالج!", show_alert=True)
         return
-    
+    if row[0] == 'processing' and row[2] not in (None, uid) and uid != ADMIN_ID:
+        bot.answer_callback_query(call.id, "❌ الطلب مستلم من مشرف آخر!", show_alert=True)
+        return
+
     user_id = row[1]
     bot.answer_callback_query(call.id)
-    
+
     msg = bot.send_message(call.message.chat.id,
                            f"❌ **إلغاء طلب الشحن #{charge_id}**\n\n"
                            f"📝 اكتب سبب الإلغاء لإرساله للزبون:",
                            parse_mode="Markdown")
-    bot.register_next_step_handler(msg, process_ops_cancel_charge_reason, charge_id, user_id, call)
+    bot.register_next_step_handler(msg, process_ops_cancel_charge_reason, charge_id, user_id, call, uid)
 
-def process_ops_cancel_charge_reason(message, charge_id, user_id, original_call):
-    """معالجة سبب الإلغاء وإرساله للزبون"""
-    reason = message.text.strip()
+def process_ops_cancel_charge_reason(message, charge_id, user_id, original_call, expected_executor_uid):
+    """إلغاء طلب الشحن بعد التحقق من المشرف والانتقال الذري للحالة."""
+    reason = (message.text or '').strip()[:1000]
     executor_uid = message.from_user.id
+    if executor_uid != expected_executor_uid:
+        bot.send_message(message.chat.id, '❌ هذا الإجراء مخصص للمشرف الذي بدأ الإلغاء.')
+        return
+    if not reason or reason == '🔙 العودة للقائمة الرئيسية':
+        bot.send_message(message.chat.id, 'تم إلغاء خطوة إدخال السبب؛ لم يتغير طلب الشحن.')
+        return
+
     executor_name = get_moderator_name(executor_uid)
-    
-    cursor.execute("UPDATE pending_charges SET status='cancelled', processed_by=?, processed_at=? WHERE id=?",
-                   (executor_uid, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), charge_id))
-    conn.commit()
-    
-    # إرسال سبب الإلغاء للزبون
+    result, cancel_status = cancel_pending_charge_atomic(charge_id, executor_uid, reason)
+    if cancel_status != 'ok':
+        messages = {
+            'not_found': '❌ الطلب غير موجود.',
+            'invalid_status': '⚠️ الطلب لم يعد قابلاً للإلغاء؛ ربما تم شحنه أو إلغاؤه.',
+            'claimed_by_other': '❌ الطلب مستلم من مشرف آخر؛ لا يمكن إلغاؤه من حسابك.',
+            'already_processed': '⚠️ تم تحديث الطلب من جهة أخرى؛ لم يتغير الطلب.',
+            'empty_reason': '❌ يجب إدخال سبب للإلغاء.',
+        }
+        bot.send_message(message.chat.id, messages.get(cancel_status, '❌ تعذر إلغاء طلب الشحن.'))
+        return
+
+    user_id = result['user_id']
     try:
         bot.send_message(user_id,
                          f"❌ **تم إلغاء طلب الشحن الخاص بك**\n\n"
@@ -7553,8 +7641,7 @@ def process_ops_cancel_charge_reason(message, charge_id, user_id, original_call)
                          parse_mode="Markdown")
     except Exception:
         pass
-    
-    # تحديث رسالة غرفة العمليات
+
     try:
         bot.edit_message_reply_markup(original_call.message.chat.id, original_call.message.message_id, reply_markup=None)
         bot.send_message(original_call.message.chat.id,
