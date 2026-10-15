@@ -865,6 +865,7 @@ def setup_database():
         ('withdraw_commission', '10', 'نسبة عمولة السحب', 'number'),
         ('bot_status', 'active', 'حالة البوت', 'text'),
         ('welcome_message', 'اهلا وسهلا بك في بوت Matar البوت الرسمي لموقع ichancy', 'رسالة الترحيب', 'text'),
+        ('subscription_message', '🎯 **أهلاً وسهلاً بك في بوت Matar** 🌧️\\n\\nالبوت الرسمي لموقع Ichancy.\\n\\n⚠️ **شرط أساسي لاستخدام البوت:**\\nالرجاء الاشتراك في قناتنا على تيلغرام لتتمكن من استخدام البوت', 'رسالة الاشتراك الإلزامي', 'text'),
         ('terms_message', '📜 الشروط:\n\n1. الاشتراك بالقناة إلزامي\n2. الحد الأدنى للشحن: 100 ل.س\n3. السحب: سيرياتل 25k-500k، شام 25k-5M\n4. عمولة السحب: 10%\n5. مدة السحب: 1-24 ساعة', 'نص الشروط', 'text'),
         ('referral_percentage', '10', 'نسبة الإحالات', 'number'),
         ('next_referral_payout', '', 'موعد الدفعة القادمة', 'text'),
@@ -5073,16 +5074,8 @@ def handle_start(message):
         markup.add(types.InlineKeyboardButton("📢 اشترك في القناة", url=CHANNEL_URL))
         markup.add(types.InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_sub_after_start"))
         
-        welcome_text = """
-🎯 **أهلاً وسهلاً بك في بوت Matar** 🌧️
-
-البوت الرسمي لموقع Ichancy ✅
-هذا البوت مخصص لإنشاء حساب على موقع Ichancy وإدارته في عمليات الشحن والسحب
-
-⚠️ **شرط أساسي لاستخدام البوت:**
-الرجاء الاشتراك في قناتنا على تيلغرام لتتمكن من استخدام البوت
-"""
-        bot.send_message(message.chat.id, welcome_text, reply_markup=markup, parse_mode="Markdown")
+        subscription_text = get_db_setting('subscription_message') or "⚠️ **يجب الاشتراك في القناة أولاً**"
+        bot.send_message(message.chat.id, subscription_text, reply_markup=markup, parse_mode="Markdown")
         return
     
     # رسالة الترحيب (مرة واحدة فقط)
@@ -7884,6 +7877,7 @@ def ai_status(uid, chat_id):
 
 AI_SETTING_ALLOWLIST = {
     'welcome_message': {'label': 'رسالة الترحيب', 'type': 'text', 'max_length': 3000},
+    'subscription_message': {'label': 'رسالة الاشتراك الإلزامي', 'type': 'text', 'max_length': 2000},
     'terms_message': {'label': 'الشروط والأحكام', 'type': 'text', 'max_length': 4000},
     'maintenance_message': {'label': 'رسالة الصيانة', 'type': 'text', 'max_length': 2000},
     'wheel_title': {'label': 'عنوان عجلة الحظ', 'type': 'text', 'max_length': 120},
@@ -8410,7 +8404,8 @@ def main_router(message):
     if not check_subscription(uid):
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("📢 اشترك في القناة", url=CHANNEL_URL))
-        bot.send_message(message.chat.id, "⚠️ **يجب الاشتراك في القناة أولاً**", reply_markup=markup, parse_mode="Markdown")
+        subscription_text = get_db_setting('subscription_message') or "⚠️ **يجب الاشتراك في القناة أولاً**"
+        bot.send_message(message.chat.id, subscription_text, reply_markup=markup, parse_mode="Markdown")
         return
     
     # تحديث آخر نشاط للمستخدم
