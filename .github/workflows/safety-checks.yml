@@ -47,13 +47,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyflakes
       - name: Compile main bot
-        run: python -m py_compile Matar-bot-FINAL-merged.py matar_db.py tests/test_regressions.py tests/test_db_backend.py
+        run: python -m py_compile Matar-bot-FINAL-merged.py matar_db.py tests/test_regressions.py tests/test_db_backend.py postgres_startup_smoke.py
       - name: Run regression tests with isolated SQLite database
         run: python -m unittest discover -s tests -v
       - name: Exercise full bot schema against PostgreSQL
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/matar_test?sslmode=disable
           REQUIRE_PERSISTENT_DATABASE: "1"
-        run: python tests/test_postgres_startup.py
+        run: python postgres_startup_smoke.py
       - name: Run pyflakes
         run: python -m pyflakes Matar-bot-FINAL-merged.py matar_db.py tests
