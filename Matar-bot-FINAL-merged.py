@@ -8167,7 +8167,13 @@ def cancel_pending_withdraw_atomic(withdraw_id, executor_uid, reason):
                 conn.rollback()
                 return None, 'already_processed'
             if reserved:
-                conn.execute("UPDATE users SET balance=balance+?, last_active=? WHERE user_id=?", (float(amount), now, target_uid))
+                refund_cur = conn.execute(
+                    "UPDATE users SET balance=balance+?, last_active=? WHERE user_id=?",
+                    (float(amount), now, target_uid),
+                )
+                if refund_cur.rowcount != 1:
+                    conn.rollback()
+                    return None, 'user_not_found'
             if receipt:
                 conn.execute("UPDATE transactions SET status='cancelled', admin_id=?, details=COALESCE(details,'') || ? WHERE receipt_number=? AND type='withdraw_request' AND status='pending'", (executor_uid, '\nسبب الإلغاء: ' + reason, receipt))
             conn.commit()
