@@ -12,6 +12,12 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
+      - key: GITHUB_BASE_BRANCH
+        value: main
       - key: DATABASE_PATH
         value: /var/data/matar_ultimate.db
       - key: BACKUP_DIR
