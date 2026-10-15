@@ -44,9 +44,10 @@ class DatabaseTranslationTests(unittest.TestCase):
 
     def test_sqlite_datetime_and_date_functions_are_translated(self):
         sql, _ = translate_sql(
-            "SELECT DATE(created_at) FROM users WHERE expires_at > datetime('now') AND created_at >= DATE('now')"
+            "SELECT DATE(created_at), DATE(transaction_date) FROM users WHERE expires_at > datetime('now') AND created_at >= DATE('now')"
         )
         self.assertIn("CAST(created_at AS DATE)", sql)
+        self.assertIn("CAST(transaction_date AS DATE)", sql)
         self.assertIn("TO_CHAR(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')", sql)
         self.assertIn("CURRENT_DATE", sql)
 
