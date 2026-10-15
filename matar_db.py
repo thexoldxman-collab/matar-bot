@@ -62,17 +62,15 @@ def translate_sql(sql: str) -> tuple[str | None, str | None]:
     query = re.sub(r"\bdatetime\s*\(\s*'now'\s*\)", "TO_CHAR(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')", query, flags=re.I)
     query = re.sub(r"\bDATE\s*\(\s*'now'\s*\)", "TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD')", query, flags=re.I)
     def _date_modifier(match):
-        amount = int(match.group(2))
+        amount = int(match.group(1) + match.group(2))
         unit = match.group(3).lower().rstrip('s')
         if unit not in ('day', 'week', 'month', 'year') or abs(amount) > 3650:
             raise ValueError("Unsupported SQLite DATE modifier")
         sign = '+' if amount >= 0 else '-'
         return f"TO_CHAR(CURRENT_DATE {sign} INTERVAL '{abs(amount)} {unit}', 'YYYY-MM-DD')"
     query = re.sub(
-        r"\bDATE\s*\(\s*'now'\s*,\s*'([+-]?)(\d+)\s+(days?|weeks?|months?|years?)'\s*\)",
-        lambda m: _date_modifier(type('DateModifierMatch', (), {
-            'group': lambda self, i: (m.group(0), int(m.group(1) + m.group(2)), m.group(3))[i]
-        })()),
+        r"\\bDATE\\s*\\(\\s*'now'\\s*,\\s*'([+-]?)(\\d+)\\s+(days?|weeks?|months?|years?)'\\s*\\)",
+        _date_modifier,
         query,
         flags=re.I,
     )
