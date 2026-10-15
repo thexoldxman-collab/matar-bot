@@ -709,6 +709,12 @@ class RegressionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 m.validate_ai_setting_change('min_withdraw_syria', 600000)
 
+    def test_ai_setting_validator_accepts_forced_subscription_message(self):
+        m = self.m
+        value = "اشترك بالقناة ثم اضغط تحقق"
+        self.assertEqual(m.validate_ai_setting_change('subscription_message', value), value)
+        self.assertIn("الاشتراك", str(m.get_db_setting('subscription_message')))
+
     def test_ai_setting_confirmation_is_owner_only(self):
         m = self.m
         m.ai_pending_actions[m.ADMIN_ID] = {
