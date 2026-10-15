@@ -5927,17 +5927,15 @@ def handle_all_callbacks(call):
         
         safe_answer_callback(call.id, f"✅ تم اختيار الكود: {number}")
         
-        # حفظ الطلب في قاعدة البيانات
-        txn_receipt = log_transaction(uid, "charge_request", 0, "syriatel", "pending", 
-                                       details=f"فاتورة: {receipt} | كود: {number}")
-        
-        cursor.execute("""INSERT INTO pending_charges 
-            (user_id, method, receipt_number, syriatel_code, status, created_at, txn_receipt)
-            VALUES (?,?,?,?,?,?,?)""",
-            (uid, 'سيرياتل كاش', receipt, number, 'pending', 
-             datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
-        conn.commit()
-        charge_id = cursor.lastrowid
+        # إنشاء الطلب وسجله المالي معاً، مع منع تكرار رقم الفاتورة
+        result, charge_status = create_pending_charge_atomic(
+            uid, 'سيرياتل كاش', 'syriatel', receipt, syriatel_code=number,
+            details=f"فاتورة: {receipt} | كود: {number}",
+        )
+        if charge_status != 'ok':
+            bot.send_message(call.message.chat.id, "❌ رقم الفاتورة مستخدم مسبقاً في طلب شحن آخر.")
+            return
+        charge_id, txn_receipt = result
         
         # طلب المبلغ من الزبون
         msg = bot.send_message(call.message.chat.id,
@@ -9054,15 +9052,14 @@ def process_sham_charge_receipt(message):
         bot.send_message(chat_id, "❌ **رقم العملية هذا تم معالجته مسبقاً!**", parse_mode="Markdown")
         return
 
-    # حفظ ومعالجة مباشرة لشام (لأنه عنوان واحد)
-    txn_receipt = log_transaction(uid, "charge_request", 0, "sham", "pending", details=f"فاتورة: {receipt}")
-    
-    cursor.execute("""INSERT INTO pending_charges 
-        (user_id, method, receipt_number, status, created_at, txn_receipt)
-        VALUES (?,?,?,?,?,?)""",
-        (uid, 'شام كاش', receipt, 'pending', datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
-    conn.commit()
-    charge_id = cursor.lastrowid
+    # إنشاء الطلب وسجله المالي في معاملة واحدة
+    result, charge_status = create_pending_charge_atomic(
+        uid, 'شام كاش', 'sham', receipt, details=f"فاتورة: {receipt}",
+    )
+    if charge_status != 'ok':
+        bot.send_message(chat_id, "❌ رقم العملية مستخدم مسبقاً في طلب شحن آخر.")
+        return
+    charge_id, txn_receipt = result
 
     bot.send_message(chat_id,
                      f"✅ **تم استلام طلب الشحن عبر شام كاش**\n\n"
@@ -9102,13 +9099,13 @@ def process_usdt_charge_receipt(message):
         bot.send_message(chat_id, "❌ **رقم العملية هذا تم معالجته مسبقاً!**", parse_mode="Markdown")
         return
 
-    txn_receipt = log_transaction(uid, "charge_request", 0, "usdt", "pending", details=f"TxID: {receipt}")
-    cursor.execute("""INSERT INTO pending_charges 
-        (user_id, method, receipt_number, status, created_at, txn_receipt)
-        VALUES (?,?,?,?,?,?)""",
-        (uid, 'USDT', receipt, 'pending', datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
-    conn.commit()
-    charge_id = cursor.lastrowid
+    result, charge_status = create_pending_charge_atomic(
+        uid, 'USDT', 'usdt', receipt, details=f"TxID: {receipt}",
+    )
+    if charge_status != 'ok':
+        bot.send_message(chat_id, "❌ رقم العملية مستخدم مسبقاً في طلب شحن آخر.")
+        return
+    charge_id, txn_receipt = result
 
     msg = bot.send_message(chat_id,
                            f"✅ **تم استلام رقم العملية:** `{receipt}`\n\n"
@@ -9160,13 +9157,13 @@ def process_binance_charge_receipt(message):
         bot.send_message(chat_id, "❌ **رقم العملية هذا تم معالجته مسبقاً!**", parse_mode="Markdown")
         return
 
-    txn_receipt = log_transaction(uid, "charge_request", 0, "binance", "pending", details=f"Ref: {receipt}")
-    cursor.execute("""INSERT INTO pending_charges 
-        (user_id, method, receipt_number, status, created_at, txn_receipt)
-        VALUES (?,?,?,?,?,?)""",
-        (uid, 'Binance', receipt, 'pending', datetime.now().strftime("%Y-%m-%d %H:%M:%S"), txn_receipt))
-    conn.commit()
-    charge_id = cursor.lastrowid
+    result, charge_status = create_pending_charge_atomic(
+        uid, 'Binance', 'binance', receipt, details=f"Ref: {receipt}",
+    )
+    if charge_status != 'ok':
+        bot.send_message(chat_id, "❌ رقم العملية مستخدم مسبقاً في طلب شحن آخر.")
+        return
+    charge_id, txn_receipt = result
 
     msg = bot.send_message(chat_id,
                            f"✅ **تم استلام رقم العملية:** `{receipt}`\n\n"
