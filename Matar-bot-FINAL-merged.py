@@ -9892,10 +9892,12 @@ def process_edit_button_message(message, button_text):
                      reply_markup=get_button_edit_menu(button_text), parse_mode="Markdown")
 
 def process_referral_pay(message):
-    """إرسال أرباح الإحالة يدوياً"""
+    """إرسال أرباح الإحالة يدوياً من رصيد الكاشيرة وبمعاملة ذرية."""
     uid = message.from_user.id
     try:
-        parts = message.text.strip().split(',')
+        parts = (message.text or '').strip().split(',')
+        if len(parts) != 2:
+            raise IndexError
         target = int(parts[0].strip())
         amount = float(parts[1].strip())
         new_balance, receipt = credit_referral_payout_atomic(target, amount, uid)
@@ -9905,8 +9907,19 @@ def process_referral_pay(message):
         except Exception:
             pass
         log_admin_action(uid, "إرسال أرباح إحالة", f"إرسال {amount} لـ {target}", target_user=target, amount=amount)
-    except (ValueError, IndexError):
+    except IndexError:
         bot.send_message(message.chat.id, "❌ **صيغة خاطئة. استخدم: معرف,مبلغ**\nمثال: `123456789,5000`", parse_mode="Markdown")
+    except ValueError as exc:
+        error_text = str(exc)
+        if 'cashier balance insufficient' in error_text:
+            bot.send_message(message.chat.id, "❌ رصيد الكاشيرة غير كافٍ لصرف هذه الأرباح؛ لم يتغير أي رصيد.")
+        elif 'target user not found' in error_text:
+            bot.send_message(message.chat.id, "❌ المستخدم المستهدف غير موجود أو غير نشط؛ لم يتم الصرف.")
+        else:
+            bot.send_message(message.chat.id, "❌ المبلغ أو معرف المستخدم غير صالح. لم يتم تنفيذ الصرف.")
+    except Exception:
+        logger.exception("Referral payout failed")
+        bot.send_message(message.chat.id, "❌ تعذر تنفيذ صرف أرباح الإحالة. راجع السجل؛ لم يتم تأكيد العملية.")
 
 def process_edit_payout_date(message):
     """تعديل موعد دفعة الإحالات"""
