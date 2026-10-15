@@ -370,6 +370,36 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(status, 'claimed_by_other')
         self.assertEqual(balance, 50.0)
 
+    def test_ai_text_change_applies_only_unique_literal_replacement(self):
+        source = "alpha\\nold block\\nomega"
+        updated = self.m.apply_ai_text_changes(source, [
+            {"old_text": "old block", "new_text": "new block"}
+        ])
+        self.assertEqual(updated, "alpha\\nnew block\\nomega")
+
+    def test_ai_text_change_rejects_ambiguous_or_missing_source(self):
+        with self.assertRaises(ValueError):
+            self.m.apply_ai_text_changes("repeat repeat", [
+                {"old_text": "repeat", "new_text": "changed"}
+            ])
+        with self.assertRaises(ValueError):
+            self.m.apply_ai_text_changes("some source", [
+                {"old_text": "not present", "new_text": "changed"}
+            ])
+
+    def test_ai_text_change_rejects_empty_or_too_many_changes(self):
+        with self.assertRaises(ValueError):
+            self.m.apply_ai_text_changes("source", [])
+        with self.assertRaises(ValueError):
+            self.m.apply_ai_text_changes("source", [
+                {"old_text": "source", "new_text": "one"},
+                {"old_text": "one", "new_text": "two"},
+                {"old_text": "two", "new_text": "three"},
+                {"old_text": "three", "new_text": "four"},
+                {"old_text": "four", "new_text": "five"},
+                {"old_text": "five", "new_text": "six"},
+            ])
+
     def test_charge_cancellation_is_atomic_and_refuses_completed_requests(self):
         m = self.m
         uid = 810012
