@@ -6565,7 +6565,7 @@ def handle_all_callbacks(call):
                 bot.send_document(call.message.chat.id, f,
                                   caption="📤 **نسخة قاعدة البيانات الحالية**",
                                   parse_mode="Markdown")
-        except Exception as e:
+        except Exception:
             logger.exception("Database export failed")
             bot.send_message(call.message.chat.id, "❌ **فشل تصدير قاعدة البيانات. راجع السجلات.**")
         return
