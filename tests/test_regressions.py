@@ -503,6 +503,31 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(second_status, 'invalid_status')
         self.assertEqual(balance_after, 100.0)
 
+    def test_withdraw_cancellation_rolls_back_if_reserved_balance_cannot_be_refunded(self):
+        m = self.m
+        missing_uid = 819999
+        m.cursor.execute(
+            "DELETE FROM users WHERE user_id=?", (missing_uid,)
+        )
+        m.cursor.execute(
+            "INSERT INTO pending_withdraws(user_id,method,account,amount,commission,net_amount,status,created_at,processed_by,reserved) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (missing_uid, 'test', 'acct', 30.0, 0.0, 30.0, 'processing', '2026-10-15 00:00:00', m.ADMIN_ID, 1),
+        )
+        withdraw_id = m.cursor.lastrowid
+        m.conn.commit()
+
+        result, status = m.cancel_pending_withdraw_atomic(
+            withdraw_id, m.ADMIN_ID, 'اختبار مستخدم غير موجود'
+        )
+        request_status = m.cursor.execute(
+            "SELECT status FROM pending_withdraws WHERE id=?", (withdraw_id,)
+        ).fetchone()[0]
+
+        self.assertIsNone(result)
+        self.assertEqual(status, 'user_not_found')
+        self.assertEqual(request_status, 'processing')
+
     def test_charge_cancellation_is_atomic_and_refuses_completed_requests(self):
         m = self.m
         uid = 810012
