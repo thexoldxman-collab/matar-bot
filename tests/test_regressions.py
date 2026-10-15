@@ -657,6 +657,69 @@ class RegressionTests(unittest.TestCase):
             m.cursor.execute("DELETE FROM gifts WHERE code=?", (code,))
             m.conn.commit()
 
+    def test_pending_charge_creation_is_atomic_and_rejects_duplicate_receipts(self):
+        m = self.m
+        uid, receipt = 810024, 'TEST-PENDING-RECEIPT'
+        try:
+            first, status = m.create_pending_charge_atomic(
+                uid, 'USDT', 'usdt', receipt, details='test receipt'
+            )
+            self.assertEqual(status, 'ok')
+            charge_id, transaction_receipt = first
+            row = m.cursor.execute(
+                "SELECT status,txn_receipt FROM pending_charges WHERE id=?", (charge_id,)
+            ).fetchone()
+            self.assertEqual(row, ('pending', transaction_receipt))
+            ledger = m.cursor.execute(
+                "SELECT type,status,external_ref FROM transactions WHERE receipt_number=?",
+                (transaction_receipt,),
+            ).fetchone()
+            self.assertEqual(ledger, ('charge_request', 'pending', receipt))
+            second, duplicate_status = m.create_pending_charge_atomic(
+                uid + 1, 'USDT', 'usdt', receipt, details='duplicate'
+            )
+            self.assertIsNone(second)
+            self.assertEqual(duplicate_status, 'duplicate_receipt')
+            self.assertEqual(
+                m.cursor.execute("SELECT COUNT(*) FROM pending_charges WHERE receipt_number=?", (receipt,)).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                m.cursor.execute("SELECT COUNT(*) FROM transactions WHERE type='charge_request' AND external_ref=?", (receipt,)).fetchone()[0],
+                1,
+            )
+        finally:
+            m.cursor.execute("DELETE FROM transactions WHERE type='charge_request' AND external_ref=?", (receipt,))
+            m.cursor.execute("DELETE FROM pending_charges WHERE receipt_number=?", (receipt,))
+            m.conn.commit()
+
+    def test_pending_charge_rolls_back_ledger_if_request_insert_fails(self):
+        m = self.m
+        uid, receipt = 810025, 'TEST-PENDING-FAIL'
+        m.conn.execute("DROP TRIGGER IF EXISTS fail_pending_charge_insert_test")
+        m.conn.execute(
+            "CREATE TRIGGER fail_pending_charge_insert_test BEFORE INSERT ON pending_charges "
+            "WHEN NEW.receipt_number='TEST-PENDING-FAIL' BEGIN SELECT RAISE(ABORT, 'forced pending insert failure'); END"
+        )
+        m.conn.commit()
+        try:
+            with self.assertRaises(m.sqlite3.IntegrityError):
+                m.create_pending_charge_atomic(uid, 'USDT', 'usdt', receipt, details='forced failure')
+            self.assertEqual(
+                m.cursor.execute("SELECT COUNT(*) FROM transactions WHERE type='charge_request' AND external_ref=?", (receipt,)).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                m.cursor.execute("SELECT COUNT(*) FROM pending_charges WHERE receipt_number=?", (receipt,)).fetchone()[0],
+                0,
+            )
+        finally:
+            m.conn.rollback()
+            m.conn.execute("DROP TRIGGER IF EXISTS fail_pending_charge_insert_test")
+            m.cursor.execute("DELETE FROM transactions WHERE type='charge_request' AND external_ref=?", (receipt,))
+            m.cursor.execute("DELETE FROM pending_charges WHERE receipt_number=?", (receipt,))
+            m.conn.commit()
+
     def test_gift_redemption_writes_ledger_atomically(self):
         m = self.m
         uid, code = 810022, 'TESTGIFTLEDGER'
