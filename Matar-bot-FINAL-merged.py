@@ -1543,20 +1543,41 @@ def redeem_gift_atomic(user_id, code):
             conn.rollback(); raise
 
 def transfer_internal_balance(user_id, amount, direction):
-    """تحويل ذري بين رصيد البوت ورصيد Ichancy الداخلي فقط."""
-    amount = float(amount)
+    """تحويل داخلي وتسجيله في دفتر المعاملات ضمن معاملة واحدة."""
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return None
     if not math.isfinite(amount) or amount <= 0 or direction not in ("to_site", "to_bot"):
         return None
+
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    receipt = generate_receipt_number("ICH")
+    transaction_type = 'ichancy_charge' if direction == "to_site" else 'ichancy_withdraw'
+    details = 'تحويل داخلي من رصيد البوت إلى رصيد Ichancy' if direction == "to_site" else 'تحويل داخلي من رصيد Ichancy إلى رصيد البوت'
     with db_lock:
         conn.execute("BEGIN IMMEDIATE")
         try:
             if direction == "to_site":
-                cur = conn.execute("UPDATE users SET balance=balance-?, site_balance=site_balance+?, last_active=? WHERE user_id=? AND balance>=?", (amount, amount, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), user_id, amount))
+                cur = conn.execute(
+                    "UPDATE users SET balance=balance-?, site_balance=site_balance+?, last_active=? WHERE user_id=? AND deleted=0 AND balance>=?",
+                    (amount, amount, now, user_id, amount))
             else:
-                cur = conn.execute("UPDATE users SET site_balance=site_balance-?, balance=balance+?, last_active=? WHERE user_id=? AND site_balance>=?", (amount, amount, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), user_id, amount))
+                cur = conn.execute(
+                    "UPDATE users SET site_balance=site_balance-?, balance=balance+?, last_active=? WHERE user_id=? AND deleted=0 AND site_balance>=?",
+                    (amount, amount, now, user_id, amount))
             if cur.rowcount != 1:
                 conn.rollback()
                 return None
+
+            conn.execute(
+                """INSERT INTO transactions
+                (user_id, type, amount, commission, net_amount, method, status,
+                 transaction_date, admin_id, details, receipt_number, external_ref)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (user_id, transaction_type, amount, 0, amount, 'internal', 'success',
+                 now, None, details, receipt, ''))
+
             row = conn.execute("SELECT balance, site_balance FROM users WHERE user_id=?", (user_id,)).fetchone()
             conn.commit()
             return float(row[0]), float(row[1])
@@ -2018,8 +2039,7 @@ class ActionSystem:
             balances = transfer_internal_balance(uid, amount, 'to_site')
             if balances is None:
                 bot.send_message(chat_id, "❌ رصيد البوت غير كافٍ أو الحساب غير موجود.", parse_mode='Markdown'); return
-            receipt = log_transaction(uid, 'ichancy_charge', amount, 'internal', 'success')
-            finance_logger.info(f'تعبئة Ichancy داخلية: {uid} - {amount} - {receipt}')
+            finance_logger.info(f'تعبئة Ichancy داخلية مسجلة ذرياً: {uid} - {amount}')
             bot.send_message(chat_id, f"✅ **تم تسجيل التعبئة الداخلية يدوياً**\n\n💰 رصيد البوت: `{balances[0]:,.0f}` ل.س\n🌐 رصيد Ichancy الداخلي: `{balances[1]:,.0f}`", parse_mode='Markdown')
             ActionSystem.show_ichancy_account(uid, chat_id)
         except (ValueError, TypeError):
@@ -2053,8 +2073,7 @@ class ActionSystem:
             balances = transfer_internal_balance(uid, amount, 'to_bot')
             if balances is None:
                 bot.send_message(chat_id, "❌ رصيد Ichancy الداخلي غير كافٍ أو الحساب غير موجود.", parse_mode='Markdown'); return
-            receipt = log_transaction(uid, 'ichancy_withdraw', amount, 'internal', 'success')
-            finance_logger.info(f'سحب Ichancy داخلي: {uid} - {amount} - {receipt}')
+            finance_logger.info(f'سحب Ichancy داخلي مسجل ذرياً: {uid} - {amount}')
             bot.send_message(chat_id, f"✅ **تم تسجيل السحب الداخلي يدوياً**\n\n💰 رصيد البوت: `{balances[0]:,.0f}` ل.س\n🌐 رصيد Ichancy الداخلي: `{balances[1]:,.0f}`", parse_mode='Markdown')
             ActionSystem.show_ichancy_account(uid, chat_id)
         except (ValueError, TypeError):
