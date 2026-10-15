@@ -414,6 +414,33 @@ class RegressionTests(unittest.TestCase):
                 {"old_text": "five", "new_text": "six"},
             ])
 
+    def test_charge_claim_is_atomic_and_only_one_moderator_can_claim(self):
+        m = self.m
+        uid = 810015
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id, balance, site_balance, deleted) VALUES (?,?,?,0)",
+            (uid, 0.0, 0.0),
+        )
+        m.cursor.execute(
+            "INSERT INTO pending_charges(user_id,method,receipt_number,amount,status,created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (uid, 'test', 'PAY-CLAIM-810015', 10.0, 'pending', '2026-10-15 00:00:00'),
+        )
+        charge_id = m.cursor.lastrowid
+        m.conn.commit()
+
+        first, first_status = m.claim_pending_charge(charge_id, 555551)
+        second, second_status = m.claim_pending_charge(charge_id, 555552)
+        row = m.cursor.execute(
+            "SELECT status, processed_by FROM pending_charges WHERE id=?", (charge_id,)
+        ).fetchone()
+
+        self.assertEqual(first_status, 'ok')
+        self.assertEqual(first['user_id'], uid)
+        self.assertEqual(second_status, 'not_pending')
+        self.assertIsNone(second)
+        self.assertEqual(row, ('processing', 555551))
+
     def test_withdraw_completion_rejects_other_claimant_without_deducting(self):
         m = self.m
         uid = 810013
