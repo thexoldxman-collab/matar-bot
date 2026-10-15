@@ -1,0 +1,97 @@
+import unittest
+
+from matar_db import translate_sql
+
+
+class DatabaseTranslationTests(unittest.TestCase):
+    def test_autoincrement_schema_uses_postgres_serial(self):
+        sql, generated_id = translate_sql(
+            "CREATE TABLE IF NOT EXISTS tickets (ticket_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER)"
+        )
+        self.assertIn("ticket_id BIGSERIAL PRIMARY KEY", sql)
+        self.assertEqual(generated_id, None)
+
+    def test_telegram_ids_keep_64_bit_range_in_postgres_schema(self):
+        sql, _ = translate_sql(
+            "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance REAL DEFAULT 0)"
+        )
+        self.assertIn("user_id BIGINT PRIMARY KEY", sql)
+        self.assertIn("balance DOUBLE PRECISION DEFAULT 0", sql)
+
+    def test_alter_table_integer_columns_are_64_bit(self):
+        sql, _ = translate_sql(
+            "ALTER TABLE moderators ADD COLUMN can_use_ai INTEGER DEFAULT 0"
+        )
+        self.assertIn("can_use_ai BIGINT DEFAULT 0", sql)
+
+    def test_insert_ignore_uses_conflict_safe_postgres_syntax(self):
+        sql, generated_id = translate_sql(
+            "INSERT OR IGNORE INTO settings(key, value) VALUES (?,?)"
+        )
+        self.assertTrue(sql.startswith("INSERT INTO settings"))
+        self.assertIn("VALUES (%s,%s) ON CONFLICT DO NOTHING", sql)
+        self.assertIsNone(generated_id)
+
+    def test_generated_id_is_returned_for_legacy_lastrowid_usage(self):
+        sql, generated_id = translate_sql(
+            "INSERT INTO tickets(user_id, message) VALUES (?,?)"
+        )
+        self.assertTrue(sql.endswith("RETURNING ticket_id"))
+        self.assertEqual(generated_id, "ticket_id")
+
+    def test_replace_semantics_are_preserved_for_operations_room(self):
+        sql, generated_id = translate_sql(
+            "INSERT OR REPLACE INTO operations_room(chat_id, created_at) VALUES (?,?)"
+        )
+        self.assertIn("ON CONFLICT (chat_id) DO UPDATE SET created_at=EXCLUDED.created_at", sql)
+        self.assertTrue(sql.endswith("RETURNING id"))
+        self.assertEqual(generated_id, "id")
+
+    def test_replace_semantics_are_preserved_for_deleted_accounts(self):
+        sql, generated_id = translate_sql(
+            "INSERT OR REPLACE INTO deleted_accounts(user_id, acc_name, balance) VALUES (?,?,?)"
+        )
+        self.assertIn("ON CONFLICT (user_id) DO UPDATE SET", sql)
+        self.assertIn("acc_name=EXCLUDED.acc_name", sql)
+        self.assertIsNone(generated_id)
+
+    def test_sqlite_datetime_and_date_functions_are_translated(self):
+        sql, _ = translate_sql(
+            "SELECT DATE(created_at), DATE(transaction_date) FROM users WHERE expires_at > datetime('now') AND created_at >= DATE('now')"
+        )
+        self.assertIn("CAST(created_at AS DATE)", sql)
+        self.assertIn("CAST(transaction_date AS DATE)", sql)
+        self.assertIn("TO_CHAR(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')", sql)
+        self.assertIn("CURRENT_DATE", sql)
+
+    def test_date_search_parameters_are_cast_on_postgres(self):
+        sql, _ = translate_sql(
+            "SELECT * FROM admin_logs WHERE DATE(created_at) BETWEEN ? AND ?"
+        )
+        self.assertIn("CAST(created_at AS DATE) BETWEEN CAST(%s AS DATE) AND CAST(%s AS DATE)", sql)
+
+    def test_relative_date_comparison_casts_legacy_text_timestamp(self):
+        sql, _ = translate_sql(
+            "SELECT COUNT(*) FROM users WHERE created_at >= DATE('now', '-7 days') "
+            "AND joined_at >= DATE('now', '-10 days')"
+        )
+        self.assertIn("CAST(created_at AS DATE) >= ((CURRENT_DATE - INTERVAL '7 day')::date)", sql)
+        self.assertIn("CAST(joined_at AS DATE) >= ((CURRENT_DATE - INTERVAL '10 day')::date)", sql)
+
+    def test_begin_immediate_and_placeholders_are_translated(self):
+        sql, _ = translate_sql("BEGIN IMMEDIATE")
+        self.assertEqual(sql, "BEGIN")
+        sql, _ = translate_sql("UPDATE users SET balance=balance+? WHERE user_id=?")
+        self.assertEqual(sql, "UPDATE users SET balance=balance+%s WHERE user_id=%s")
+
+    def test_pragma_table_info_is_marked_for_compatibility_query(self):
+        sql, _ = translate_sql("PRAGMA table_info(moderators)")
+        self.assertEqual(sql, "__MATAR_TABLE_INFO__:moderators")
+
+    def test_pragma_journal_settings_are_ignored_on_postgres(self):
+        sql, _ = translate_sql("PRAGMA journal_mode=WAL")
+        self.assertIsNone(sql)
+
+
+if __name__ == "__main__":
+    unittest.main()
