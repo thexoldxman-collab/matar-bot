@@ -1133,7 +1133,7 @@ def create_pending_withdraw_atomic(user_id, method, account, amount, commission,
         conn.execute('BEGIN IMMEDIATE')
         try:
             debit = conn.execute(
-                "UPDATE users SET balance=balance-?, last_active=? WHERE user_id=? AND balance>=?",
+                "UPDATE users SET balance=balance-?, last_active=? WHERE user_id=? AND deleted=0 AND balance>=?",
                 (amount, now, user_id, amount))
             if debit.rowcount != 1:
                 conn.rollback()
@@ -1509,7 +1509,7 @@ def redeem_gift_atomic(user_id, code):
             value, limit_count, used_count, expires_at, auto_returned, created_by = gift
             if conn.execute("SELECT 1 FROM gift_usage WHERE user_id=? AND code=?", (user_id, code)).fetchone():
                 conn.rollback(); return 'already_used', 0
-            if limit_count is None or value is None or float(value) <= 0:
+            if limit_count is None or value is None or not math.isfinite(float(value)) or float(value) <= 0:
                 conn.rollback(); return 'invalid', 0
             if used_count >= limit_count:
                 conn.rollback(); return 'exhausted', 0
@@ -2126,7 +2126,7 @@ class ActionSystem:
             bot.send_message(chat_id, "القائمة الرئيسية:", reply_markup=get_main_keyboard(uid)); return
         try:
             amount = float(message.text)
-            if amount <= 0:
+            if not math.isfinite(amount) or amount <= 0:
                 raise ValueError
             if get_db_setting('ichancy_api_mode') == 'on':
                 bot.send_message(chat_id, "⚠️ تكامل Ichancy الآلي غير مهيأ فعلياً؛ لم يتم تنفيذ أي خصم.", parse_mode='Markdown'); return
@@ -2160,7 +2160,7 @@ class ActionSystem:
             bot.send_message(chat_id, "القائمة الرئيسية:", reply_markup=get_main_keyboard(uid)); return
         try:
             amount = float(message.text)
-            if amount <= 0:
+            if not math.isfinite(amount) or amount <= 0:
                 raise ValueError
             if get_db_setting('ichancy_api_mode') == 'on':
                 bot.send_message(chat_id, "⚠️ تكامل Ichancy الآلي غير مهيأ فعلياً؛ لم يتم تنفيذ أي إضافة.", parse_mode='Markdown'); return
@@ -2276,7 +2276,7 @@ class ActionSystem:
             bot.send_message(chat_id, "القائمة الرئيسية:", reply_markup=get_main_keyboard(uid)); return
         try:
             amount = float(message.text)
-            if amount <= 0: raise ValueError
+            if not math.isfinite(amount) or amount <= 0: raise ValueError
             with db_lock:
                 conn.execute('BEGIN IMMEDIATE')
                 try:
@@ -8370,7 +8370,7 @@ def process_wheel_add_prize(message):
         label, kind, value, weight = parts
         if kind not in ('fixed','percent'): raise ValueError
         value, weight = float(value), float(weight)
-        if value < 0 or weight < 0: raise ValueError
+        if not math.isfinite(value) or not math.isfinite(weight) or value < 0 or weight < 0: raise ValueError
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute('INSERT INTO wheel_prizes(label,prize_type,value,weight,is_active,created_at,updated_at) VALUES (?,?,?,?,?,?,?)', (label,kind,value,weight,1,now,now)); conn.commit()
         bot.send_message(message.chat.id, '✅ تمت إضافة الجائزة.', reply_markup=wheel_admin_keyboard())
