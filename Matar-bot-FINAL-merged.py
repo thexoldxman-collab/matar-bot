@@ -1521,8 +1521,20 @@ def redeem_gift_atomic(user_id, code):
                 if expired:
                     if not auto_returned and created_by:
                         refund = float(value) * max(0, int(limit_count) - int(used_count))
-                        conn.execute("UPDATE cashier_balance SET balance=balance+?, last_updated=? WHERE admin_id=?", (refund, now.strftime('%Y-%m-%d %H:%M:%S'), created_by))
-                        conn.execute("UPDATE gifts SET auto_returned=1, returned_at=? WHERE code=?", (now.strftime('%Y-%m-%d %H:%M:%S'), code))
+                        refund_cur = conn.execute(
+                            "UPDATE cashier_balance SET balance=balance+?, last_updated=? WHERE admin_id=?",
+                            (refund, now.strftime('%Y-%m-%d %H:%M:%S'), created_by),
+                        )
+                        if refund > 0 and refund_cur.rowcount != 1:
+                            conn.rollback()
+                            return 'refund_failed', 0
+                        gift_cur = conn.execute(
+                            "UPDATE gifts SET auto_returned=1, returned_at=? WHERE code=? AND auto_returned=0",
+                            (now.strftime('%Y-%m-%d %H:%M:%S'), code),
+                        )
+                        if gift_cur.rowcount != 1:
+                            conn.rollback()
+                            return 'refund_failed', 0
                     conn.commit(); return 'expired', 0
             cur = conn.execute("UPDATE users SET balance=balance+?, last_active=? WHERE user_id=? AND deleted=0", (float(value), now.strftime('%Y-%m-%d %H:%M:%S'), user_id))
             if cur.rowcount != 1:
@@ -1729,7 +1741,17 @@ def spin_wheel(uid, chat_id, call_id=None):
                     conn.rollback()
                     if call_id: bot.answer_callback_query(call_id, '⚠️ رصيد الكاشيرة غير كافٍ لهذه الجائزة.', show_alert=True)
                     return
-                conn.execute('UPDATE users SET balance=balance+?, last_active=? WHERE user_id=?', (float(chosen[3]),now,uid))
+                prize_cur = conn.execute(
+                    'UPDATE users SET balance=balance+?, last_active=? WHERE user_id=? AND deleted=0',
+                    (float(chosen[3]), now, uid),
+                )
+                if prize_cur.rowcount != 1:
+                    conn.rollback()
+                    if call_id:
+                        bot.answer_callback_query(call_id, '⚠️ تعذر العثور على حسابك؛ لم تُخصم الجائزة من الكاشيرة.', show_alert=True)
+                    else:
+                        bot.send_message(chat_id, '⚠️ تعذر العثور على حسابك؛ لم تُخصم الجائزة من الكاشيرة.')
+                    return
                 conn.execute("INSERT INTO transactions(user_id,type,amount,commission,net_amount,method,status,transaction_date,admin_id,details,receipt_number,external_ref) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (uid,'wheel_prize',float(chosen[3]),0,float(chosen[3]),'wheel','success',now,ADMIN_ID,'جائزة عجلة الحظ',generate_receipt_number('WHE'),''))
             elif chosen[2] == 'percent' and float(chosen[3]) > 0:
                 conn.execute('INSERT INTO wheel_bonuses(user_id,percent,source_spin_id,created_at) VALUES (?,?,?,?)', (uid,float(chosen[3]),spin_id,now))
@@ -1779,7 +1801,13 @@ def apply_wheel_bonus_on_charge(uid, amount, admin_id):
             cur = conn.execute('UPDATE wheel_bonuses SET used_at=? WHERE id=? AND used_at IS NULL', (now,row[0]))
             if cur.rowcount != 1:
                 conn.rollback(); return 0.0
-            conn.execute('UPDATE users SET balance=balance+? WHERE user_id=?', (bonus,uid))
+            user_cur = conn.execute(
+                'UPDATE users SET balance=balance+?, last_active=? WHERE user_id=? AND deleted=0',
+                (bonus, now, uid),
+            )
+            if user_cur.rowcount != 1:
+                conn.rollback()
+                return 0.0
             conn.execute("INSERT INTO transactions(user_id,type,amount,commission,net_amount,method,status,transaction_date,admin_id,details,receipt_number,external_ref) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (uid,'wheel_bonus',bonus,0,bonus,'wheel','success',now,admin_id,'مكافأة نسبة من عجلة الحظ',generate_receipt_number('BON'),'') )
             conn.commit()
         except Exception:
@@ -2258,10 +2286,19 @@ class ActionSystem:
                     cur = conn.execute("UPDATE users SET balance=balance+? WHERE user_id=? AND deleted=0", (amount, target))
                     if cur.rowcount != 1:
                         conn.rollback(); bot.send_message(chat_id, "❌ المستخدم المستهدف غير موجود.", parse_mode='Markdown'); return
+                    receipt = generate_receipt_number('GFT')
+                    conn.execute(
+                        """INSERT INTO transactions
+                        (user_id, type, amount, commission, net_amount, method, status,
+                         transaction_date, admin_id, details, receipt_number, external_ref)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (uid, 'gift', amount, 0, 0, 'internal', 'success',
+                         datetime.now().strftime('%Y-%m-%d %H:%M:%S'), None,
+                         f'To: {target}', receipt, ''),
+                    )
                     conn.commit()
                 except Exception:
                     conn.rollback(); raise
-            receipt = log_transaction(uid, 'gift', amount, 'internal', 'success', details=f'To: {target}')
             finance_logger.info(f'إهداء ذري: {uid} -> {target} - {amount} - {receipt}')
             bot.send_message(chat_id, f"✅ **تم إرسال {amount:,.0f} ل.س إلى {target}**", parse_mode='Markdown')
             try: bot.send_message(target, f"🎁 **تم إهداؤك {amount:,.0f} ل.س**", parse_mode='Markdown')
