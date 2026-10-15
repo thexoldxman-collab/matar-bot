@@ -64,6 +64,25 @@ try:
     if abs(balance - 80) > 0.001:
         raise SystemExit(f"PostgreSQL referral payout mismatch: {balance}")
 
+    pending_charge, status = module.create_pending_charge_atomic(
+        test_user_id, "integration-test", "manual", f"PG-CI-CHARGE-{test_user_id}"
+    )
+    if status != "ok" or not pending_charge:
+        raise SystemExit(f"PostgreSQL pending charge creation failed: {status}")
+    charge_id = pending_charge[0]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(
+            lambda _: module.complete_pending_charge(charge_id, module.ADMIN_ID, 10),
+            range(2),
+        ))
+    statuses = sorted(result[1] for result in results)
+    if statuses != ["already_completed", "ok"]:
+        raise SystemExit(f"Concurrent PostgreSQL charge completion was not idempotent: {statuses}")
+    balance = module.conn.execute("SELECT balance FROM users WHERE user_id=?", (test_user_id,)).fetchone()[0]
+    if abs(float(balance) - 90) > 0.001:
+        raise SystemExit(f"Concurrent PostgreSQL charge credited an incorrect amount: {balance}")
+
     backup_path = module.create_consistent_backup(module.ADMIN_ID)
     with open(backup_path, "r", encoding="utf-8") as backup_file:
         snapshot = json.load(backup_file)
@@ -77,14 +96,14 @@ try:
     recovered = module.conn.execute(
         "SELECT balance,site_balance FROM users WHERE user_id=?", (test_user_id,)
     ).fetchone()
-    if restored.get("tables") != tables or not recovered or abs(float(recovered[0]) - 80) > 0.001:
+    if restored.get("tables") != tables or not recovered or abs(float(recovered[0]) - 90) > 0.001:
         raise SystemExit("PostgreSQL JSON restore did not recover the expected financial state.")
 
 finally:
     module.conn.rollback()
     for table in (
-        "transactions", "pending_withdraws", "wheel_spins", "wheel_bonuses",
-        "gift_usage", "ai_conversations",
+        "transactions", "pending_withdraws", "pending_charges", "processed_transactions",
+        "wheel_spins", "wheel_bonuses", "gift_usage", "ai_conversations",
     ):
         module.conn.execute(f"DELETE FROM {table} WHERE user_id=?", (test_user_id,))
     module.conn.execute("DELETE FROM referrals_log WHERE referrer_id=? OR referred_id=?", (test_user_id, test_user_id))
@@ -104,5 +123,5 @@ if module.conn.in_transaction:
     module.conn.rollback()
     raise SystemExit("PostgreSQL test left an unexpected open transaction.")
 
-print(f"PostgreSQL startup and financial smoke tests passed: {tables} tables, atomic operations and JSON backup verified.")
+print(f"PostgreSQL startup, concurrent charge idempotency, financial operations, and JSON backup/restore passed: {tables} tables.")
 module.conn.close()
