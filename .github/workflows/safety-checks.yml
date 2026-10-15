@@ -16,6 +16,20 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: matar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d matar_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
       TOKEN: "123456:TESTTOKEN"
       ADMIN_ID: "999999"
@@ -36,5 +50,10 @@ jobs:
         run: python -m py_compile Matar-bot-FINAL-merged.py matar_db.py tests/test_regressions.py tests/test_db_backend.py
       - name: Run regression tests with isolated SQLite database
         run: python -m unittest discover -s tests -v
+      - name: Exercise full bot schema against PostgreSQL
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/matar_test?sslmode=disable
+          REQUIRE_PERSISTENT_DATABASE: "1"
+        run: python tests/test_postgres_startup.py
       - name: Run pyflakes
         run: python -m pyflakes Matar-bot-FINAL-merged.py matar_db.py tests
