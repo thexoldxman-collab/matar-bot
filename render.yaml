@@ -18,6 +18,10 @@ services:
         sync: false
       - key: GITHUB_BASE_BRANCH
         value: main
+      - key: DATABASE_URL
+        sync: false
+      - key: REQUIRE_PERSISTENT_DATABASE
+        value: "1"
       - key: DATABASE_PATH
         value: /tmp/matar_ultimate.db
       - key: BACKUP_DIR
