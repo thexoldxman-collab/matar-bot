@@ -1248,7 +1248,7 @@ def create_pending_charge_atomic(user_id, pending_method, ledger_method, externa
     return (charge_id, transaction_receipt), 'ok'
 
 def credit_referral_payout_atomic(user_id, amount, admin_id):
-    """إضافة أرباح الإحالة وسجل المعاملة ضمن معاملة SQLite واحدة."""
+    """صرف أرباح الإحالة بخصم الكاشيرة وإضافة رصيد المستخدم وسجل العملية ذرياً."""
     try:
         amount = float(amount)
     except (TypeError, ValueError):
@@ -1261,6 +1261,13 @@ def credit_referral_payout_atomic(user_id, amount, admin_id):
     with db_lock:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            cashier = conn.execute(
+                "UPDATE cashier_balance SET balance=balance-?, last_updated=? "
+                "WHERE admin_id=? AND balance>=?",
+                (amount, now, ADMIN_ID, amount),
+            )
+            if cashier.rowcount != 1:
+                raise ValueError("cashier balance insufficient for referral payout")
             cur = conn.execute(
                 "UPDATE users SET balance=balance+?, last_active=? WHERE user_id=? AND deleted=0",
                 (amount, now, user_id),
@@ -1272,8 +1279,8 @@ def credit_referral_payout_atomic(user_id, amount, admin_id):
                 (user_id, type, amount, commission, net_amount, method, status,
                  transaction_date, admin_id, details, receipt_number, external_ref)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (user_id, "referral_pay", amount, 0, amount, "admin", "success",
-                 now, admin_id, "صرف أرباح الإحالة", receipt, ""),
+                (user_id, "referral_pay", amount, 0, amount, "cashier", "success",
+                 now, admin_id, "صرف أرباح الإحالة مع خصم الكاشيرة", receipt, ""),
             )
             new_balance = conn.execute(
                 "SELECT balance FROM users WHERE user_id=?", (user_id,)
