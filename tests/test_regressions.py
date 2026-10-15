@@ -758,6 +758,12 @@ class RegressionTests(unittest.TestCase):
         finally:
             m.ai_pending_actions.pop(m.ADMIN_ID, None)
 
+    def test_ai_submenu_requests_are_routed_to_safe_preview(self):
+        m = self.m
+        self.assertTrue(m.looks_like_ai_setting_request('أنشئ قائمة فرعية جديدة باسم العروض'))
+        self.assertTrue(m.looks_like_ai_setting_request('أضف زر فرعي جديد'))
+        self.assertFalse(m.looks_like_ai_setting_request('مرحبا كيفك'))
+
     def test_ai_submenu_creation_validation_rejects_duplicate_and_missing_parent(self):
         m = self.m
         now = '2026-10-15 00:00:00'
