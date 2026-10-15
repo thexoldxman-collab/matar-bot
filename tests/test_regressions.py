@@ -441,6 +441,113 @@ class RegressionTests(unittest.TestCase):
         create.assert_not_called()
         send.assert_called_once()
 
+    def test_gift_transfer_rolls_back_if_transaction_ledger_insert_fails(self):
+        m = self.m
+        sender, target = 810016, 810017
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id,balance,site_balance,deleted) VALUES (?,?,?,0)",
+            (sender, 100.0, 0.0),
+        )
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id,balance,site_balance,deleted) VALUES (?,?,?,0)",
+            (target, 10.0, 0.0),
+        )
+        m.conn.commit()
+        m.conn.execute("DROP TRIGGER IF EXISTS fail_gift_ledger_test")
+        m.conn.execute(
+            "CREATE TRIGGER fail_gift_ledger_test BEFORE INSERT ON transactions "
+            "WHEN NEW.type='gift' BEGIN SELECT RAISE(ABORT, 'forced gift ledger failure'); END"
+        )
+        m.conn.commit()
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=sender),
+            chat=SimpleNamespace(id=sender),
+            text='25',
+        )
+        try:
+            with patch.object(m.bot, 'send_message'):
+                with self.assertRaises(m.sqlite3.IntegrityError):
+                    m.ActionSystem.process_gift_amount(message, target)
+        finally:
+            m.conn.rollback()
+            m.conn.execute("DROP TRIGGER IF EXISTS fail_gift_ledger_test")
+            m.conn.commit()
+
+        balances = m.cursor.execute(
+            "SELECT user_id,balance FROM users WHERE user_id IN (?,?) ORDER BY user_id",
+            (sender, target),
+        ).fetchall()
+        self.assertEqual(balances, [(sender, 100.0), (target, 10.0)])
+
+    def test_wheel_bonus_rolls_back_if_user_is_missing(self):
+        m = self.m
+        missing_uid = 819998
+        m.cursor.execute("DELETE FROM users WHERE user_id=?", (missing_uid,))
+        old_cashier = m.cursor.execute(
+            "SELECT balance,last_updated FROM cashier_balance WHERE admin_id=?", (m.ADMIN_ID,)
+        ).fetchone()
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO cashier_balance(admin_id,balance,last_updated) VALUES (?,?,?)",
+            (m.ADMIN_ID, 100.0, '2026-10-15 00:00:00'),
+        )
+        m.cursor.execute(
+            "INSERT INTO wheel_bonuses(user_id,percent,source_spin_id,created_at) VALUES (?,?,?,?)",
+            (missing_uid, 20.0, 910015, '2026-10-15 00:00:00'),
+        )
+        bonus_id = m.cursor.lastrowid
+        m.conn.commit()
+        try:
+            result = m.apply_wheel_bonus_on_charge(missing_uid, 100.0, m.ADMIN_ID)
+            cashier = m.cursor.execute(
+                "SELECT balance FROM cashier_balance WHERE admin_id=?", (m.ADMIN_ID,)
+            ).fetchone()[0]
+            used_at = m.cursor.execute(
+                "SELECT used_at FROM wheel_bonuses WHERE id=?", (bonus_id,)
+            ).fetchone()[0]
+            self.assertEqual(result, 0.0)
+            self.assertEqual(cashier, 100.0)
+            self.assertIsNone(used_at)
+        finally:
+            m.cursor.execute("DELETE FROM wheel_bonuses WHERE id=?", (bonus_id,))
+            if old_cashier:
+                m.cursor.execute(
+                    "UPDATE cashier_balance SET balance=?,last_updated=? WHERE admin_id=?",
+                    (old_cashier[0], old_cashier[1], m.ADMIN_ID),
+                )
+            else:
+                m.cursor.execute("DELETE FROM cashier_balance WHERE admin_id=?", (m.ADMIN_ID,))
+            m.conn.commit()
+
+    def test_expired_gift_refund_failure_does_not_mark_gift_returned(self):
+        m = self.m
+        code = 'TESTREFUNDFAIL'
+        old_cashier = m.cursor.execute(
+            "SELECT balance,last_updated FROM cashier_balance WHERE admin_id=?", (m.ADMIN_ID,)
+        ).fetchone()
+        m.cursor.execute("DELETE FROM cashier_balance WHERE admin_id=?", (m.ADMIN_ID,))
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO gifts(code,value,limit_count,used_count,created_by,created_at,expires_at,auto_returned) "
+            "VALUES (?,?,?,?,?,?,?,0)",
+            (code, 10.0, 3, 1, m.ADMIN_ID, '2026-01-01 00:00:00', '2000-01-01 00:00:00'),
+        )
+        m.conn.commit()
+        try:
+            status, amount = m.redeem_gift_atomic(810018, code)
+            returned = m.cursor.execute(
+                "SELECT auto_returned FROM gifts WHERE code=?", (code,)
+            ).fetchone()[0]
+            self.assertEqual(status, 'refund_failed')
+            self.assertEqual(amount, 0)
+            self.assertEqual(returned, 0)
+        finally:
+            m.cursor.execute("DELETE FROM gifts WHERE code=?", (code,))
+            if old_cashier:
+                m.cursor.execute(
+                    "INSERT OR REPLACE INTO cashier_balance(admin_id,balance,last_updated) VALUES (?,?,?)",
+                    (m.ADMIN_ID, old_cashier[0], old_cashier[1]),
+                )
+            m.conn.commit()
+
     def test_charge_claim_is_atomic_and_only_one_moderator_can_claim(self):
         m = self.m
         uid = 810015
