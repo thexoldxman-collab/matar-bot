@@ -10,6 +10,8 @@ class RegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
+        os.environ.pop('DATABASE_URL', None)
+        os.environ.pop('REQUIRE_PERSISTENT_DATABASE', None)
         os.environ.update({
             'TOKEN': '123456:TESTTOKEN',
             'ADMIN_ID': '999999',
