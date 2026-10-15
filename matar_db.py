@@ -402,5 +402,99 @@ def verify_postgres_compatibility(connection: PostgresConnection) -> None:
         raise
 
 
+
+def validate_postgres_snapshot(connection: PostgresConnection, snapshot: Any) -> dict[str, int]:
+    """Validate a full PostgreSQL snapshot against the live schema without changing data."""
+    import math
+
+    if not is_postgres_connection(connection):
+        raise ValueError("Snapshot restore is supported only for PostgreSQL/Neon.")
+    if not isinstance(snapshot, dict) or snapshot.get("format") != "matar-postgres-snapshot-v1":
+        raise ValueError("Unsupported or invalid Matar snapshot format.")
+    tables = snapshot.get("tables")
+    if not isinstance(tables, dict) or not tables:
+        raise ValueError("Snapshot contains no tables.")
+
+    live_tables = {
+        row[0] for row in connection.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema=current_schema() AND table_type='BASE TABLE'"
+        ).fetchall()
+    }
+    if set(tables) != live_tables:
+        missing = sorted(live_tables - set(tables))
+        extra = sorted(set(tables) - live_tables)
+        raise ValueError(f"Snapshot schema mismatch (missing={missing[:5]}, extra={extra[:5]}).")
+
+    total_rows = 0
+    for table_name, table_data in tables.items():
+        if not isinstance(table_name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_name):
+            raise ValueError("Snapshot contains an invalid table name.")
+        if not isinstance(table_data, dict):
+            raise ValueError(f"Invalid snapshot table: {table_name}")
+        columns = table_data.get("columns")
+        rows = table_data.get("rows")
+        if not isinstance(columns, list) or not isinstance(rows, list) or not columns:
+            raise ValueError(f"Invalid columns or rows for table: {table_name}")
+        live_columns = [
+            row[0] for row in connection.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema=current_schema() AND table_name=? ORDER BY ordinal_position",
+                (table_name,),
+            ).fetchall()
+        ]
+        if columns != live_columns:
+            raise ValueError(f"Snapshot columns do not match the current schema for {table_name}.")
+        for row in rows:
+            if not isinstance(row, list) or len(row) != len(columns):
+                raise ValueError(f"Invalid row shape in table: {table_name}")
+            for value in row:
+                if isinstance(value, float) and not math.isfinite(value):
+                    raise ValueError(f"Non-finite numeric value in table: {table_name}")
+                if isinstance(value, (dict, list)):
+                    raise ValueError(f"Nested values are not supported in table: {table_name}")
+        total_rows += len(rows)
+    return {"tables": len(tables), "rows": total_rows}
+
+
+def restore_postgres_snapshot(connection: PostgresConnection, snapshot: Any) -> dict[str, int]:
+    """Restore a validated full snapshot atomically and reset generated-ID sequences."""
+    summary = validate_postgres_snapshot(connection, snapshot)
+    tables = snapshot["tables"]
+    quote = lambda name: '"' + name.replace('"', '""') + '"'
+
+    connection.execute("BEGIN")
+    try:
+        # This project schema intentionally uses no foreign-key constraints, so
+        # deleting every table in one transaction is deterministic.
+        for table_name in sorted(tables):
+            connection.execute(f"DELETE FROM {quote(table_name)}")
+
+        for table_name in sorted(tables):
+            columns = tables[table_name]["columns"]
+            column_sql = ", ".join(quote(column) for column in columns)
+            placeholders = ", ".join("?" for _ in columns)
+            sql = f"INSERT INTO {quote(table_name)} ({column_sql}) VALUES ({placeholders})"
+            for row in tables[table_name]["rows"]:
+                connection.execute(sql, tuple(row))
+
+        sequence_columns = connection.execute(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema=current_schema() AND column_default LIKE 'nextval(%'"
+        ).fetchall()
+        for table_name, column_name in sequence_columns:
+            table_sql, column_sql = quote(table_name), quote(column_name)
+            connection.execute(
+                f"SELECT setval(pg_get_serial_sequence(?, ?), "
+                f"COALESCE(MAX({column_sql}), 1), MAX({column_sql}) IS NOT NULL) FROM {table_sql}",
+                (table_name, column_name),
+            )
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    return summary
+
+
 def is_postgres_connection(connection: Any) -> bool:
     return isinstance(connection, PostgresConnection)
