@@ -7568,8 +7568,8 @@ def confirm_ai_setting_change(uid, chat_id, token):
                         bot.send_message(chat_id, '❌ يوجد زر نشط آخر يحمل الاسم نفسه؛ لم يتغير شيء.')
                         return
                 cur = conn.execute(
-                    f"UPDATE dynamic_buttons SET {field}=?,updated_at=?,updated_by=? WHERE id=? AND is_active=1",
-                    (validated['value'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), uid, button_id),
+                    f"UPDATE dynamic_buttons SET {field}=?,updated_at=? WHERE id=? AND is_active=1",
+                    (validated['value'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), button_id),
                 )
                 if cur.rowcount != 1:
                     conn.rollback()
