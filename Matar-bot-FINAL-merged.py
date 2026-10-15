@@ -4267,16 +4267,15 @@ def process_admin_create_user_step2(message, account_name):
     uid = message.from_user.id
     password = message.text.strip()
     
-    # إنشاء حساب جديد
+    # إنشاء حساب جديد؛ user_id هو المفتاح الأساسي نفسه في SQLite وPostgreSQL.
     created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    cursor.execute("""INSERT INTO users 
+    new_id = int(time.time()) % 1000000
+
+    cursor.execute("""INSERT INTO users
         (user_id, acc_name, acc_password, created_at, balance, site_balance, status, deleted)
         VALUES (?,?,?,?,0,0,'active',0)""",
-        (int(time.time()) % 1000000, account_name, password, created_at))
+        (new_id, account_name, password, created_at))
     conn.commit()
-    
-    new_id = cursor.lastrowid
     
     bot.send_message(message.chat.id, f"✅ **تم إنشاء الحساب بنجاح!**\n\n👤 الاسم: {account_name}\n🆔 المعرف: {new_id}", parse_mode="Markdown")
     log_admin_action(uid, "إنشاء حساب", f"إنشاء حساب {account_name} للمستخدم {new_id}")
