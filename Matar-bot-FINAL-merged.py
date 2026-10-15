@@ -50,6 +50,7 @@ AI_CHAT_MAX_MESSAGES = 40
 
 # متغيرات عامة للتتبع
 user_states = {}           # حالة المستخدمين (للمحادثات متعددة الخطوات)
+ai_pending_actions = {}   # إعدادات اقترحها المساعد وتنتظر موافقة المالك
 withdraw_sessions = {}     # جلسات السحب المؤقتة
 api_connections = {}       # اتصالات API
 user_last_message = defaultdict(float)  # لمراقبة السبام
@@ -4885,6 +4886,15 @@ def handle_all_callbacks(call):
         safe_answer_callback(call.id)
         create_ai_draft_from_last_message(uid, call.message.chat.id)
         return
+    if data == 'ai_setting_confirm':
+        safe_answer_callback(call.id)
+        confirm_ai_setting_change(uid, call.message.chat.id)
+        return
+    if data == 'ai_setting_cancel':
+        safe_answer_callback(call.id)
+        ai_pending_actions.pop(uid, None)
+        bot.send_message(call.message.chat.id, 'تم إلغاء التعديل؛ لم يتغير أي إعداد.')
+        return
     if data.startswith('ai_pr_check_'):
         safe_answer_callback(call.id)
         try:
@@ -7303,6 +7313,168 @@ def ai_status(uid, chat_id):
     bot.send_message(chat_id, f'🤖 حالة المساعد: {status}\n📚 رسائل محفوظة: {count}\n🧠 النموذج: `{GEMINI_MODEL}`', parse_mode='Markdown')
 
 
+AI_SETTING_ALLOWLIST = {
+    'welcome_message': {'label': 'رسالة الترحيب', 'type': 'text', 'max_length': 3000},
+    'terms_message': {'label': 'الشروط والأحكام', 'type': 'text', 'max_length': 4000},
+    'maintenance_message': {'label': 'رسالة الصيانة', 'type': 'text', 'max_length': 2000},
+    'wheel_title': {'label': 'عنوان عجلة الحظ', 'type': 'text', 'max_length': 120},
+    'wheel_spin_message': {'label': 'رسالة عجلة الحظ', 'type': 'text', 'max_length': 1200},
+    'min_charge': {'label': 'الحد الأدنى للشحن', 'type': 'number', 'min': 1, 'max': 1000000000},
+    'min_withdraw_syria': {'label': 'الحد الأدنى لسحب سيرياتل', 'type': 'number', 'min': 1, 'max': 1000000000},
+    'max_withdraw_syria': {'label': 'الحد الأقصى لسحب سيرياتل', 'type': 'number', 'min': 1, 'max': 1000000000},
+    'min_withdraw_sham': {'label': 'الحد الأدنى لسحب شام', 'type': 'number', 'min': 1, 'max': 1000000000},
+    'max_withdraw_sham': {'label': 'الحد الأقصى لسحب شام', 'type': 'number', 'min': 1, 'max': 1000000000},
+    'withdraw_commission': {'label': 'عمولة السحب', 'type': 'number', 'min': 0, 'max': 100},
+    'referral_percentage': {'label': 'نسبة الإحالات', 'type': 'number', 'min': 0, 'max': 100},
+    'min_gift_amount': {'label': 'الحد الأدنى للهدية', 'type': 'number', 'min': 1, 'max': 1000000000},
+    'max_gift_amount': {'label': 'الحد الأقصى للهدية', 'type': 'number', 'min': 1, 'max': 1000000000},
+    'referral_cycle_days': {'label': 'أيام دورة الإحالات', 'type': 'integer', 'min': 1, 'max': 365},
+    'wheel_daily_charge_threshold': {'label': 'شرط الشحن اليومي لعجلة الحظ', 'type': 'number', 'min': 0, 'max': 1000000000},
+    'wheel_enabled': {'label': 'تشغيل عجلة الحظ', 'type': 'boolean'},
+}
+
+
+def validate_ai_setting_change(key, value):
+    """تحقق صارم من الإعدادات التي يسمح للمساعد بتعديلها مباشرة."""
+    spec = AI_SETTING_ALLOWLIST.get(key)
+    if not spec:
+        raise ValueError('هذا الإعداد غير مسموح بتعديله مباشرة من المساعد.')
+    kind = spec['type']
+    if kind == 'text':
+        normalized = str(value).strip()
+        if not normalized or len(normalized) > spec['max_length']:
+            raise ValueError('النص فارغ أو أطول من الحد المسموح.')
+        return normalized
+    if kind == 'boolean':
+        if isinstance(value, bool):
+            return '1' if value else '0'
+        normalized = str(value).strip().lower()
+        if normalized in ('1', 'true', 'on', 'enabled', 'yes', 'نعم', 'مفعل', 'فعّال', 'تشغيل'):
+            return '1'
+        if normalized in ('0', 'false', 'off', 'disabled', 'no', 'لا', 'متوقف', 'تعطيل'):
+            return '0'
+        raise ValueError('قيمة التشغيل يجب أن تكون تشغيل أو إيقاف.')
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        raise ValueError('القيمة يجب أن تكون رقماً صحيحاً.')
+    if not math.isfinite(numeric) or numeric < spec['min'] or numeric > spec['max']:
+        raise ValueError('القيمة الرقمية خارج الحدود المسموحة.')
+    if kind == 'integer' and not numeric.is_integer():
+        raise ValueError('هذا الإعداد يقبل عدداً صحيحاً فقط.')
+    paired = {
+        'min_withdraw_syria': 'max_withdraw_syria',
+        'max_withdraw_syria': 'min_withdraw_syria',
+        'min_withdraw_sham': 'max_withdraw_sham',
+        'max_withdraw_sham': 'min_withdraw_sham',
+        'min_gift_amount': 'max_gift_amount',
+        'max_gift_amount': 'min_gift_amount',
+    }
+    other_key = paired.get(key)
+    if other_key:
+        other_raw = get_db_setting(other_key)
+        try:
+            other = float(other_raw)
+        except (TypeError, ValueError):
+            other = None
+        if other is not None:
+            if key.startswith('min_') and numeric > other:
+                raise ValueError('الحد الأدنى لا يمكن أن يكون أعلى من الحد الأقصى الحالي.')
+            if key.startswith('max_') and numeric < other:
+                raise ValueError('الحد الأقصى لا يمكن أن يكون أقل من الحد الأدنى الحالي.')
+    return str(int(numeric)) if kind == 'integer' else format(numeric, '.15g')
+
+
+def looks_like_ai_setting_request(text):
+    """توجيه طلبات تعديل الإعدادات الشائعة إلى مسار تأكيد مضبوط."""
+    request = (text or '').strip().lower()
+    if not request:
+        return False
+    verbs = ('غير', 'غيّر', 'عدل', 'عدّل', 'خلّي', 'خلي', 'بدل', 'بدّل',
+             'فعّل', 'عطّل', 'شغّل', 'وقف', 'ارفع', 'خفض', 'زود', 'زيد',
+             'نقص', 'اكتب', 'استبدل', 'اجعل', 'غيّرلي', 'عدللي')
+    targets = ('رسالة', 'ترحيب', 'الشروط', 'عمولة', 'نسبة', 'حد', 'سحب',
+               'شحن', 'هدية', 'عجلة', 'صيانة', 'دورة الإحالات')
+    return any(word in request for word in verbs) and any(word in request for word in targets)
+
+
+def classify_ai_setting_request(request_text):
+    """استخراج تغيير إعداد مسموح من طلب عربي؛ لا ينفذ شيئاً بنفسه."""
+    if not GEMINI_API_KEY or not ai_is_enabled():
+        return None, 'المساعد غير مفعّل حالياً.'
+    allowed = {
+        key: {'description': spec['label'], 'type': spec['type']}
+        for key, spec in AI_SETTING_ALLOWLIST.items()
+    }
+    prompt = (
+        'حلّل طلب مالك بوت Telegram. أخرج JSON فقط بالشكل '
+        '{"action":"set_setting","key":"مفتاح مسموح","value":"القيمة"} '
+        'أو {"action":"none"}. لا تقترح SQL أو كوداً أو أي مفتاح غير موجود في القائمة. '
+        'للنصوص احتفظ بالنص الذي طلبه المستخدم كما هو، ولا تخترع محتوى. '
+        'الإعدادات المسموحة: ' + json.dumps(allowed, ensure_ascii=False) +
+        '\\nطلب المالك: ' + str(request_text)[:3000]
+    )
+    try:
+        response = requests.post(
+            f'https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent',
+            params={'key': GEMINI_API_KEY},
+            json={
+                'system_instruction': {'parts': [{'text': 'أخرج JSON صالحاً فقط. لا تنفذ التغيير ولا تدّع أنه نُفذ.'}]},
+                'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
+                'generationConfig': {'temperature': 0, 'maxOutputTokens': 1200, 'responseMimeType': 'application/json'},
+            },
+            timeout=35,
+        )
+        if response.status_code != 200:
+            logger.warning('AI setting classifier failed with HTTP %s', response.status_code)
+            return None, 'تعذر تحليل طلب الإعداد الآن؛ لم يتغير أي إعداد.'
+        data = response.json()
+        parts = data.get('candidates', [{}])[0].get('content', {}).get('parts', [])
+        proposal = json.loads(''.join(part.get('text', '') for part in parts).strip())
+        if proposal.get('action') != 'set_setting':
+            return None, None
+        key = proposal.get('key')
+        if key not in AI_SETTING_ALLOWLIST:
+            return None, None
+        normalized = validate_ai_setting_change(key, proposal.get('value'))
+        return {'key': key, 'value': normalized}, None
+    except ValueError as exc:
+        logger.info('AI setting proposal rejected: %s', str(exc)[:160])
+        return None, 'لم أطبّق التعديل لأن القيمة المقترحة لا تجتاز التحقق. لم يتغير أي إعداد.'
+    except requests.RequestException:
+        return None, 'تعذر الاتصال بالمساعد الآن؛ لم يتغير أي إعداد.'
+    except Exception as exc:
+        error_logger.error('AI setting classification error: %s', type(exc).__name__)
+        return None, 'تعذر تحليل طلب الإعداد بأمان؛ لم يتغير أي إعداد.'
+
+
+def confirm_ai_setting_change(uid, chat_id):
+    """تطبيق إعداد معروض فقط بعد موافقة المالك، مع منع الكتابة فوق تغيير أحدث."""
+    if uid != ADMIN_ID:
+        bot.send_message(chat_id, '❌ تأكيد تعديلات الإعدادات متاح للمالك فقط.')
+        return
+    pending = ai_pending_actions.get(uid)
+    if not pending:
+        bot.send_message(chat_id, '⚠️ انتهت صلاحية طلب التعديل؛ أعد طلبه من المساعد.')
+        return
+    key = pending.get('key')
+    try:
+        normalized = validate_ai_setting_change(key, pending.get('value'))
+    except ValueError as exc:
+        ai_pending_actions.pop(uid, None)
+        bot.send_message(chat_id, '❌ لم يتم تطبيق التعديل: ' + str(exc))
+        return
+    current = get_db_setting(key)
+    if str(current or '') != str(pending.get('old_value') or ''):
+        ai_pending_actions.pop(uid, None)
+        bot.send_message(chat_id, '⚠️ تغيّر هذا الإعداد منذ عرض المعاينة؛ لم أكتب فوق التغيير الأحدث. أعد الطلب إذا أردت.')
+        return
+    update_db_setting(key, normalized, uid)
+    ai_pending_actions.pop(uid, None)
+    log_admin_action(uid, 'ai_setting_changed', f"تعديل {key} من المساعد الذكي")
+    bot.send_message(chat_id, f"✅ تم تطبيق التعديل على: {AI_SETTING_ALLOWLIST[key]['label']}\\nالقيمة الجديدة: {normalized}")
+
+
 def process_ai_message(message):
     uid = message.from_user.id
     if not ai_allowed(uid):
@@ -7326,6 +7498,34 @@ def process_ai_message(message):
         bot.send_message(message.chat.id, 'أرسل رسالة نصية للمساعد.')
         return
     ai_store(uid, 'user', text)
+    if uid == ADMIN_ID and looks_like_ai_setting_request(text):
+        proposed, proposal_error = classify_ai_setting_request(text)
+        if proposal_error:
+            bot.send_message(message.chat.id, '⚠️ ' + proposal_error)
+            return
+        if proposed:
+            key = proposed['key']
+            old_value = get_db_setting(key)
+            new_value = proposed['value']
+            if str(old_value or '') == str(new_value):
+                bot.send_message(message.chat.id, 'الإعداد مضبوط بالفعل على هذه القيمة؛ لم أغيّر شيئاً.')
+                return
+            ai_pending_actions[uid] = {
+                'key': key,
+                'value': new_value,
+                'old_value': old_value,
+                'request': text,
+            }
+            markup = types.InlineKeyboardMarkup(row_width=2)
+            markup.add(
+                types.InlineKeyboardButton('✅ تأكيد التعديل', callback_data='ai_setting_confirm'),
+                types.InlineKeyboardButton('❌ إلغاء', callback_data='ai_setting_cancel'),
+            )
+            label = AI_SETTING_ALLOWLIST[key]['label']
+            preview = f"🛠 معاينة تعديل إعداد\\nالإعداد: {label}\\nالقيمة الحالية: {old_value or '(فارغ)'}\\nالقيمة المقترحة: {new_value}\\n\\nلن يتغير شيء قبل ضغط «تأكيد التعديل»."
+            ai_store(uid, 'assistant', preview)
+            bot.send_message(message.chat.id, preview, reply_markup=markup)
+            return
     bot.send_chat_action(message.chat.id, 'typing')
     answer, error = call_gemini(uid)
     if error:
