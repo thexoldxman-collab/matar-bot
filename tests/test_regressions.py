@@ -476,6 +476,35 @@ class RegressionTests(unittest.TestCase):
             m.update_db_setting('syriatel_api_enabled', previous_sy or '0', m.ADMIN_ID)
             m.update_db_setting('sham_api_enabled', previous_sh or '0', m.ADMIN_ID)
 
+    def test_crypto_charge_receipts_are_rejected_when_methods_are_disabled(self):
+        m = self.m
+        for method, handler, status_key, address_key, pay_id_key in (
+            ('USDT', m.process_usdt_charge_receipt, 'usdt_status', 'usdt_address', None),
+            ('Binance', m.process_binance_charge_receipt, 'binance_status', 'binance_address', 'binance_pay_id'),
+        ):
+            previous = {status_key: m.get_db_setting(status_key), address_key: m.get_db_setting(address_key)}
+            if pay_id_key:
+                previous[pay_id_key] = m.get_db_setting(pay_id_key)
+            receipt = 'TEST-DISABLED-' + method.upper()
+            try:
+                m.update_db_setting(status_key, 'متوقف', m.ADMIN_ID)
+                m.update_db_setting(address_key, '', m.ADMIN_ID)
+                if pay_id_key:
+                    m.update_db_setting(pay_id_key, '', m.ADMIN_ID)
+                message = SimpleNamespace(
+                    from_user=SimpleNamespace(id=810027),
+                    chat=SimpleNamespace(id=810027),
+                    text=receipt,
+                )
+                with patch.object(m.bot, 'send_message'):
+                    handler(message)
+                self.assertFalse(m.cursor.execute(
+                    "SELECT 1 FROM pending_charges WHERE receipt_number=?", (receipt,)
+                ).fetchone())
+            finally:
+                for key, value in previous.items():
+                    m.update_db_setting(key, value or ('متوقف' if key.endswith('_status') else ''), m.ADMIN_ID)
+
     def test_sham_service_cannot_open_with_placeholder_address(self):
         m = self.m
         previous_status = m.get_db_setting('sham_status')
