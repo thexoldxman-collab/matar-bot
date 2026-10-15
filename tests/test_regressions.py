@@ -400,6 +400,68 @@ class RegressionTests(unittest.TestCase):
                 {"old_text": "five", "new_text": "six"},
             ])
 
+    def test_withdraw_completion_rejects_other_claimant_without_deducting(self):
+        m = self.m
+        uid = 810013
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id, balance, site_balance, deleted) VALUES (?,?,?,0)",
+            (uid, 70.0, 0.0),
+        )
+        m.cursor.execute(
+            "INSERT INTO pending_withdraws(user_id,method,account,amount,commission,net_amount,status,created_at,processed_by,reserved) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (uid, 'test', 'acct', 30.0, 0.0, 30.0, 'processing', '2026-10-15 00:00:00', 555551, 1),
+        )
+        withdraw_id = m.cursor.lastrowid
+        m.conn.commit()
+
+        result, status = m.complete_pending_withdraw(withdraw_id, 555552)
+        balance = m.cursor.execute(
+            "SELECT balance FROM users WHERE user_id=?", (uid,)
+        ).fetchone()[0]
+        self.assertIsNone(result)
+        self.assertEqual(status, 'claimed_by_other')
+        self.assertEqual(balance, 70.0)
+
+    def test_withdraw_cancellation_refunds_reserved_amount_once(self):
+        m = self.m
+        uid = 810014
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id, balance, site_balance, deleted) VALUES (?,?,?,0)",
+            (uid, 70.0, 0.0),
+        )
+        m.cursor.execute(
+            "INSERT INTO transactions(user_id,type,amount,commission,net_amount,method,status,transaction_date,admin_id,details,receipt_number,external_ref) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (uid, 'withdraw_request', 30.0, 0.0, 30.0, 'test', 'pending', '2026-10-15 00:00:00', None, '', 'TXN-WITHDRAW-810014', ''),
+        )
+        m.cursor.execute(
+            "INSERT INTO pending_withdraws(user_id,method,account,amount,commission,net_amount,status,created_at,processed_by,txn_receipt,reserved) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (uid, 'test', 'acct', 30.0, 0.0, 30.0, 'processing', '2026-10-15 00:00:00', m.ADMIN_ID, 'TXN-WITHDRAW-810014', 1),
+        )
+        withdraw_id = m.cursor.lastrowid
+        m.conn.commit()
+
+        result, status = m.cancel_pending_withdraw_atomic(withdraw_id, m.ADMIN_ID, 'بيانات الحساب غير صحيحة')
+        self.assertEqual(status, 'ok')
+        self.assertTrue(result['reserved'])
+        balance = m.cursor.execute(
+            "SELECT balance FROM users WHERE user_id=?", (uid,)
+        ).fetchone()[0]
+        txn_status = m.cursor.execute(
+            "SELECT status FROM transactions WHERE receipt_number='TXN-WITHDRAW-810014'"
+        ).fetchone()[0]
+        self.assertEqual(balance, 100.0)
+        self.assertEqual(txn_status, 'cancelled')
+
+        _, second_status = m.cancel_pending_withdraw_atomic(withdraw_id, m.ADMIN_ID, 'محاولة ثانية')
+        balance_after = m.cursor.execute(
+            "SELECT balance FROM users WHERE user_id=?", (uid,)
+        ).fetchone()[0]
+        self.assertEqual(second_status, 'invalid_status')
+        self.assertEqual(balance_after, 100.0)
+
     def test_charge_cancellation_is_atomic_and_refuses_completed_requests(self):
         m = self.m
         uid = 810012
