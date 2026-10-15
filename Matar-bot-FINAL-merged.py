@@ -10,7 +10,7 @@ from flask import Flask
 from threading import Thread, RLock
 import os
 import sqlite3
-from matar_db import connect_database, is_postgres_connection, verify_postgres_compatibility, DB_INTEGRITY_ERRORS
+from matar_db import connect_database, is_postgres_connection, verify_postgres_compatibility, DB_INTEGRITY_ERRORS, AUTOINCREMENT_COLUMNS
 from datetime import datetime, timedelta
 import random
 import secrets
@@ -1022,6 +1022,181 @@ def create_consistent_backup(created_by=None):
     cursor.execute("INSERT INTO backups(backup_name, backup_type, file_path, created_at, created_by, size) VALUES (?,?,?,?,?,?)", (filename, 'manual', destination, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), created_by, size))
     conn.commit()
     return destination
+
+RESTORE_UPLOAD_WAITING = set()
+PENDING_RESTORE_UPLOADS = {}
+MAX_RESTORE_FILE_BYTES = 20 * 1024 * 1024
+
+
+def _load_validated_postgres_snapshot(snapshot_path):
+    """تحقق صارم من ملف لقطة Neon قبل عرضه أو استعادته."""
+    import json as _json
+    if os.path.getsize(snapshot_path) > MAX_RESTORE_FILE_BYTES:
+        raise ValueError("حجم النسخة أكبر من الحد المسموح (20 ميغابايت).")
+    with open(snapshot_path, 'r', encoding='utf-8') as backup_file:
+        snapshot = _json.load(backup_file)
+    if not isinstance(snapshot, dict) or snapshot.get('format') != 'matar-postgres-snapshot-v1':
+        raise ValueError("صيغة النسخة غير معروفة؛ ارفع ملف JSON صادر من ماتر.")
+    tables = snapshot.get('tables')
+    if not isinstance(tables, dict) or not tables:
+        raise ValueError("النسخة لا تحتوي جداول قاعدة البيانات.")
+
+    current_tables = {
+        row[0] for row in conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema=current_schema() AND table_type='BASE TABLE'"
+        ).fetchall()
+    }
+    if set(tables) != current_tables:
+        raise ValueError("جداول النسخة لا تطابق مخطط قاعدة البيانات الحالي؛ أوقفت الاستعادة لحماية البيانات.")
+
+    row_count = 0
+    for table_name, payload in tables.items():
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_name):
+            raise ValueError("اسم جدول غير صالح في النسخة.")
+        if not isinstance(payload, dict):
+            raise ValueError("بيانات جدول غير صالحة في النسخة.")
+        columns, rows = payload.get('columns'), payload.get('rows')
+        if not isinstance(columns, list) or not columns or len(set(columns)) != len(columns):
+            raise ValueError(f"قائمة أعمدة غير صالحة في جدول {table_name}.")
+        if not isinstance(rows, list):
+            raise ValueError(f"صفوف غير صالحة في جدول {table_name}.")
+        current_columns = {
+            row[0] for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema=current_schema() AND table_name=?",
+                (table_name,),
+            ).fetchall()
+        }
+        if not set(columns).issubset(current_columns):
+            raise ValueError(f"النسخة تحتوي أعمدة غير معروفة في جدول {table_name}.")
+        for row in rows:
+            if not isinstance(row, list) or len(row) != len(columns):
+                raise ValueError(f"صف غير صالح في جدول {table_name}.")
+            if any(isinstance(value, (dict, list)) for value in row):
+                raise ValueError(f"نوع بيانات غير مدعوم في جدول {table_name}.")
+        row_count += len(rows)
+        if row_count > 500000:
+            raise ValueError("عدد الصفوف أكبر من الحد المسموح للاستعادة الآمنة.")
+    for required in ('users', 'transactions', 'pending_charges', 'pending_withdraws', 'settings', 'dynamic_buttons'):
+        if required not in tables:
+            raise ValueError(f"النسخة ناقصة: جدول {required}.")
+    return snapshot, row_count
+
+
+def restore_postgres_snapshot(snapshot_path, actor_id):
+    """استعادة لقطة Neon بعد تأكيد المالك؛ تستبدل البيانات ضمن معاملة واحدة."""
+    if actor_id != ADMIN_ID:
+        raise PermissionError("استعادة النسخ متاحة للمالك فقط.")
+    if not is_postgres_connection(conn):
+        raise RuntimeError("استعادة JSON مدعومة فقط عند استخدام PostgreSQL/Neon.")
+    snapshot, row_count = _load_validated_postgres_snapshot(snapshot_path)
+    table_names = sorted(snapshot['tables'])
+    quote = lambda name: '"' + name.replace('"', '""') + '"'
+
+    with db_lock:
+        raw = conn._get_raw()
+        try:
+            raw.execute("BEGIN")
+            quoted_tables = ", ".join(quote(name) for name in table_names)
+            raw.execute(f"TRUNCATE TABLE {quoted_tables} RESTART IDENTITY CASCADE")
+            for table_name in table_names:
+                payload = snapshot['tables'][table_name]
+                columns = payload['columns']
+                rows = payload['rows']
+                if not rows:
+                    continue
+                column_sql = ", ".join(quote(column) for column in columns)
+                placeholders = ", ".join(["%s"] * len(columns))
+                insert_sql = f"INSERT INTO {quote(table_name)} ({column_sql}) VALUES ({placeholders})"
+                with raw.cursor() as table_cursor:
+                    table_cursor.executemany(insert_sql, rows)
+
+            # Explicit IDs from a snapshot do not advance PostgreSQL sequences.
+            for table_name, id_column in AUTOINCREMENT_COLUMNS.items():
+                if table_name not in snapshot['tables'] or id_column not in snapshot['tables'][table_name]['columns']:
+                    continue
+                sequence = raw.execute(
+                    "SELECT pg_get_serial_sequence(%s, %s)", (table_name, id_column)
+                ).fetchone()[0]
+                if sequence:
+                    raw.execute(
+                        f"SELECT setval(%s::regclass, GREATEST(COALESCE(MAX({quote(id_column)}),1),1), "
+                        f"MAX({quote(id_column)}) IS NOT NULL) FROM {quote(table_name)}",
+                        (sequence,),
+                    )
+            raw.commit()
+        except Exception:
+            raw.rollback()
+            raise
+
+    try:
+        log_admin_action(actor_id, "استعادة نسخة احتياطية", f"استعادة لقطة Neon تحتوي {row_count} صفاً")
+    except Exception:
+        logger.exception("Snapshot restored but secondary admin audit logging failed")
+    return len(table_names), row_count
+
+
+def handle_backup_document(message):
+    """استقبال ملف JSON للمالك فقط بعد طلب استعادة صريح."""
+    uid = message.from_user.id
+    if uid != ADMIN_ID or uid not in RESTORE_UPLOAD_WAITING:
+        return
+    RESTORE_UPLOAD_WAITING.discard(uid)
+    document = getattr(message, 'document', None)
+    if not document:
+        bot.send_message(message.chat.id, "❌ أرسل ملف JSON صادر من ماتر.")
+        return
+    if not getattr(document, 'file_name', '').lower().endswith('.json'):
+        bot.send_message(message.chat.id, "❌ الملف يجب أن يكون بصيغة JSON.")
+        return
+    if getattr(document, 'file_size', 0) > MAX_RESTORE_FILE_BYTES:
+        bot.send_message(message.chat.id, "❌ حجم النسخة أكبر من 20 ميغابايت.")
+        return
+
+    temp_path = os.path.join(BACKUP_DIR, f"restore_preview_{uid}_{secrets.token_hex(5)}.json")
+    try:
+        file_info = bot.get_file(document.file_id)
+        downloaded = bot.download_file(file_info.file_path)
+        with open(temp_path, 'wb') as target:
+            target.write(downloaded)
+        snapshot, row_count = _load_validated_postgres_snapshot(temp_path)
+        PENDING_RESTORE_UPLOADS[uid] = {
+            'path': temp_path,
+            'tables': len(snapshot['tables']),
+            'rows': row_count,
+        }
+    except Exception as exc:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        logger.warning("Rejected uploaded database snapshot: %s", exc)
+        bot.send_message(message.chat.id, f"❌ لم أقبل النسخة: {exc}")
+        return
+
+    keyboard = types.InlineKeyboardMarkup()
+    keyboard.row(
+        types.InlineKeyboardButton("⚠️ تأكيد استبدال قاعدة البيانات", callback_data="confirm_neon_restore"),
+        types.InlineKeyboardButton("إلغاء", callback_data="cancel_neon_restore"),
+    )
+    bot.send_message(
+        message.chat.id,
+        f"⚠️ **تأكيد استعادة نسخة Neon**\n\n"
+        f"الملف صالح ويحتوي {len(snapshot['tables'])} جدولاً و{row_count} صفاً.\n"
+        "سيتم استبدال البيانات الحالية بالكامل بمحتوى النسخة. لا تضغط التأكيد إلا إذا كنت متأكداً.",
+        reply_markup=keyboard,
+        parse_mode="Markdown",
+    )
+
+
+def cancel_pending_restore(uid):
+    pending = PENDING_RESTORE_UPLOADS.pop(uid, None)
+    if pending:
+        try:
+            os.remove(pending['path'])
+        except OSError:
+            pass
 db_lock = RLock()
 
 # =============================================================================
