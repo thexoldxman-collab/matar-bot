@@ -58,7 +58,7 @@ def translate_sql(sql: str) -> tuple[str | None, str | None]:
     query = re.sub(r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b", "BIGSERIAL PRIMARY KEY", query, flags=re.I)
     query = re.sub(r"\bdatetime\s*\(\s*'now'\s*\)", "TO_CHAR(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')", query, flags=re.I)
     query = re.sub(r"\bDATE\s*\(\s*'now'\s*\)", "CURRENT_DATE", query, flags=re.I)
-    query = re.sub(r"\bDATE\s*\(\s*created_at\s*\)", "CAST(created_at AS DATE)", query, flags=re.I)
+    query = re.sub(r"\bDATE\s*\(\s*(created_at|transaction_date)\s*\)", r"CAST(\1 AS DATE)", query, flags=re.I)
     query = re.sub(r"\bBEGIN\s+IMMEDIATE\b", "BEGIN", query, flags=re.I)
 
     replace_match = re.match(r"^\s*INSERT\s+OR\s+REPLACE\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)", query, re.I)
@@ -145,7 +145,7 @@ class PostgresCursor:
         return self
 
     def executemany(self, sql: str, seq_of_params: Iterable[Iterable[Any]]):
-        translated, generated_id = translate_sql(sql)
+        translated, _ = translate_sql(sql)
         if translated is None or translated.startswith("__MATAR_TABLE_INFO__:"):
             raise ValueError("executemany is not supported for SQLite PRAGMA compatibility statements")
         self._connection._begin_for_statement(translated)
