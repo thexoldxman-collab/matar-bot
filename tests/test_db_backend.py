@@ -64,6 +64,14 @@ class DatabaseTranslationTests(unittest.TestCase):
         self.assertIn("TO_CHAR(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')", sql)
         self.assertIn("CURRENT_DATE", sql)
 
+    def test_relative_date_comparison_casts_legacy_text_timestamp(self):
+        sql, _ = translate_sql(
+            "SELECT COUNT(*) FROM users WHERE created_at >= DATE('now', '-7 days') "
+            "AND joined_at >= DATE('now', '-10 days')"
+        )
+        self.assertIn("CAST(created_at AS DATE) >= ((CURRENT_DATE - INTERVAL '7 day')::date)", sql)
+        self.assertIn("CAST(joined_at AS DATE) >= ((CURRENT_DATE - INTERVAL '10 day')::date)", sql)
+
     def test_begin_immediate_and_placeholders_are_translated(self):
         sql, _ = translate_sql("BEGIN IMMEDIATE")
         self.assertEqual(sql, "BEGIN")
