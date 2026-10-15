@@ -23,7 +23,7 @@ class DatabaseTranslationTests(unittest.TestCase):
         sql, generated_id = translate_sql(
             "INSERT INTO tickets(user_id, message) VALUES (?,?)"
         )
-        self.assertTrue(sql.endswith("RETURNING id"))
+        self.assertTrue(sql.endswith("RETURNING ticket_id"))
         self.assertEqual(generated_id, "ticket_id")
 
     def test_replace_semantics_are_preserved_for_operations_room(self):
