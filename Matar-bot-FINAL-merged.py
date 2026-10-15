@@ -7568,6 +7568,70 @@ def confirm_ai_setting_change(uid, chat_id, token):
         bot.send_message(chat_id, f"✅ تم تطبيق التعديل على: {AI_SETTING_ALLOWLIST[key]['label']}\\nالقيمة الجديدة: {normalized}")
         return
 
+    if kind == 'create_button':
+        try:
+            validated = validate_ai_button_creation(
+                pending.get('button_text'),
+                pending.get('parent_button'),
+                pending.get('message_text'),
+            )
+        except ValueError as exc:
+            ai_pending_actions.pop(uid, None)
+            bot.send_message(chat_id, '❌ لم يتم إنشاء الزر: ' + str(exc))
+            return
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        with db_lock:
+            conn.execute('BEGIN IMMEDIATE')
+            try:
+                duplicate = conn.execute(
+                    "SELECT 1 FROM dynamic_buttons WHERE button_text=? AND is_active=1 LIMIT 1",
+                    (validated['button_text'],),
+                ).fetchone()
+                if duplicate:
+                    conn.rollback()
+                    ai_pending_actions.pop(uid, None)
+                    bot.send_message(chat_id, '❌ يوجد زر نشط بهذا الاسم بالفعل؛ لم يتم إنشاء شيء.')
+                    return
+                parent = validated['parent_button']
+                if parent == 'main':
+                    parent_path, level = '/main', 1
+                else:
+                    parent_row = conn.execute(
+                        "SELECT path,level FROM dynamic_buttons WHERE button_text=? AND is_active=1 ORDER BY id LIMIT 1",
+                        (parent,),
+                    ).fetchone()
+                    if not parent_row:
+                        conn.rollback()
+                        ai_pending_actions.pop(uid, None)
+                        bot.send_message(chat_id, '⚠️ القائمة الأب لم تعد موجودة أو غير نشطة؛ لم يتم إنشاء الزر.')
+                        return
+                    parent_path, parent_level = parent_row
+                    level = int(parent_level) + 1
+                max_order = conn.execute(
+                    "SELECT MAX(sort_order) FROM dynamic_buttons WHERE parent_button=? AND level=?",
+                    (parent, level),
+                ).fetchone()[0] or 0
+                button_name = f"btn_{int(time.time())}_{secrets.token_hex(3)}"
+                path_value = f"{parent_path}/{button_name}"
+                cur = conn.execute(
+                    """INSERT INTO dynamic_buttons
+                    (button_name,button_text,parent_button,button_type,action,message_text,photo_id,
+                     level,sort_order,created_at,updated_at,created_by,path)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (button_name, validated['button_text'], parent, 'reply', 'send_message',
+                     validated['message_text'], None, level, int(max_order) + 1,
+                     now, now, uid, path_value),
+                )
+                button_id = cur.lastrowid
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        ai_pending_actions.pop(uid, None)
+        log_admin_action(uid, 'ai_button_created', f"إنشاء زر رسالة {validated['button_text']} (#{button_id})")
+        bot.send_message(chat_id, f"✅ تم إنشاء الزر «{validated['button_text']}» برسالة عند الضغط، وأصبح ضمن القائمة المطلوبة.")
+        return
+
     if kind == 'button':
         button_id = pending.get('button_id')
         field = pending.get('field')
@@ -7676,6 +7740,16 @@ def process_ai_message(message):
                 old_value = str((row[0] if field == 'button_text' else row[1]) or '')
                 label = f"الزر «{row[0]}» — " + ('اسم الزر' if field == 'button_text' else 'رسالة الزر')
                 action_data = {'kind': 'button', 'button_id': button_id, 'field': field}
+            elif kind == 'create_button':
+                old_value = ''
+                label = f"زر جديد «{proposed['button_text']}» تحت «{proposed['parent_button']}»"
+                action_data = {
+                    'kind': 'create_button',
+                    'button_text': proposed['button_text'],
+                    'parent_button': proposed['parent_button'],
+                    'message_text': proposed['message_text'],
+                }
+                new_value = proposed['message_text']
             else:
                 bot.send_message(message.chat.id, 'لم أتعرف على نوع التعديل؛ لم يتغير شيء.')
                 return
