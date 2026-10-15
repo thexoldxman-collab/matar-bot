@@ -100,58 +100,39 @@ def translate_sql(sql: str) -> tuple[str | None, str | None]:
 
 
 class PostgresCursor:
-    def __init__(self, connection: "PostgresConnection", raw_cursor: Any | None = None):
+    """SQLite-like cursor proxy with independent state for each calling thread."""
+    def __init__(self, connection: "PostgresConnection"):
         self._connection = connection
-        self._fixed_raw = raw_cursor
         self._local = threading.local()
 
-    @property
-    def _raw(self):
-        # The global legacy cursor is shared by Telegram handlers. Resolve its
-        # real cursor per thread so one user's query cannot hijack another's.
-        if self._fixed_raw is not None:
-            return self._fixed_raw
-        raw = getattr(self._local, "raw", None)
-        if raw is None or raw.closed:
-            raw = self._connection._get_raw().cursor()
-            self._local.raw = raw
-        return raw
-
-    @property
-    def _synthetic_rows(self):
-        return getattr(self._local, "synthetic_rows", None)
-
-    @_synthetic_rows.setter
-    def _synthetic_rows(self, value):
-        self._local.synthetic_rows = value
-
-    @property
-    def _synthetic_pos(self):
-        return getattr(self._local, "synthetic_pos", 0)
-
-    @_synthetic_pos.setter
-    def _synthetic_pos(self, value):
-        self._local.synthetic_pos = value
+    def _state(self):
+        if not hasattr(self._local, "raw"):
+            self._local.raw = self._connection._get_raw().cursor()
+            self._local.synthetic_rows = None
+            self._local.synthetic_pos = 0
+            self._local.lastrowid = None
+        return self._local
 
     @property
     def lastrowid(self):
-        return getattr(self._local, "lastrowid", None)
+        return self._state().lastrowid
 
     @lastrowid.setter
     def lastrowid(self, value):
-        self._local.lastrowid = value
+        self._state().lastrowid = value
 
     def execute(self, sql: str, params: Iterable[Any] | None = None):
-        self.lastrowid = None
-        self._synthetic_rows = None
-        self._synthetic_pos = 0
+        state = self._state()
+        state.lastrowid = None
+        state.synthetic_rows = None
+        state.synthetic_pos = 0
         translated, generated_id = translate_sql(sql)
         if translated is None:
-            self._synthetic_rows = []
+            state.synthetic_rows = []
             return self
         if translated.startswith("__MATAR_TABLE_INFO__:"):
             table = translated.split(":", 1)[1]
-            rows = self._raw.execute(
+            rows = state.raw.execute(
                 """SELECT c.column_name, c.data_type, c.is_nullable, c.column_default,
                           (c.column_name IN (
                               SELECT kcu.column_name
@@ -168,62 +149,70 @@ class PostgresCursor:
                    ORDER BY c.ordinal_position""",
                 (table, table),
             ).fetchall()
-            self._synthetic_rows = [
+            state.synthetic_rows = [
                 (index, row[0], row[1], 1 if row[2] == "NO" else 0, row[3], 1 if row[4] else 0)
                 for index, row in enumerate(rows)
             ]
             return self
 
         self._connection._begin_for_statement(translated)
-        self._raw.execute(translated, tuple(params or ()))
+        state.raw.execute(translated, tuple(params or ()))
         if generated_id:
-            returned = self._raw.fetchone()
-            self.lastrowid = returned[0] if returned else None
+            returned = state.raw.fetchone()
+            state.lastrowid = returned[0] if returned else None
         return self
 
     def executemany(self, sql: str, seq_of_params: Iterable[Iterable[Any]]):
+        state = self._state()
         translated, _ = translate_sql(sql)
         if translated is None or translated.startswith("__MATAR_TABLE_INFO__:"):
             raise ValueError("executemany is not supported for SQLite PRAGMA compatibility statements")
         self._connection._begin_for_statement(translated)
-        self._raw.executemany(translated, seq_of_params)
-        self.lastrowid = None
+        state.raw.executemany(translated, seq_of_params)
+        state.lastrowid = None
+        state.synthetic_rows = None
         return self
 
     def fetchone(self):
-        if self._synthetic_rows is not None:
-            if self._synthetic_pos >= len(self._synthetic_rows):
+        state = self._state()
+        if state.synthetic_rows is not None:
+            if state.synthetic_pos >= len(state.synthetic_rows):
                 return None
-            row = self._synthetic_rows[self._synthetic_pos]
-            self._synthetic_pos += 1
+            row = state.synthetic_rows[state.synthetic_pos]
+            state.synthetic_pos += 1
             return row
-        return self._raw.fetchone()
+        return state.raw.fetchone()
 
     def fetchall(self):
-        if self._synthetic_rows is not None:
-            rows = self._synthetic_rows[self._synthetic_pos:]
-            self._synthetic_pos = len(self._synthetic_rows)
+        state = self._state()
+        if state.synthetic_rows is not None:
+            rows = state.synthetic_rows[state.synthetic_pos:]
+            state.synthetic_pos = len(state.synthetic_rows)
             return rows
-        return self._raw.fetchall()
+        return state.raw.fetchall()
 
     def fetchmany(self, size: int | None = None):
-        if self._synthetic_rows is not None:
+        state = self._state()
+        if state.synthetic_rows is not None:
             count = size or 1
-            rows = self._synthetic_rows[self._synthetic_pos:self._synthetic_pos + count]
-            self._synthetic_pos += len(rows)
+            rows = state.synthetic_rows[state.synthetic_pos:state.synthetic_pos + count]
+            state.synthetic_pos += len(rows)
             return rows
-        return self._raw.fetchmany(size) if size is not None else self._raw.fetchmany()
+        return state.raw.fetchmany(size) if size is not None else state.raw.fetchmany()
 
     @property
     def rowcount(self):
-        return len(self._synthetic_rows) if self._synthetic_rows is not None else self._raw.rowcount
+        state = self._state()
+        return len(state.synthetic_rows) if state.synthetic_rows is not None else state.raw.rowcount
 
     @property
     def description(self):
-        return self._raw.description
+        return self._state().raw.description
 
     def close(self):
-        self._raw.close()
+        state = self._state()
+        state.raw.close()
+        self._local = threading.local()
 
 
 class _ThreadConnection:
