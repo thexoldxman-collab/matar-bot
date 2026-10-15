@@ -441,6 +441,48 @@ class RegressionTests(unittest.TestCase):
         create.assert_not_called()
         send.assert_called_once()
 
+    def test_gift_transfer_rejects_nan_amount_without_changing_balances(self):
+        m = self.m
+        sender, target = 810019, 810020
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id,balance,site_balance,deleted) VALUES (?,?,?,0)",
+            (sender, 100.0, 0.0),
+        )
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id,balance,site_balance,deleted) VALUES (?,?,?,0)",
+            (target, 10.0, 0.0),
+        )
+        m.conn.commit()
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=sender),
+            chat=SimpleNamespace(id=sender),
+            text='nan',
+        )
+        with patch.object(m.bot, 'send_message'):
+            m.ActionSystem.process_gift_amount(message, target)
+        balances = m.cursor.execute(
+            "SELECT user_id,balance FROM users WHERE user_id IN (?,?) ORDER BY user_id",
+            (sender, target),
+        ).fetchall()
+        self.assertEqual(balances, [(sender, 100.0), (target, 10.0)])
+
+    def test_gift_code_rejects_infinite_value(self):
+        m = self.m
+        code = 'TESTINFINITE'
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO gifts(code,value,limit_count,used_count,created_by,created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (code, float('inf'), 1, 0, None, '2026-10-15 00:00:00'),
+        )
+        m.conn.commit()
+        try:
+            status, amount = m.redeem_gift_atomic(810021, code)
+            self.assertEqual(status, 'invalid')
+            self.assertEqual(amount, 0)
+        finally:
+            m.cursor.execute("DELETE FROM gifts WHERE code=?", (code,))
+            m.conn.commit()
+
     def test_gift_transfer_rolls_back_if_transaction_ledger_insert_fails(self):
         m = self.m
         sender, target = 810016, 810017
