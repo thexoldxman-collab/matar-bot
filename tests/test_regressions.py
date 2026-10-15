@@ -432,6 +432,18 @@ class RegressionTests(unittest.TestCase):
             m.update_db_setting('binance_address', previous_address or '', m.ADMIN_ID)
             m.update_db_setting('binance_pay_id', previous_pay_id or '', m.ADMIN_ID)
 
+    def test_neon_restore_document_handler_is_registered_for_documents(self):
+        m = self.m
+        handlers = [
+            item for item in m.bot.message_handlers
+            if item.get('function') is m.handle_backup_document
+        ]
+        self.assertTrue(handlers)
+        self.assertTrue(any(
+            'document' in item.get('filters', {}).get('content_types', [])
+            for item in handlers
+        ))
+
     def test_backup_menu_no_longer_reports_unimplemented_actions_as_success(self):
         m = self.m
         with patch.object(m.bot, 'answer_callback_query'), patch.object(m.bot, 'send_message') as send:
