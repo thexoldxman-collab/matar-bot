@@ -99,10 +99,44 @@ def translate_sql(sql: str) -> tuple[str | None, str | None]:
 class PostgresCursor:
     def __init__(self, connection: "PostgresConnection", raw_cursor: Any | None = None):
         self._connection = connection
-        self._raw = raw_cursor or connection._get_raw().cursor()
-        self._synthetic_rows: list[tuple[Any, ...]] | None = None
-        self._synthetic_pos = 0
-        self.lastrowid = None
+        self._fixed_raw = raw_cursor
+        self._local = threading.local()
+
+    @property
+    def _raw(self):
+        # The global legacy cursor is shared by Telegram handlers. Resolve its
+        # real cursor per thread so one user's query cannot hijack another's.
+        if self._fixed_raw is not None:
+            return self._fixed_raw
+        raw = getattr(self._local, "raw", None)
+        if raw is None or raw.closed:
+            raw = self._connection._get_raw().cursor()
+            self._local.raw = raw
+        return raw
+
+    @property
+    def _synthetic_rows(self):
+        return getattr(self._local, "synthetic_rows", None)
+
+    @_synthetic_rows.setter
+    def _synthetic_rows(self, value):
+        self._local.synthetic_rows = value
+
+    @property
+    def _synthetic_pos(self):
+        return getattr(self._local, "synthetic_pos", 0)
+
+    @_synthetic_pos.setter
+    def _synthetic_pos(self, value):
+        self._local.synthetic_pos = value
+
+    @property
+    def lastrowid(self):
+        return getattr(self._local, "lastrowid", None)
+
+    @lastrowid.setter
+    def lastrowid(self, value):
+        self._local.lastrowid = value
 
     def execute(self, sql: str, params: Iterable[Any] | None = None):
         self.lastrowid = None
