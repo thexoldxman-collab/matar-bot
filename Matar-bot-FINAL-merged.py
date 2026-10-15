@@ -7723,7 +7723,6 @@ def process_ops_cancel_withdraw_reason(message, withdraw_id, user_id, amount, or
 
 def handle_ops_send_money(call, withdraw_id):
     """إرسال المبلغ من الكاشيرة"""
-    uid = call.from_user.id
     cursor.execute("SELECT status, user_id, amount, net_amount, account, method, currency FROM pending_withdraws WHERE id=?", (withdraw_id,))
     row = cursor.fetchone()
     if not row or row[0] not in ('pending', 'processing'):
