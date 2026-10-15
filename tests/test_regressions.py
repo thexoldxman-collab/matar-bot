@@ -474,6 +474,67 @@ class RegressionTests(unittest.TestCase):
         finally:
             m.ai_pending_actions.pop(m.ADMIN_ID, None)
 
+    def test_ai_button_change_validates_existing_button_and_duplicate_name(self):
+        m = self.m
+        now = '2026-10-15 00:00:00'
+        m.cursor.execute(
+            "INSERT INTO dynamic_buttons(button_name,button_text,parent_button,action,message_text,level,sort_order,is_active,created_at,updated_at,created_by,path) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ('ai_test_button_a', 'زر اختبار أ', 'main', 'show_balance', 'رسالة قديمة', 1, 0, 1, now, now, m.ADMIN_ID, '/'),
+        )
+        first_id = m.cursor.lastrowid
+        m.cursor.execute(
+            "INSERT INTO dynamic_buttons(button_name,button_text,parent_button,action,message_text,level,sort_order,is_active,created_at,updated_at,created_by,path) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ('ai_test_button_b', 'زر اختبار ب', 'main', 'show_balance', 'رسالة ثانية', 1, 0, 1, now, now, m.ADMIN_ID, '/'),
+        )
+        second_id = m.cursor.lastrowid
+        m.conn.commit()
+        try:
+            valid = m.validate_ai_button_change(second_id, 'message_text', 'رسالة جديدة')
+            self.assertEqual(valid, {
+                'kind': 'button', 'button_id': second_id,
+                'field': 'message_text', 'value': 'رسالة جديدة'
+            })
+            with self.assertRaises(ValueError):
+                m.validate_ai_button_change(second_id, 'button_text', 'زر اختبار أ')
+            with self.assertRaises(ValueError):
+                m.validate_ai_button_change(second_id, 'action', 'dangerous_action')
+        finally:
+            m.cursor.execute("DELETE FROM dynamic_buttons WHERE id IN (?,?)", (first_id, second_id))
+            m.conn.commit()
+
+    def test_ai_button_confirmation_updates_requested_field_after_owner_approval(self):
+        m = self.m
+        now = '2026-10-15 00:00:00'
+        m.cursor.execute(
+            "INSERT INTO dynamic_buttons(button_name,button_text,parent_button,action,message_text,level,sort_order,is_active,created_at,updated_at,created_by,path) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ('ai_test_button_confirm', 'زر تأكيد AI', 'main', 'show_balance', 'قبل التعديل', 1, 0, 1, now, now, m.ADMIN_ID, '/'),
+        )
+        button_id = m.cursor.lastrowid
+        m.conn.commit()
+        m.ai_pending_actions[m.ADMIN_ID] = {
+            'token': 'btn12345', 'kind': 'button', 'button_id': button_id,
+            'field': 'message_text', 'value': 'بعد التعديل',
+            'old_value': 'قبل التعديل', 'label': 'رسالة الزر',
+        }
+        try:
+            with patch.object(m.bot, 'send_message'):
+                m.confirm_ai_setting_change(m.ADMIN_ID, m.ADMIN_ID, 'btn12345')
+            row = m.cursor.execute(
+                "SELECT button_text,message_text,updated_by FROM dynamic_buttons WHERE id=?",
+                (button_id,),
+            ).fetchone()
+            self.assertEqual(row[0], 'زر تأكيد AI')
+            self.assertEqual(row[1], 'بعد التعديل')
+            self.assertEqual(row[2], m.ADMIN_ID)
+            self.assertNotIn(m.ADMIN_ID, m.ai_pending_actions)
+        finally:
+            m.ai_pending_actions.pop(m.ADMIN_ID, None)
+            m.cursor.execute("DELETE FROM dynamic_buttons WHERE id=?", (button_id,))
+            m.conn.commit()
+
     def test_ai_dev_from_chat_uses_latest_owner_request(self):
         m = self.m
         request_text = 'أضف رسالة ترحيب واضحة للمستخدم الجديد'
