@@ -64,6 +64,12 @@ class DatabaseTranslationTests(unittest.TestCase):
         self.assertIn("TO_CHAR(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')", sql)
         self.assertIn("CURRENT_DATE", sql)
 
+    def test_date_search_parameters_are_cast_on_postgres(self):
+        sql, _ = translate_sql(
+            "SELECT * FROM admin_logs WHERE DATE(created_at) BETWEEN ? AND ?"
+        )
+        self.assertIn("CAST(created_at AS DATE) BETWEEN CAST(%s AS DATE) AND CAST(%s AS DATE)", sql)
+
     def test_relative_date_comparison_casts_legacy_text_timestamp(self):
         sql, _ = translate_sql(
             "SELECT COUNT(*) FROM users WHERE created_at >= DATE('now', '-7 days') "
