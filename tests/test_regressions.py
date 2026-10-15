@@ -285,5 +285,67 @@ class RegressionTests(unittest.TestCase):
             m.conn.commit()
 
 
+    def test_admin_balance_actions_update_ledger_atomically(self):
+        m = self.m
+        uid = 810009
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id, balance, site_balance, deleted) VALUES (?,?,?,0)",
+            (uid, 100.0, 40.0),
+        )
+        m.conn.commit()
+
+        self.assertEqual(m.admin_adjust_balance_atomic(uid, 20, "bot_charge", m.ADMIN_ID)[0], 120.0)
+        self.assertEqual(m.admin_adjust_balance_atomic(uid, 10, "site_charge", m.ADMIN_ID)[0], 50.0)
+        self.assertEqual(m.admin_adjust_balance_atomic(uid, 30, "bot_withdraw", m.ADMIN_ID)[0], 90.0)
+        self.assertEqual(m.admin_adjust_balance_atomic(uid, 15, "site_withdraw", m.ADMIN_ID)[0], 35.0)
+
+        balances = m.cursor.execute(
+            "SELECT balance, site_balance FROM users WHERE user_id=?", (uid,)
+        ).fetchone()
+        self.assertEqual(balances, (105.0, 35.0))
+        types_found = {
+            row[0] for row in m.cursor.execute(
+                "SELECT type FROM transactions WHERE user_id=? AND type IN "
+                "('admin_charge','admin_site_charge','admin_withdraw','admin_site_withdraw')",
+                (uid,),
+            ).fetchall()
+        }
+        self.assertEqual(types_found, {
+            "admin_charge", "admin_site_charge", "admin_withdraw", "admin_site_withdraw"
+        })
+
+    def test_admin_withdraw_rolls_back_user_and_cashier_if_ledger_fails(self):
+        m = self.m
+        uid = 810010
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id, balance, site_balance, deleted) VALUES (?,?,?,0)",
+            (uid, 100.0, 0.0),
+        )
+        before = m.cursor.execute(
+            "SELECT balance FROM cashier_balance WHERE admin_id=?", (m.ADMIN_ID,)
+        ).fetchone()[0]
+        m.cursor.execute("""
+            CREATE TRIGGER IF NOT EXISTS test_fail_admin_withdraw_ledger
+            BEFORE INSERT ON transactions
+            WHEN NEW.type='admin_withdraw'
+            BEGIN SELECT RAISE(ABORT, 'forced test failure'); END
+        """)
+        m.conn.commit()
+        try:
+            with self.assertRaises(Exception):
+                m.admin_adjust_balance_atomic(uid, 25, "bot_withdraw", m.ADMIN_ID)
+            balance = m.cursor.execute(
+                "SELECT balance FROM users WHERE user_id=?", (uid,)
+            ).fetchone()[0]
+            after = m.cursor.execute(
+                "SELECT balance FROM cashier_balance WHERE admin_id=?", (m.ADMIN_ID,)
+            ).fetchone()[0]
+            self.assertEqual(balance, 100.0)
+            self.assertEqual(after, before)
+        finally:
+            m.cursor.execute("DROP TRIGGER IF EXISTS test_fail_admin_withdraw_ledger")
+            m.conn.commit()
+
+
 if __name__ == '__main__':
     unittest.main()
