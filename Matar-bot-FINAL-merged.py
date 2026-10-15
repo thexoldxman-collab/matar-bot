@@ -6869,22 +6869,29 @@ def process_gift_value_step(message):
         bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
 
 def process_cancel_gift_code(message):
-    """إلغاء كود هدية"""
+    """إلغاء كود هدية وإرجاع المتبقي مع قيد مالي ضمن معاملة واحدة."""
     uid = message.from_user.id
-    code = message.text.strip().upper()
-    cursor.execute("SELECT id, value, used_count, limit_count FROM gifts WHERE code=?", (code,))
-    gift = cursor.fetchone()
-    if not gift:
+    code = (message.text or '').strip().upper()
+    if not code or code == '🔙 العودة للقائمة الرئيسية':
+        bot.send_message(message.chat.id, "تم إلغاء العملية.", reply_markup=get_main_keyboard(uid))
+        return
+    try:
+        status, remaining = close_gift_and_refund_atomic(code, uid)
+    except Exception:
+        logger.exception("Gift cancellation failed")
+        bot.send_message(message.chat.id, "❌ تعذر إلغاء الكود؛ لم يتم اعتماد أي تغيير.")
+        return
+    if status == 'not_found':
         bot.send_message(message.chat.id, "❌ **الكود غير موجود**", parse_mode="Markdown")
         return
-    remaining = max(0, gift[3] - gift[2]) * float(gift[1] or 0)
-    if remaining > 0 and not gift[4]:
-        if update_cashier_balance(remaining, add=True, admin_id=uid) is None:
-            bot.send_message(message.chat.id, "❌ تعذر إعادة رصيد الكود؛ لم يتم إلغاؤه.", parse_mode="Markdown")
-            return
-    cursor.execute("UPDATE gifts SET limit_count=used_count, auto_returned=1, returned_at=? WHERE code=? AND auto_returned=0", (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), code))
-    conn.commit()
-    bot.send_message(message.chat.id, f"✅ **تم إلغاء الكود:** `{code}`", parse_mode="Markdown")
+    if status == 'cashier_missing':
+        bot.send_message(message.chat.id, "❌ تعذر إعادة رصيد الكود للكاشيرة؛ لم يتم إلغاؤه.", parse_mode="Markdown")
+        return
+    if status != 'ok':
+        bot.send_message(message.chat.id, "❌ تعذر إلغاء الكود؛ لم يتم اعتماد أي تغيير.")
+        return
+    refund_text = f" وتم إرجاع {remaining:,.2f} ل.س للكاشيرة" if remaining > 0 else ""
+    bot.send_message(message.chat.id, f"✅ **تم إلغاء الكود:** `{code}`{refund_text}", parse_mode="Markdown")
 
 def process_individual_gift(message, chat_id):
     """معالجة قديمة - للتوافق"""
