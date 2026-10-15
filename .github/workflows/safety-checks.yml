@@ -1,13 +1,15 @@
 name: Matar Bot safety checks
 
 on:
-  push:
-    branches:
-      - "audit/**"
   pull_request:
     branches:
       - main
   workflow_dispatch:
+
+# Avoid duplicate runs for the same PR when commits arrive in quick succession.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
