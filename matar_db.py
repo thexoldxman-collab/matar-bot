@@ -52,7 +52,7 @@ def translate_sql(sql: str) -> tuple[str | None, str | None]:
     if re.match(r"^PRAGMA\s+(journal_mode|synchronous|foreign_keys|wal_autocheckpoint)\b", original, re.I):
         return None, None
 
-    table_info = re.match(r"^PRAGMA\s+table_info\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*;?$", original, re.I)
+    table_info = re.match(r"^PRAGMA\s+table_info\s*\(\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?\s*\)\s*;?$", original, re.I)
     if table_info:
         # Handled by PostgresCursor.execute, which queries information_schema.
         return "__MATAR_TABLE_INFO__:" + table_info.group(1).lower(), None
