@@ -7510,22 +7510,83 @@ def confirm_ai_setting_change(uid, chat_id, token):
     if not pending or pending.get('token') != token:
         bot.send_message(chat_id, '⚠️ هذا زر قديم أو انتهت صلاحية طلب التعديل؛ لم يتغير أي إعداد.')
         return
-    key = pending.get('key')
-    try:
-        normalized = validate_ai_setting_change(key, pending.get('value'))
-    except ValueError as exc:
+    kind = pending.get('kind', 'setting')
+    if kind == 'setting':
+        key = pending.get('key')
+        try:
+            normalized = validate_ai_setting_change(key, pending.get('value'))
+        except ValueError as exc:
+            ai_pending_actions.pop(uid, None)
+            bot.send_message(chat_id, '❌ لم يتم تطبيق التعديل: ' + str(exc))
+            return
+        current = get_db_setting(key)
+        if str(current or '') != str(pending.get('old_value') or ''):
+            ai_pending_actions.pop(uid, None)
+            bot.send_message(chat_id, '⚠️ تغيّر هذا الإعداد منذ عرض المعاينة؛ لم أكتب فوق التغيير الأحدث. أعد الطلب إذا أردت.')
+            return
+        update_db_setting(key, normalized, uid)
         ai_pending_actions.pop(uid, None)
-        bot.send_message(chat_id, '❌ لم يتم تطبيق التعديل: ' + str(exc))
+        log_admin_action(uid, 'ai_setting_changed', f"تعديل {key} من المساعد الذكي")
+        bot.send_message(chat_id, f"✅ تم تطبيق التعديل على: {AI_SETTING_ALLOWLIST[key]['label']}\\nالقيمة الجديدة: {normalized}")
         return
-    current = get_db_setting(key)
-    if str(current or '') != str(pending.get('old_value') or ''):
+
+    if kind == 'button':
+        button_id = pending.get('button_id')
+        field = pending.get('field')
+        try:
+            validated = validate_ai_button_change(button_id, field, pending.get('value'))
+        except ValueError as exc:
+            ai_pending_actions.pop(uid, None)
+            bot.send_message(chat_id, '❌ لم يتم تطبيق تعديل الزر: ' + str(exc))
+            return
+        with db_lock:
+            conn.execute('BEGIN IMMEDIATE')
+            try:
+                row = conn.execute(
+                    "SELECT button_text,message_text,is_active FROM dynamic_buttons WHERE id=?",
+                    (button_id,),
+                ).fetchone()
+                if not row or not row[2]:
+                    conn.rollback()
+                    ai_pending_actions.pop(uid, None)
+                    bot.send_message(chat_id, '⚠️ الزر لم يعد موجوداً أو لم يعد نشطاً؛ لم يتغير شيء.')
+                    return
+                current = str((row[0] if field == 'button_text' else row[1]) or '')
+                if current != str(pending.get('old_value') or ''):
+                    conn.rollback()
+                    ai_pending_actions.pop(uid, None)
+                    bot.send_message(chat_id, '⚠️ تغيّر الزر منذ عرض المعاينة؛ لم أكتب فوق التغيير الأحدث.')
+                    return
+                if field == 'button_text':
+                    duplicate = conn.execute(
+                        "SELECT 1 FROM dynamic_buttons WHERE is_active=1 AND button_text=? AND id<>? LIMIT 1",
+                        (validated['value'], button_id),
+                    ).fetchone()
+                    if duplicate:
+                        conn.rollback()
+                        ai_pending_actions.pop(uid, None)
+                        bot.send_message(chat_id, '❌ يوجد زر نشط آخر يحمل الاسم نفسه؛ لم يتغير شيء.')
+                        return
+                cur = conn.execute(
+                    f"UPDATE dynamic_buttons SET {field}=?,updated_at=?,created_by=COALESCE(created_by,?),updated_by=? WHERE id=? AND is_active=1",
+                    (validated['value'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), uid, uid, button_id),
+                )
+                if cur.rowcount != 1:
+                    conn.rollback()
+                    ai_pending_actions.pop(uid, None)
+                    bot.send_message(chat_id, '⚠️ لم أستطع تحديث الزر؛ لم يتم اعتماد التعديل.')
+                    return
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
         ai_pending_actions.pop(uid, None)
-        bot.send_message(chat_id, '⚠️ تغيّر هذا الإعداد منذ عرض المعاينة؛ لم أكتب فوق التغيير الأحدث. أعد الطلب إذا أردت.')
+        log_admin_action(uid, 'ai_button_changed', f"تعديل {field} للزر {button_id}")
+        bot.send_message(chat_id, '✅ تم تطبيق التعديل على الزر بعد تأكيدك.')
         return
-    update_db_setting(key, normalized, uid)
+
     ai_pending_actions.pop(uid, None)
-    log_admin_action(uid, 'ai_setting_changed', f"تعديل {key} من المساعد الذكي")
-    bot.send_message(chat_id, f"✅ تم تطبيق التعديل على: {AI_SETTING_ALLOWLIST[key]['label']}\\nالقيمة الجديدة: {normalized}")
+    bot.send_message(chat_id, '❌ نوع التعديل غير مدعوم؛ لم يتغير شيء.')
 
 
 def process_ai_message(message):
@@ -7557,18 +7618,39 @@ def process_ai_message(message):
             bot.send_message(message.chat.id, '⚠️ ' + proposal_error)
             return
         if proposed:
-            key = proposed['key']
-            old_value = get_db_setting(key)
+            kind = proposed.get('kind', 'setting')
             new_value = proposed['value']
-            if str(old_value or '') == str(new_value):
-                bot.send_message(message.chat.id, 'الإعداد مضبوط بالفعل على هذه القيمة؛ لم أغيّر شيئاً.')
+            if kind == 'setting':
+                key = proposed['key']
+                old_value = get_db_setting(key)
+                label = AI_SETTING_ALLOWLIST[key]['label']
+                action_data = {'kind': 'setting', 'key': key}
+            elif kind == 'button':
+                button_id = proposed['button_id']
+                field = proposed['field']
+                row = conn.execute(
+                    "SELECT button_text,message_text FROM dynamic_buttons WHERE id=? AND is_active=1",
+                    (button_id,),
+                ).fetchone()
+                if not row:
+                    bot.send_message(message.chat.id, '⚠️ لم أجد الزر المطلوب أو أنه غير نشط؛ لم يتغير شيء.')
+                    return
+                old_value = str((row[0] if field == 'button_text' else row[1]) or '')
+                label = f"الزر «{row[0]}» — " + ('اسم الزر' if field == 'button_text' else 'رسالة الزر')
+                action_data = {'kind': 'button', 'button_id': button_id, 'field': field}
+            else:
+                bot.send_message(message.chat.id, 'لم أتعرف على نوع التعديل؛ لم يتغير شيء.')
+                return
+            if str(old_value or '') == str(new_value or ''):
+                bot.send_message(message.chat.id, 'الإعداد أو الزر مضبوط بالفعل على هذه القيمة؛ لم أغيّر شيئاً.')
                 return
             token = secrets.token_hex(4)
             ai_pending_actions[uid] = {
                 'token': token,
-                'key': key,
+                **action_data,
                 'value': new_value,
                 'old_value': old_value,
+                'label': label,
                 'request': text,
             }
             markup = types.InlineKeyboardMarkup(row_width=2)
@@ -7576,8 +7658,7 @@ def process_ai_message(message):
                 types.InlineKeyboardButton('✅ تأكيد التعديل', callback_data=f'ai_setting_confirm_{token}'),
                 types.InlineKeyboardButton('❌ إلغاء', callback_data=f'ai_setting_cancel_{token}'),
             )
-            label = AI_SETTING_ALLOWLIST[key]['label']
-            preview = f"🛠 معاينة تعديل إعداد\\nالإعداد: {label}\\nالقيمة الحالية: {old_value or '(فارغ)'}\\nالقيمة المقترحة: {new_value}\\n\\nلن يتغير شيء قبل ضغط «تأكيد التعديل»."
+            preview = f"🛠 معاينة التعديل\\nالعنصر: {label}\\nالقيمة الحالية: {old_value or '(فارغ)'}\\nالقيمة المقترحة: {new_value or '(فارغ)'}\\n\\nلن يتغير شيء قبل ضغط «تأكيد التعديل»."
             ai_store(uid, 'assistant', preview)
             bot.send_message(message.chat.id, preview, reply_markup=markup)
             return
