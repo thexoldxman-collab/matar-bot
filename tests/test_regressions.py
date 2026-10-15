@@ -815,6 +815,31 @@ class RegressionTests(unittest.TestCase):
             m.cursor.execute("DELETE FROM dynamic_buttons WHERE button_text=?", (name,))
             m.conn.commit()
 
+    def test_ai_created_submenu_can_open_its_child_buttons(self):
+        m = self.m
+        now = '2026-10-15 00:00:00'
+        parent = 'قائمة AI قابلة للفتح'
+        child = 'زر طفل داخل قائمة AI'
+        m.cursor.execute(
+            "INSERT INTO dynamic_buttons(button_name,button_text,parent_button,action,message_text,level,sort_order,is_active,created_at,updated_at,created_by,path) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ('ai_submenu_open_parent', parent, 'main', 'show_submenu', None, 1, 0, 1, now, now, m.ADMIN_ID, '/main/ai_submenu_open_parent'),
+        )
+        m.cursor.execute(
+            "INSERT INTO dynamic_buttons(button_name,button_text,parent_button,action,message_text,level,sort_order,is_active,created_at,updated_at,created_by,path) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ('ai_submenu_open_child', child, parent, 'send_message', 'رسالة طفل', 2, 0, 1, now, now, m.ADMIN_ID, '/main/ai_submenu_open_parent/ai_submenu_open_child'),
+        )
+        m.conn.commit()
+        try:
+            with patch.object(m.bot, 'send_message') as send:
+                m.ActionSystem.show_submenu(m.ADMIN_ID, m.ADMIN_ID, {'button_text': parent, 'level': 1})
+            send.assert_called_once()
+            self.assertIsNotNone(send.call_args.kwargs.get('reply_markup'))
+        finally:
+            m.cursor.execute("DELETE FROM dynamic_buttons WHERE button_name IN ('ai_submenu_open_parent','ai_submenu_open_child')")
+            m.conn.commit()
+
     def test_ai_button_creation_validation_rejects_duplicate_and_missing_parent(self):
         m = self.m
         now = '2026-10-15 00:00:00'
