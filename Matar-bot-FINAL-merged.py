@@ -2206,6 +2206,30 @@ class ActionSystem:
     # ===== إجراءات المستخدم الأساسية =====
     
     @staticmethod
+    def show_submenu(uid, chat_id, button_data=None):
+        """عرض الأزرار الفرعية التابعة للزر المحدد، مع رجوع آمن إذا كانت القائمة فارغة."""
+        if not isinstance(button_data, dict):
+            bot.send_message(chat_id, '⚠️ تعذر تحديد القائمة الفرعية.', reply_markup=get_main_keyboard(uid))
+            return
+        parent_button = str(button_data.get('button_text') or '').strip()
+        try:
+            parent_level = int(button_data.get('level') or 1)
+        except (TypeError, ValueError):
+            parent_level = 1
+        if not parent_button or parent_level < 1 or parent_level > 20:
+            bot.send_message(chat_id, '⚠️ بيانات القائمة غير صالحة.', reply_markup=get_main_keyboard(uid))
+            return
+        keyboard = get_dynamic_keyboard(parent_button, parent_level + 1)
+        if keyboard:
+            bot.send_message(chat_id, '📂 ' + parent_button, reply_markup=keyboard)
+        else:
+            bot.send_message(
+                chat_id,
+                '📂 القائمة «' + parent_button + '» فارغة حالياً. يمكنك إضافة أزرار إليها من إدارة البوت.',
+                reply_markup=get_main_keyboard(uid),
+            )
+
+    @staticmethod
     def show_balance(uid, chat_id):
         """عرض رصيد المستخدم"""
         cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,))
