@@ -347,5 +347,74 @@ class RegressionTests(unittest.TestCase):
             m.conn.commit()
 
 
+    def test_charge_completion_rejects_other_claimant_without_crediting(self):
+        m = self.m
+        uid = 810011
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id, balance, site_balance, deleted) VALUES (?,?,?,0)",
+            (uid, 50.0, 0.0),
+        )
+        m.cursor.execute(
+            "INSERT INTO pending_charges(user_id, method, receipt_number, amount, status, created_at, processed_by) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (uid, 'test', 'CLAIM-810011', 10.0, 'processing', '2026-10-15 00:00:00', 555551),
+        )
+        charge_id = m.cursor.lastrowid
+        m.conn.commit()
+
+        result, status = m.complete_pending_charge(charge_id, 555552, 10)
+        balance = m.cursor.execute(
+            "SELECT balance FROM users WHERE user_id=?", (uid,)
+        ).fetchone()[0]
+        self.assertIsNone(result)
+        self.assertEqual(status, 'claimed_by_other')
+        self.assertEqual(balance, 50.0)
+
+    def test_charge_cancellation_is_atomic_and_refuses_completed_requests(self):
+        m = self.m
+        uid = 810012
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id, balance, site_balance, deleted) VALUES (?,?,?,0)",
+            (uid, 50.0, 0.0),
+        )
+        m.cursor.execute(
+            "INSERT INTO transactions(user_id,type,amount,commission,net_amount,method,status,transaction_date,admin_id,details,receipt_number,external_ref) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (uid, 'charge_request', 0, 0, 0, 'test', 'pending', '2026-10-15 00:00:00', None, '', 'TXN-CANCEL-810012', ''),
+        )
+        m.cursor.execute(
+            "INSERT INTO pending_charges(user_id,method,receipt_number,amount,status,created_at,txn_receipt) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (uid, 'test', 'PAY-CANCEL-810012', 10, 'pending', '2026-10-15 00:00:00', 'TXN-CANCEL-810012'),
+        )
+        charge_id = m.cursor.lastrowid
+        m.conn.commit()
+
+        result, status = m.cancel_pending_charge_atomic(charge_id, 555553, 'رقم العملية غير صحيح')
+        self.assertEqual(status, 'ok')
+        self.assertEqual(result['user_id'], uid)
+        state = m.cursor.execute(
+            "SELECT status FROM pending_charges WHERE id=?", (charge_id,)
+        ).fetchone()[0]
+        txn_state = m.cursor.execute(
+            "SELECT status FROM transactions WHERE receipt_number='TXN-CANCEL-810012'"
+        ).fetchone()[0]
+        self.assertEqual(state, 'cancelled')
+        self.assertEqual(txn_state, 'cancelled')
+
+        _, second_status = m.cancel_pending_charge_atomic(charge_id, 555553, 'محاولة ثانية')
+        self.assertEqual(second_status, 'invalid_status')
+
+        m.cursor.execute(
+            "INSERT INTO pending_charges(user_id,method,receipt_number,amount,status,created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (uid, 'test', 'PAY-DONE-810012', 10, 'completed', '2026-10-15 00:00:00'),
+        )
+        completed_id = m.cursor.lastrowid
+        m.conn.commit()
+        _, completed_status = m.cancel_pending_charge_atomic(completed_id, 555553, 'إلغاء متأخر')
+        self.assertEqual(completed_status, 'invalid_status')
+
+
 if __name__ == '__main__':
     unittest.main()
