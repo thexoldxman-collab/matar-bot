@@ -848,11 +848,11 @@ def setup_database():
     # ===== الإعدادات الافتراضية =====
     default_settings = [
         ('syriatel_numbers', '42483891,99706078', 'أرقام سيرياتل كاش', 'text'),
-        ('sham_address', 'sham_example@sham', 'عنوان شام كاش', 'text'),
+        ('sham_address', '', 'عنوان شام كاش', 'text'),
         ('usdt_status', 'متوقف', 'حالة USDT', 'text'),
         ('binance_status', 'متوقف', 'حالة Binance', 'text'),
         ('syriatel_status', 'active', 'حالة سيرياتل كاش', 'text'),
-        ('sham_status', 'active', 'حالة شام كاش', 'text'),
+        ('sham_status', 'متوقف', 'حالة شام كاش', 'text'),
         ('usdt_address', '', 'عنوان محفظة USDT', 'text'),
         ('usdt_network', 'TRC20', 'شبكة USDT', 'text'),
         ('binance_address', '', 'عنوان محفظة Binance', 'text'),
@@ -3609,7 +3609,7 @@ def get_payment_settings_keyboard():
     
     # حالة الخدمات
     syriatel_status = get_db_setting('syriatel_status') or 'active'
-    sham_status = get_db_setting('sham_status') or 'active'
+    sham_status = get_db_setting('sham_status') or 'متوقف'
     usdt_status = get_db_setting('usdt_status') or 'متوقف'
     binance_status = get_db_setting('binance_status') or 'متوقف'
     
@@ -5292,7 +5292,7 @@ def handle_all_callbacks(call):
     if data == 'charge_sham':
         safe_answer_callback(call.id)
         bot.clear_step_handler_by_chat_id(uid)
-        sham_status = get_db_setting('sham_status') or 'active'
+        sham_status = get_db_setting('sham_status') or 'متوقف'
         
         if sham_status != 'active':
             bot.send_message(call.message.chat.id,
@@ -5871,8 +5871,13 @@ def handle_all_callbacks(call):
         return
 
     if data == 'toggle_sham':
-        current = get_db_setting('sham_status') or 'active'
-        new_val = 'stopped' if current == 'active' else 'active'
+        current = get_db_setting('sham_status') or 'متوقف'
+        if current != 'active':
+            address = (get_db_setting('sham_address') or '').strip()
+            if not address or 'example' in address.lower() or address == 'غير محدد':
+                safe_answer_callback(call.id, "أدخل عنوان شام كاش الحقيقي أولاً؛ لم يتم فتح الخدمة.", show_alert=True)
+                return
+        new_val = 'متوقف' if current == 'active' else 'active'
         update_db_setting('sham_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
         safe_answer_callback(call.id, f"شام كاش: {status}", show_alert=True)
@@ -9422,6 +9427,13 @@ def process_sham_charge_receipt(message):
     uid = message.from_user.id
     chat_id = message.chat.id
     receipt = message.text.strip() if message.text else ""
+    if get_db_setting('sham_status') != 'active':
+        bot.send_message(chat_id, "⚠️ خدمة شام كاش متوقفة حالياً؛ لم يتم إنشاء طلب شحن.")
+        return
+    sham_address = (get_db_setting('sham_address') or '').strip()
+    if not sham_address or 'example' in sham_address.lower() or sham_address == 'غير محدد':
+        bot.send_message(chat_id, "⚠️ لم يتم إعداد عنوان شام كاش صحيح؛ لم يتم إنشاء طلب شحن.")
+        return
 
     if not receipt or receipt == '🔙 العودة للقائمة الرئيسية':
         bot.send_message(chat_id, "❌ تم الإلغاء.", reply_markup=get_main_keyboard(uid))
