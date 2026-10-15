@@ -414,6 +414,52 @@ class RegressionTests(unittest.TestCase):
                 {"old_text": "five", "new_text": "six"},
             ])
 
+    def test_ai_setting_validator_rejects_unsupported_key_and_nonfinite_value(self):
+        m = self.m
+        with self.assertRaises(ValueError):
+            m.validate_ai_setting_change('TOKEN', 'secret')
+        with self.assertRaises(ValueError):
+            m.validate_ai_setting_change('withdraw_commission', float('nan'))
+        with self.assertRaises(ValueError):
+            m.validate_ai_setting_change('referral_cycle_days', 1.5)
+
+    def test_ai_setting_validator_normalizes_boolean_and_respects_withdrawal_bounds(self):
+        m = self.m
+        self.assertEqual(m.validate_ai_setting_change('wheel_enabled', 'تشغيل'), '1')
+        self.assertEqual(m.validate_ai_setting_change('wheel_enabled', False), '0')
+        with patch.object(m, 'get_db_setting', return_value='500000'):
+            with self.assertRaises(ValueError):
+                m.validate_ai_setting_change('min_withdraw_syria', 600000)
+
+    def test_ai_setting_confirmation_is_owner_only(self):
+        m = self.m
+        m.ai_pending_actions[m.ADMIN_ID] = {
+            'key': 'welcome_message', 'value': 'new welcome', 'old_value': 'old welcome'
+        }
+        try:
+            with patch.object(m, 'update_db_setting') as update, \
+                 patch.object(m.bot, 'send_message'):
+                m.confirm_ai_setting_change(123456, 123456)
+            update.assert_not_called()
+            self.assertIn(m.ADMIN_ID, m.ai_pending_actions)
+        finally:
+            m.ai_pending_actions.pop(m.ADMIN_ID, None)
+
+    def test_ai_setting_confirmation_refuses_to_overwrite_a_newer_value(self):
+        m = self.m
+        m.ai_pending_actions[m.ADMIN_ID] = {
+            'key': 'welcome_message', 'value': 'proposed', 'old_value': 'original'
+        }
+        try:
+            with patch.object(m, 'get_db_setting', return_value='changed elsewhere'), \
+                 patch.object(m, 'update_db_setting') as update, \
+                 patch.object(m.bot, 'send_message'):
+                m.confirm_ai_setting_change(m.ADMIN_ID, m.ADMIN_ID)
+            update.assert_not_called()
+            self.assertNotIn(m.ADMIN_ID, m.ai_pending_actions)
+        finally:
+            m.ai_pending_actions.pop(m.ADMIN_ID, None)
+
     def test_ai_dev_from_chat_uses_latest_owner_request(self):
         m = self.m
         request_text = 'أضف رسالة ترحيب واضحة للمستخدم الجديد'
