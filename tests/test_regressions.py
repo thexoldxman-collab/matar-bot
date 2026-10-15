@@ -758,6 +758,57 @@ class RegressionTests(unittest.TestCase):
         finally:
             m.ai_pending_actions.pop(m.ADMIN_ID, None)
 
+    def test_ai_submenu_creation_validation_rejects_duplicate_and_missing_parent(self):
+        m = self.m
+        now = '2026-10-15 00:00:00'
+        m.cursor.execute(
+            "INSERT INTO dynamic_buttons(button_name,button_text,parent_button,action,message_text,level,sort_order,is_active,created_at,updated_at,created_by,path) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ('ai_submenu_parent', 'قائمة أب لاختبار القائمة الفرعية', 'main', 'show_submenu', None, 1, 0, 1, now, now, m.ADMIN_ID, '/main/ai_submenu_parent'),
+        )
+        m.conn.commit()
+        try:
+            valid = m.validate_ai_submenu_creation('قائمة فرعية جديدة للاختبار', 'قائمة أب لاختبار القائمة الفرعية')
+            self.assertEqual(valid, {
+                'kind': 'create_submenu',
+                'button_text': 'قائمة فرعية جديدة للاختبار',
+                'parent_button': 'قائمة أب لاختبار القائمة الفرعية',
+            })
+            with self.assertRaises(ValueError):
+                m.validate_ai_submenu_creation('قائمة أب لاختبار القائمة الفرعية', 'main')
+            with self.assertRaises(ValueError):
+                m.validate_ai_submenu_creation('قائمة غير صالحة', 'أب غير موجود')
+        finally:
+            m.cursor.execute("DELETE FROM dynamic_buttons WHERE button_name='ai_submenu_parent'")
+            m.conn.commit()
+
+    def test_ai_submenu_creation_requires_owner_confirmation(self):
+        m = self.m
+        name = 'قائمة فرعية جديدة من AI'
+        m.ai_pending_actions[m.ADMIN_ID] = {
+            'token': 'submenu123', 'kind': 'create_submenu',
+            'button_text': name, 'parent_button': 'main',
+            'value': 'إنشاء قائمة فرعية فارغة', 'old_value': '', 'label': 'قائمة فرعية جديدة',
+        }
+        try:
+            with patch.object(m.bot, 'send_message'):
+                m.confirm_ai_setting_change(123456, 123456, 'submenu123')
+            self.assertFalse(m.cursor.execute(
+                "SELECT 1 FROM dynamic_buttons WHERE button_text=?", (name,)
+            ).fetchone())
+            with patch.object(m.bot, 'send_message'):
+                m.confirm_ai_setting_change(m.ADMIN_ID, m.ADMIN_ID, 'submenu123')
+            row = m.cursor.execute(
+                "SELECT parent_button,action,message_text,is_active FROM dynamic_buttons WHERE button_text=?",
+                (name,),
+            ).fetchone()
+            self.assertEqual(row, ('main', 'show_submenu', None, 1))
+            self.assertNotIn(m.ADMIN_ID, m.ai_pending_actions)
+        finally:
+            m.ai_pending_actions.pop(m.ADMIN_ID, None)
+            m.cursor.execute("DELETE FROM dynamic_buttons WHERE button_text=?", (name,))
+            m.conn.commit()
+
     def test_ai_button_creation_validation_rejects_duplicate_and_missing_parent(self):
         m = self.m
         now = '2026-10-15 00:00:00'
