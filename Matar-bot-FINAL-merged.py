@@ -9488,6 +9488,10 @@ def process_usdt_charge_receipt(message):
     uid = message.from_user.id
     chat_id = message.chat.id
     receipt = message.text.strip() if message.text else ""
+    usdt_address = (get_db_setting('usdt_address') or '').strip()
+    if get_db_setting('usdt_status') != 'active' or not usdt_address or usdt_address == 'غير محدد':
+        bot.send_message(chat_id, "⚠️ خدمة USDT متوقفة أو عنوان الاستلام غير مضبوط؛ لم يتم إنشاء طلب شحن.")
+        return
 
     if not receipt or receipt == '🔙 العودة للقائمة الرئيسية':
         reset_user_state(uid)
@@ -9546,6 +9550,13 @@ def process_binance_charge_receipt(message):
     uid = message.from_user.id
     chat_id = message.chat.id
     receipt = message.text.strip() if message.text else ""
+    binance_address = (get_db_setting('binance_address') or '').strip()
+    binance_pay_id = (get_db_setting('binance_pay_id') or '').strip()
+    if get_db_setting('binance_status') != 'active' or (
+        (not binance_address or binance_address == 'غير محدد') and not binance_pay_id
+    ):
+        bot.send_message(chat_id, "⚠️ خدمة Binance متوقفة أو بيانات الاستلام غير مضبوطة؛ لم يتم إنشاء طلب شحن.")
+        return
 
     if not receipt or receipt == '🔙 العودة للقائمة الرئيسية':
         reset_user_state(uid)
