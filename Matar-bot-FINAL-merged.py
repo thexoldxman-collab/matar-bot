@@ -3748,8 +3748,8 @@ def process_btn_order(message, button_text, siblings):
         bot.send_message(message.chat.id,
                          f"✅ **تم تغيير ترتيب الزر** `{button_text}` **إلى الموضع {new_pos}**",
                          reply_markup=get_buttons_management_keyboard(), parse_mode="Markdown")
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
+    except ValueError as exc:
+        bot.send_message(message.chat.id, f"❌ {exc}", parse_mode="Markdown")
 
 def process_add_button(message):
     """معالجة إضافة زر جديد (الطريقة القديمة - للتوافق)"""
@@ -6852,9 +6852,17 @@ def handle_gift_expiry(call):
         bot.answer_callback_query(call.id)
         return
     
-    # إنشاء الكود
-    code = GiftManager.create_gift(uid, value, count, gift_type, expiry_days)
-    
+    # إنشاء الكود؛ لا تعرض نجاحاً إذا لم ينجح خصم الكاشيرة وتسجيل القيد.
+    try:
+        code = GiftManager.create_gift(uid, value, count, gift_type, expiry_days)
+    except ValueError as exc:
+        bot.answer_callback_query(call.id, str(exc), show_alert=True)
+        return
+    except Exception:
+        logger.exception("Gift creation failed")
+        bot.answer_callback_query(call.id, "❌ تعذر إنشاء كود الهدية؛ لم يتم اعتماد العملية.", show_alert=True)
+        return
+
     expiry_text = "بدون انتهاء" if expiry_days == 0 else f"{expiry_days} أيام"
     
     bot.edit_message_text(
