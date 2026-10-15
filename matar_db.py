@@ -485,7 +485,7 @@ def restore_postgres_snapshot(connection: PostgresConnection, snapshot: Any) -> 
         for table_name, column_name in sequence_columns:
             table_sql, column_sql = quote(table_name), quote(column_name)
             connection.execute(
-                f"SELECT setval(pg_get_serial_sequence(?, ?), "
+                f"SELECT setval(pg_get_serial_sequence(?, ?)::regclass, "
                 f"COALESCE(MAX({column_sql}), 1), MAX({column_sql}) IS NOT NULL) FROM {table_sql}",
                 (table_name, column_name),
             )
