@@ -19,9 +19,9 @@ jobs:
     env:
       TOKEN: "123456:TESTTOKEN"
       ADMIN_ID: "999999"
-      DATABASE_PATH: "${{ runner.temp }}/matar-test.db"
-      BACKUP_DIR: "${{ runner.temp }}/matar-backups"
-      LOG_DIR: "${{ runner.temp }}/matar-logs"
+      DATABASE_PATH: "/tmp/matar-test.db"
+      BACKUP_DIR: "/tmp/matar-backups"
+      LOG_DIR: "/tmp/matar-logs"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
