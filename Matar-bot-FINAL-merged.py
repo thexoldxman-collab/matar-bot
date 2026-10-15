@@ -871,7 +871,7 @@ def setup_database():
         ('current_referral_cycle', '', 'الدورة الحالية', 'text'),
         ('syriatel_api_enabled', '0', 'تفعيل API سيرياتل', 'boolean'),
         ('sham_api_enabled', '0', 'تفعيل API شام', 'boolean'),
-        ('auto_verify_charges', '1', 'التحقق التلقائي', 'boolean'),
+        ('auto_verify_charges', '0', 'التحقق التلقائي', 'boolean'),
         ('maintenance_message', '🔧 البوت في حالة صيانة حالياً. سنعود قريباً!', 'رسالة الصيانة', 'text'),
         ('min_gift_amount', '10', 'الحد الأدنى للهدية', 'number'),
         ('max_gift_amount', '1000000', 'الحد الأقصى للهدية', 'number'),
@@ -5874,6 +5874,11 @@ def handle_all_callbacks(call):
 
     if data == 'toggle_usdt':
         current = get_db_setting('usdt_status') or 'متوقف'
+        if current != 'active':
+            address = (get_db_setting('usdt_address') or '').strip()
+            if not address or address == 'غير محدد':
+                safe_answer_callback(call.id, "أدخل عنوان محفظة USDT الصحيح أولاً؛ لم يتم فتح الخدمة.", show_alert=True)
+                return
         new_val = 'متوقف' if current == 'active' else 'active'
         update_db_setting('usdt_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
@@ -5884,6 +5889,12 @@ def handle_all_callbacks(call):
 
     if data == 'toggle_binance':
         current = get_db_setting('binance_status') or 'متوقف'
+        if current != 'active':
+            address = (get_db_setting('binance_address') or '').strip()
+            pay_id = (get_db_setting('binance_pay_id') or '').strip()
+            if (not address or address == 'غير محدد') and not pay_id:
+                safe_answer_callback(call.id, "أدخل عنوان Binance أو معرّف Binance Pay الصحيح أولاً؛ لم يتم فتح الخدمة.", show_alert=True)
+                return
         new_val = 'متوقف' if current == 'active' else 'active'
         update_db_setting('binance_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
@@ -6691,11 +6702,20 @@ def handle_all_callbacks(call):
         return
 
     if data == 'toggle_auto_verify':
-        current = get_db_setting('auto_verify_charges') or '1'
-        new_val = '0' if current == '1' else '1'
-        update_db_setting('auto_verify_charges', new_val, uid)
-        status = "مفعل ✅" if new_val == '1' else "معطل ❌"
-        safe_answer_callback(call.id, f"التحقق التلقائي: {status}", show_alert=True)
+        current = get_db_setting('auto_verify_charges') or '0'
+        if current == '1':
+            update_db_setting('auto_verify_charges', '0', uid)
+            safe_answer_callback(
+                call.id,
+                "تم إيقاف التحقق التلقائي. لا توجد حالياً واجهة دفع موثوقة موصولة للتحقق الآلي.",
+                show_alert=True,
+            )
+        else:
+            safe_answer_callback(
+                call.id,
+                "غير متاح حالياً: يجب أولاً ربط واجهة دفع رسمية واختبار التحقق من العملية قبل تفعيل أي تحقق آلي.",
+                show_alert=True,
+            )
         return
 
     if data == 'api_status':
@@ -6783,7 +6803,7 @@ def handle_all_callbacks(call):
     if data == 'payment_status':
         syriatel_api = get_db_setting('syriatel_api_enabled') or '0'
         sham_api = get_db_setting('sham_api_enabled') or '0'
-        auto_verify = get_db_setting('auto_verify_charges') or '1'
+        auto_verify = get_db_setting('auto_verify_charges') or '0'
         usdt_status = get_db_setting('usdt_status') or 'متوقف'
         binance_status = get_db_setting('binance_status') or 'متوقف'
         text = f"""💳 **حالة خدمات الدفع:**
@@ -6797,11 +6817,14 @@ def handle_all_callbacks(call):
         return
 
     if data == 'toggle_api':
-        syriatel_api = get_db_setting('syriatel_api_enabled') or '0'
-        new_val = '0' if syriatel_api == '1' else '1'
-        update_db_setting('syriatel_api_enabled', new_val, uid)
-        status = "مفعل ✅" if new_val == '1' else "معطل ❌"
-        safe_answer_callback(call.id, f"سيرياتل API: {status}", show_alert=True)
+        # لا تسمح بتفعيل علم API شكلي ما دام لا يوجد تكامل رسمي موثوق.
+        update_db_setting('syriatel_api_enabled', '0', uid)
+        update_db_setting('sham_api_enabled', '0', uid)
+        safe_answer_callback(
+            call.id,
+            "تم إبقاء تكاملات API معطّلة: لا توجد وثائق ونقاط اتصال رسمية تم التحقق منها بعد.",
+            show_alert=True,
+        )
         return
 
     if data == 'edit_retry':
