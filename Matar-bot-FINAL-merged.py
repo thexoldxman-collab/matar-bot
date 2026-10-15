@@ -7090,37 +7090,6 @@ AI_ALLOWED_CODE_PATHS = {
 }
 
 
-def apply_ai_file_changes(sources, file_changes):
-    """Validate and apply a bounded proposal across the explicit allowlist only."""
-    if not isinstance(sources, dict) or not isinstance(file_changes, list) or not 1 <= len(file_changes) <= 5:
-        raise ValueError('invalid file changes')
-    updated_files = {}
-    total_changes = 0
-    for item in file_changes:
-        if not isinstance(item, dict):
-            raise ValueError('invalid file change item')
-        path = item.get('path')
-        changes = item.get('changes')
-        if path not in AI_ALLOWED_CODE_PATHS or path not in sources or path in updated_files:
-            raise ValueError('path is not allowed, is missing, or appears more than once')
-        if not isinstance(changes, list) or not changes:
-            raise ValueError('each changed file must contain at least one text replacement')
-        total_changes += len(changes)
-        if total_changes > 8:
-            raise ValueError('too many replacements in one proposal')
-        updated = apply_ai_text_changes(sources[path], changes)
-        if path == 'requirements.txt':
-            updated = validate_ai_requirements(updated)
-        elif path == 'render.yaml':
-            updated = validate_ai_render_yaml(updated)
-        elif path.endswith('.py'):
-            compile(updated, path, 'exec')
-        updated_files[path] = updated
-    if not updated_files:
-        raise ValueError('proposal contains no file changes')
-    return updated_files
-
-
 def validate_ai_requirements(content):
     """Reject pip options, VCS URLs, and direct URLs from AI-generated dependency edits."""
     if not isinstance(content, str) or len(content) > 12000:
