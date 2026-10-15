@@ -1056,6 +1056,7 @@ def restore_postgres_snapshot(snapshot_path, actor_id):
     return summary['tables'], summary['rows']
 
 
+@bot.message_handler(content_types=['document'])
 def handle_backup_document(message):
     """استقبال ملف JSON للمالك فقط بعد طلب استعادة صريح."""
     uid = message.from_user.id
