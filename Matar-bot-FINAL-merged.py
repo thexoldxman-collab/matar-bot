@@ -15,7 +15,6 @@ import random
 import secrets
 import string
 import time
-import hashlib
 import json
 import requests
 import re
@@ -23,9 +22,6 @@ import math
 import logging
 from logging.handlers import RotatingFileHandler
 from collections import defaultdict
-import sys
-import traceback
-from functools import wraps
 
 # سطر التشخيص
 print("✅ تم تحميل البوت - نسخة تشخيص الأزرار")
@@ -3144,8 +3140,6 @@ def get_full_admin_keyboard():
     """لوحة التحكم الكامل (للمالك فقط)"""
     keyboard = types.InlineKeyboardMarkup(row_width=2)
     
-    room_id = get_db_setting('operations_room_id')
-    
     keyboard.add(
         types.InlineKeyboardButton("📝 إدارة الأزرار", callback_data="admin_buttons"),
         types.InlineKeyboardButton("💳 إعدادات الدفع", callback_data="admin_payment"),
@@ -3514,7 +3508,6 @@ def process_btn_add_new(message, parent):
 
 def process_btn_order(message, button_text, siblings):
     """تغيير ترتيب زر"""
-    uid = message.from_user.id
     try:
         new_pos = int(message.text.strip())
         if new_pos < 1 or new_pos > len(siblings):
@@ -3834,7 +3827,6 @@ def process_edit_retry(message):
 
 def process_edit_charge_threshold(message):
     """تعديل حد الشحن الكبير"""
-    uid = message.from_user.id
     
     try:
         threshold = float(message.text)
@@ -3876,7 +3868,6 @@ def process_unban_user(message):
 
 def process_charge_user_step1(message):
     """الخطوة الأولى لشحن رصيد مستخدم"""
-    uid = message.from_user.id
     
     try:
         target = int(message.text)
@@ -3928,7 +3919,6 @@ def process_charge_user_amount(message, target, charge_type):
 
 def process_withdraw_user_step1(message):
     """الخطوة الأولى لسحب رصيد مستخدم"""
-    uid = message.from_user.id
     
     try:
         target = int(message.text)
@@ -4178,7 +4168,6 @@ def process_admin_create_user_step2(message, account_name):
 
 def process_advanced_user_search(message):
     """بحث متقدم عن المستخدمين"""
-    uid = message.from_user.id
     query = message.text.strip()
     
     # بحث شامل في عدة حقول
@@ -4432,7 +4421,6 @@ def process_broadcast_moderators(message):
 
 def process_search_by_date(message):
     """بحث في سجل الإجراءات حسب التاريخ"""
-    uid = message.from_user.id
     query = message.text.strip()
     
     try:
@@ -4453,7 +4441,6 @@ def process_search_by_date(message):
 
 def process_search_by_admin(message):
     """بحث في سجل الإجراءات حسب المشرف"""
-    uid = message.from_user.id
     query = message.text.strip()
     
     cursor.execute("""SELECT display_name, action_type, details, target_user, amount, created_at 
@@ -4466,7 +4453,6 @@ def process_search_by_admin(message):
 
 def process_search_by_type(message):
     """بحث في سجل الإجراءات حسب النوع"""
-    uid = message.from_user.id
     query = message.text.strip()
     
     cursor.execute("""SELECT display_name, action_type, details, target_user, amount, created_at 
@@ -4479,7 +4465,6 @@ def process_search_by_type(message):
 
 def process_search_by_amount(message):
     """بحث في سجل الإجراءات حسب المبلغ"""
-    uid = message.from_user.id
     query = message.text.strip()
     
     try:
@@ -4500,7 +4485,6 @@ def process_search_by_amount(message):
 
 def process_search_by_user(message):
     """بحث في سجل الإجراءات حسب المستخدم المستهدف"""
-    uid = message.from_user.id
     query = message.text.strip()
     
     cursor.execute("""SELECT display_name, action_type, details, target_user, amount, created_at 
@@ -4772,7 +4756,7 @@ def callback_error_guard(handler):
     def guarded(call):
         try:
             return handler(call)
-        except Exception as exc:
+        except Exception:
             error_logger.exception(
                 'Unhandled callback %s from %s',
                 getattr(call, 'data', '?'),
@@ -5192,7 +5176,7 @@ def handle_all_callbacks(call):
             bot.edit_message_text(f"➕ **أدخل اسم الزر الفرعي الجديد تحت** `{parent_text}`**:**",
                                   call.message.chat.id, call.message.message_id, parse_mode="Markdown")
         except Exception:
-            bot.send_message(call.message.chat.id, f"➕ **أدخل اسم الزر الفرعي الجديد:**", parse_mode="Markdown")
+            bot.send_message(call.message.chat.id, "➕ **أدخل اسم الزر الفرعي الجديد:**", parse_mode="Markdown")
         bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_btn_add_child, parent_text)
         return
 
@@ -6383,7 +6367,7 @@ def handle_all_callbacks(call):
         auto_verify = get_db_setting('auto_verify_charges') or '1'
         usdt_status = get_db_setting('usdt_status') or 'متوقف'
         binance_status = get_db_setting('binance_status') or 'متوقف'
-        text = """💳 **حالة خدمات الدفع:**
+        text = f"""💳 **حالة خدمات الدفع:**
 
 📱 **سيرياتل API:** {'🟢 مفعل' if syriatel_api == '1' else '🔴 معطل'}
 🏦 **شام API:** {'🟢 مفعل' if sham_api == '1' else '🔴 معطل'}
@@ -6527,7 +6511,7 @@ def process_gift_count_step(message):
             bot.send_message(message.chat.id, "❌ **العدد يجب أن يكون أكبر من 0**", parse_mode="Markdown")
             return
         user_states[uid]['gift_count'] = count
-        msg = bot.send_message(message.chat.id, f"💰 **أدخل قيمة الهدية لكل شخص (بالليرة السورية):**", parse_mode="Markdown")
+        msg = bot.send_message(message.chat.id, "💰 **أدخل قيمة الهدية لكل شخص (بالليرة السورية):**", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_gift_value_step)
     except ValueError:
         bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
@@ -6911,8 +6895,6 @@ def process_ai_message(message):
 def process_connect_syriatel_api(message):
     """ربط سيرياتل API"""
     uid = message.from_user.id
-    number = message.text.strip()
-    
     bot.send_message(message.chat.id, "⚠️ لم يتم تفعيل API سيرياتل: لا توجد وثائق أو Endpoint موثوق في الإعدادات. أرسل إعداداً موثقاً من مزود الخدمة أولاً.", parse_mode="Markdown")
     log_admin_action(uid, 'connect_api_rejected', 'محاولة تفعيل API سيرياتل دون وثائق/Endpoint موثوق')
 
@@ -7457,7 +7439,7 @@ def handle_ops_execute_charge(call, charge_id):
     status, user_id, amount, receipt, code, method = row
     
     if status != 'pending':
-        bot.answer_callback_query(call.id, f"⚠️ هذا الطلب معالج مسبقاً بواسطة شخص آخر!", show_alert=True)
+        bot.answer_callback_query(call.id, "⚠️ هذا الطلب معالج مسبقاً بواسطة شخص آخر!", show_alert=True)
         return
     
     # تعليم الطلب بأنه قيد التنفيذ لمنع التكرار
@@ -7479,11 +7461,10 @@ def handle_ops_execute_charge(call, charge_id):
     except Exception:
         pass
     
-    bot.answer_callback_query(call.id, f"✅ بدأت بتنفيذ الطلب", show_alert=False)
+    bot.answer_callback_query(call.id, "✅ بدأت بتنفيذ الطلب", show_alert=False)
 
 def handle_ops_cancel_charge(call, charge_id):
     """إلغاء طلب شحن مع سبب"""
-    uid = call.from_user.id
     
     cursor.execute("SELECT status, user_id FROM pending_charges WHERE id=?", (charge_id,))
     row = cursor.fetchone()
@@ -7531,7 +7512,6 @@ def process_ops_cancel_charge_reason(message, charge_id, user_id, original_call)
 
 def handle_ops_set_amount_charge(call, charge_id):
     """إدخال المبلغ وشحن رصيد الزبون"""
-    uid = call.from_user.id
     
     cursor.execute("SELECT status, user_id, amount, receipt_number FROM pending_charges WHERE id=?", (charge_id,))
     row = cursor.fetchone()
@@ -7744,8 +7724,6 @@ def process_ops_cancel_withdraw_reason(message, withdraw_id, user_id, amount, or
 def handle_ops_send_money(call, withdraw_id):
     """إرسال المبلغ من الكاشيرة"""
     uid = call.from_user.id
-    executor_name = get_moderator_name(uid)
-    
     cursor.execute("SELECT status, user_id, amount, net_amount, account, method, currency FROM pending_withdraws WHERE id=?", (withdraw_id,))
     row = cursor.fetchone()
     if not row or row[0] not in ('pending', 'processing'):
@@ -7849,7 +7827,7 @@ def process_syria_charge_receipt(message):
     for num in nums:
         markup.add(types.InlineKeyboardButton(f"📱 {num}", callback_data=f"syriatel_code_{receipt}_{uid}_{num}"))
     
-    msg = bot.send_message(chat_id,
+    bot.send_message(chat_id,
                            f"✅ **تم استلام رقم العملية:** `{receipt}`\n\n"
                            f"📌 اضغط على الكود الذي قمت بالتحويل عليه:",
                            reply_markup=markup, parse_mode="Markdown")
@@ -8284,7 +8262,6 @@ def process_sham_withdraw_amount(message, account, currency):
 
 def process_private_message_step1(message):
     """الخطوة الأولى لإرسال رسالة فردية"""
-    uid = message.from_user.id
     try:
         target = int(message.text.strip())
         msg = bot.send_message(message.chat.id, f"📝 أرسل الرسالة التي تريد إرسالها للمستخدم {target}:")
