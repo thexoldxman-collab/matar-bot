@@ -419,12 +419,12 @@ class RegressionTests(unittest.TestCase):
     def test_ai_dev_preserves_existing_test_names_and_assertions(self):
         m = self.m
         path = 'tests/test_regressions.py'
-        source = "def test_keep():\\n    assert True\\n"
+        source = "def test_keep():\n    assert True\n"
         with self.assertRaises(ValueError):
             m.apply_ai_file_changes(
                 {path: source},
-                [{'path': path, 'changes': [{'old_text': 'def test_keep():\\n    assert True\\n',
-                                             'new_text': 'def test_replacement():\\n    assert True\\n'}]}],
+                [{'path': path, 'changes': [{'old_text': 'def test_keep():\n    assert True\n',
+                                             'new_text': 'def test_replacement():\n    assert True\n'}]}],
             )
         with self.assertRaises(ValueError):
             m.apply_ai_file_changes(
@@ -434,8 +434,8 @@ class RegressionTests(unittest.TestCase):
             )
         accepted = m.apply_ai_file_changes(
             {path: source},
-            [{'path': path, 'changes': [{'old_text': 'def test_keep():\\n    assert True\\n',
-                                         'new_text': 'def test_keep():\\n    assert True\\n\\ndef test_extra():\\n    assert True\\n'}]}],
+            [{'path': path, 'changes': [{'old_text': 'def test_keep():\n    assert True\n',
+                                         'new_text': 'def test_keep():\n    assert True\n\ndef test_extra():\n    assert True\n'}]}],
         )
         self.assertIn('def test_extra', accepted[path])
         self.assertIn('test_keep', accepted[path])
