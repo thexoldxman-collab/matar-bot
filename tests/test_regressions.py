@@ -414,6 +414,33 @@ class RegressionTests(unittest.TestCase):
                 {"old_text": "five", "new_text": "six"},
             ])
 
+    def test_ai_dev_from_chat_uses_latest_owner_request(self):
+        m = self.m
+        request_text = 'أضف رسالة ترحيب واضحة للمستخدم الجديد'
+        m.conn.execute("DELETE FROM ai_conversations WHERE user_id=?", (m.ADMIN_ID,))
+        m.conn.execute(
+            "INSERT INTO ai_conversations(user_id,role,content,created_at) VALUES (?,?,?,?)",
+            (m.ADMIN_ID, 'user', request_text, '2026-10-15 00:00:00'),
+        )
+        m.conn.commit()
+
+        with patch.object(m, '_github_config', return_value=('token', 'repo/name', 'main')), \
+             patch.object(m, 'create_ai_draft_pr', return_value=({
+                 'number': 123, 'summary': 'تعديل ترحيب', 'url': 'https://example.test/pr/123'
+             }, None)) as create, \
+             patch.object(m.bot, 'send_message'):
+            m.create_ai_draft_from_last_message(m.ADMIN_ID, m.ADMIN_ID)
+
+        create.assert_called_once_with(request_text, m.ADMIN_ID)
+
+    def test_ai_dev_from_chat_rejects_non_owner(self):
+        m = self.m
+        with patch.object(m, 'create_ai_draft_pr') as create, \
+             patch.object(m.bot, 'send_message') as send:
+            m.create_ai_draft_from_last_message(123456, 123456)
+        create.assert_not_called()
+        send.assert_called_once()
+
     def test_charge_claim_is_atomic_and_only_one_moderator_can_claim(self):
         m = self.m
         uid = 810015
