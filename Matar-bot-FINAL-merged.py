@@ -3569,28 +3569,62 @@ class GiftManager:
     
     @staticmethod
     def create_gift(admin_id, value, count=1, gift_type='individual', expiry_days=0):
-        """إنشاء كود هدية جديد"""
-        code = generate_gift_code()
-        
-        # حساب تاريخ الانتهاء
-        expires_at = None
-        if expiry_days > 0:
-            expires_at = (datetime.now() + timedelta(days=expiry_days)).strftime("%Y-%m-%d %H:%M:%S")
-        
-        cursor.execute("""INSERT INTO gifts 
-            (code, value, limit_count, type, created_by, created_at, expires_at)
-            VALUES (?,?,?,?,?,?,?)""",
-            (code, value, count, gift_type, admin_id, 
-             datetime.now().strftime("%Y-%m-%d %H:%M:%S"), expires_at))
-        conn.commit()
-        
-        # خصم الرصيد من الكاشيرة
+        """إنشاء كود هدية وخصم رصيد الكاشيرة وتسجيله ضمن معاملة واحدة."""
+        try:
+            value = float(value)
+            count = int(count)
+            expiry_days = int(expiry_days)
+        except (TypeError, ValueError):
+            raise ValueError("قيمة الهدية أو عددها غير صالح.")
+        if not math.isfinite(value) or value <= 0 or count < 1 or count > 100000:
+            raise ValueError("قيمة الهدية وعددها يجب أن يكونا موجبين وصالحين.")
+        if expiry_days < 0 or expiry_days > 3650:
+            raise ValueError("مدة الصلاحية يجب أن تكون بين 0 و3650 يوماً.")
+        if gift_type not in ('individual', 'group'):
+            raise ValueError("نوع الهدية غير صالح.")
+
         total_amount = value * count
-        update_cashier_balance(total_amount, add=False, admin_id=admin_id)
-        
-        logger.info(f"تم إنشاء كود هدية: {code} بقيمة {value} × {count} بواسطة {admin_id}")
+        if not math.isfinite(total_amount) or total_amount <= 0:
+            raise ValueError("إجمالي الهدية غير صالح.")
+        code = generate_gift_code()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        expires_at = (
+            (datetime.now() + timedelta(days=expiry_days)).strftime("%Y-%m-%d %H:%M:%S")
+            if expiry_days > 0 else None
+        )
+        receipt = generate_receipt_number('GCR')
+
+        with db_lock:
+            conn.execute('BEGIN IMMEDIATE')
+            try:
+                debit = conn.execute(
+                    "UPDATE cashier_balance SET balance=balance-?, last_updated=? WHERE admin_id=? AND balance>=?",
+                    (total_amount, now, admin_id, total_amount),
+                )
+                if debit.rowcount != 1:
+                    conn.rollback()
+                    raise ValueError("رصيد الكاشيرة غير كافٍ لإنشاء كود الهدية.")
+                conn.execute(
+                    """INSERT INTO gifts
+                    (code,value,limit_count,type,created_by,created_at,expires_at)
+                    VALUES (?,?,?,?,?,?,?)""",
+                    (code, value, count, gift_type, admin_id, now, expires_at),
+                )
+                conn.execute(
+                    """INSERT INTO transactions
+                    (user_id,type,amount,commission,net_amount,method,status,transaction_date,
+                     admin_id,details,receipt_number,external_ref)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (admin_id, 'gift_create', total_amount, 0, total_amount, 'gift', 'success',
+                     now, admin_id, f'إنشاء كود هدية بعدد {count}', receipt, code),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+        logger.info("تم إنشاء كود هدية: %s بقيمة %s × %s بواسطة %s", code, value, count, admin_id)
         log_admin_action(admin_id, "إنشاء كود هدية", f"كود {code} بقيمة {value}×{count}", amount=total_amount)
-        
         return code
     
     @staticmethod
