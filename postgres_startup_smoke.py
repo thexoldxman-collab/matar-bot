@@ -3,7 +3,7 @@ import importlib.util
 import os
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parent
 os.environ.setdefault("TOKEN", "123456:TESTTOKEN")
 os.environ.setdefault("ADMIN_ID", "999999")
 os.environ.setdefault("DATABASE_PATH", "/tmp/matar-postgres-smoke.db")
