@@ -372,6 +372,66 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(status, 'claimed_by_other')
         self.assertEqual(balance, 50.0)
 
+    def test_auto_verification_cannot_be_enabled_without_a_verified_provider(self):
+        m = self.m
+        previous = m.get_db_setting('auto_verify_charges')
+        try:
+            m.update_db_setting('auto_verify_charges', '1', m.ADMIN_ID)
+            with patch.object(m.bot, 'answer_callback_query'):
+                m.handle_all_callbacks(self.fake_call('toggle_auto_verify'))
+            self.assertEqual(m.get_db_setting('auto_verify_charges'), '0')
+            with patch.object(m.bot, 'answer_callback_query'):
+                m.handle_all_callbacks(self.fake_call('toggle_auto_verify'))
+            self.assertEqual(m.get_db_setting('auto_verify_charges'), '0')
+        finally:
+            m.update_db_setting('auto_verify_charges', previous or '0', m.ADMIN_ID)
+
+    def test_unverified_payment_api_flags_are_forced_off(self):
+        m = self.m
+        previous_sy = m.get_db_setting('syriatel_api_enabled')
+        previous_sh = m.get_db_setting('sham_api_enabled')
+        try:
+            m.update_db_setting('syriatel_api_enabled', '1', m.ADMIN_ID)
+            m.update_db_setting('sham_api_enabled', '1', m.ADMIN_ID)
+            with patch.object(m.bot, 'answer_callback_query'):
+                m.handle_all_callbacks(self.fake_call('toggle_api'))
+            self.assertEqual(m.get_db_setting('syriatel_api_enabled'), '0')
+            self.assertEqual(m.get_db_setting('sham_api_enabled'), '0')
+        finally:
+            m.update_db_setting('syriatel_api_enabled', previous_sy or '0', m.ADMIN_ID)
+            m.update_db_setting('sham_api_enabled', previous_sh or '0', m.ADMIN_ID)
+
+    def test_usdt_service_cannot_open_without_a_destination_address(self):
+        m = self.m
+        previous_status = m.get_db_setting('usdt_status')
+        previous_address = m.get_db_setting('usdt_address')
+        try:
+            m.update_db_setting('usdt_status', 'متوقف', m.ADMIN_ID)
+            m.update_db_setting('usdt_address', '', m.ADMIN_ID)
+            with patch.object(m.bot, 'answer_callback_query'):
+                m.handle_all_callbacks(self.fake_call('toggle_usdt'))
+            self.assertNotEqual(m.get_db_setting('usdt_status'), 'active')
+        finally:
+            m.update_db_setting('usdt_status', previous_status or 'متوقف', m.ADMIN_ID)
+            m.update_db_setting('usdt_address', previous_address or '', m.ADMIN_ID)
+
+    def test_binance_service_cannot_open_without_a_destination(self):
+        m = self.m
+        previous_status = m.get_db_setting('binance_status')
+        previous_address = m.get_db_setting('binance_address')
+        previous_pay_id = m.get_db_setting('binance_pay_id')
+        try:
+            m.update_db_setting('binance_status', 'متوقف', m.ADMIN_ID)
+            m.update_db_setting('binance_address', '', m.ADMIN_ID)
+            m.update_db_setting('binance_pay_id', '', m.ADMIN_ID)
+            with patch.object(m.bot, 'answer_callback_query'):
+                m.handle_all_callbacks(self.fake_call('toggle_binance'))
+            self.assertNotEqual(m.get_db_setting('binance_status'), 'active')
+        finally:
+            m.update_db_setting('binance_status', previous_status or 'متوقف', m.ADMIN_ID)
+            m.update_db_setting('binance_address', previous_address or '', m.ADMIN_ID)
+            m.update_db_setting('binance_pay_id', previous_pay_id or '', m.ADMIN_ID)
+
     def test_ai_pr_checks_require_every_check_to_pass(self):
         m = self.m
         self.assertEqual(m._ai_pr_checks_ready([])[0], False)
