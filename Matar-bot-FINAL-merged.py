@@ -414,7 +414,7 @@ def setup_database():
     DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
     if os.environ.get('REQUIRE_PERSISTENT_DATABASE', '0').strip() == '1' and not DATABASE_URL:
         raise RuntimeError('DATABASE_URL is required here to prevent losing bot data on temporary storage.')
-    DB_PATH = os.path.abspath(os.environ.get('DATABASE_PATH', '/tmp/matar_ultimate.db'))
+    DB_PATH = os.path.abspath(os.environ.get('DATABASE_PATH', 'matar_ultimate.db'))
     os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
     BACKUP_DIR = os.path.abspath(os.environ.get('BACKUP_DIR', os.path.join(os.path.dirname(DB_PATH) or '.', 'backups')))
     os.makedirs(BACKUP_DIR, exist_ok=True)
