@@ -59,6 +59,12 @@ def translate_sql(sql: str) -> tuple[str | None, str | None]:
 
     query = original
     query = re.sub(r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b", "BIGSERIAL PRIMARY KEY", query, flags=re.I)
+    # SQLite INTEGER is signed 64-bit; PostgreSQL INTEGER is only 32-bit.
+    # Telegram user/chat IDs exceed that range, and SQLite REAL is double
+    # precision. Preserve both behaviors when translating table definitions.
+    if re.match(r"^(CREATE\s+TABLE|ALTER\s+TABLE)\b", query, re.I):
+        query = re.sub(r"\bINTEGER\b", "BIGINT", query, flags=re.I)
+        query = re.sub(r"\bREAL\b", "DOUBLE PRECISION", query, flags=re.I)
     query = re.sub(r"\bdatetime\s*\(\s*'now'\s*\)", "TO_CHAR(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')", query, flags=re.I)
     query = re.sub(r"\bDATE\s*\(\s*'now'\s*\)", "CURRENT_DATE", query, flags=re.I)
     def _date_modifier(match):
