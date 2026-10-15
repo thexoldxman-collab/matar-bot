@@ -434,27 +434,41 @@ class RegressionTests(unittest.TestCase):
     def test_ai_setting_confirmation_is_owner_only(self):
         m = self.m
         m.ai_pending_actions[m.ADMIN_ID] = {
-            'key': 'welcome_message', 'value': 'new welcome', 'old_value': 'old welcome'
+            'token': 'token1111', 'key': 'welcome_message', 'value': 'new welcome', 'old_value': 'old welcome'
         }
         try:
             with patch.object(m, 'update_db_setting') as update, \
                  patch.object(m.bot, 'send_message'):
-                m.confirm_ai_setting_change(123456, 123456)
+                m.confirm_ai_setting_change(123456, 123456, 'token1111')
             update.assert_not_called()
             self.assertIn(m.ADMIN_ID, m.ai_pending_actions)
+        finally:
+            m.ai_pending_actions.pop(m.ADMIN_ID, None)
+
+    def test_ai_setting_confirmation_rejects_stale_button_token(self):
+        m = self.m
+        m.ai_pending_actions[m.ADMIN_ID] = {
+            'token': 'newtoken', 'key': 'welcome_message', 'value': 'new', 'old_value': 'old'
+        }
+        try:
+            with patch.object(m, 'update_db_setting') as update, \
+                 patch.object(m.bot, 'send_message'):
+                m.confirm_ai_setting_change(m.ADMIN_ID, m.ADMIN_ID, 'oldtoken')
+            update.assert_not_called()
+            self.assertEqual(m.ai_pending_actions[m.ADMIN_ID]['token'], 'newtoken')
         finally:
             m.ai_pending_actions.pop(m.ADMIN_ID, None)
 
     def test_ai_setting_confirmation_refuses_to_overwrite_a_newer_value(self):
         m = self.m
         m.ai_pending_actions[m.ADMIN_ID] = {
-            'key': 'welcome_message', 'value': 'proposed', 'old_value': 'original'
+            'token': 'token2222', 'key': 'welcome_message', 'value': 'proposed', 'old_value': 'original'
         }
         try:
             with patch.object(m, 'get_db_setting', return_value='changed elsewhere'), \
                  patch.object(m, 'update_db_setting') as update, \
                  patch.object(m.bot, 'send_message'):
-                m.confirm_ai_setting_change(m.ADMIN_ID, m.ADMIN_ID)
+                m.confirm_ai_setting_change(m.ADMIN_ID, m.ADMIN_ID, 'token2222')
             update.assert_not_called()
             self.assertNotIn(m.ADMIN_ID, m.ai_pending_actions)
         finally:
