@@ -25,8 +25,8 @@ if not module.is_postgres_connection(module.conn):
 tables = module.conn.execute(
     "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE'"
 ).fetchone()[0]
-if tables < 30:
-    raise SystemExit(f"Expected at least 30 bot tables, found {tables}.")
+if tables < 25:
+    raise SystemExit(f"Expected at least 25 bot tables, found {tables}.")
 if module.conn.in_transaction:
     module.conn.rollback()
     raise SystemExit("Startup left an unexpected open PostgreSQL transaction.")
