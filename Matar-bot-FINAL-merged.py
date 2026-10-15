@@ -6913,7 +6913,57 @@ def handle_all_callbacks(call):
             bot.send_message(call.message.chat.id, "❌ **فشل تصدير قاعدة البيانات. راجع السجلات.**")
         return
 
-    if data in ('import_db', 'restore_backup', 'list_backups', 'auto_backup_settings'):
+    if data == 'restore_backup':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ استعادة النسخ للمالك فقط.", show_alert=True)
+            return
+        if not is_postgres_connection(conn):
+            safe_answer_callback(call.id, "❌ استعادة JSON متاحة عند استخدام Neon/PostgreSQL فقط.", show_alert=True)
+            return
+        RESTORE_UPLOAD_WAITING.add(uid)
+        safe_answer_callback(call.id, "أرسل ملف JSON للنسخة الاحتياطية.", show_alert=False)
+        bot.send_message(
+            call.message.chat.id,
+            "📤 أرسل الآن ملف JSON الذي نزلته من نسخة ماتر الاحتياطية. سأفحصه أولاً ولن أستبدل البيانات إلا بعد تأكيد منفصل.",
+        )
+        return
+
+    if data == 'confirm_neon_restore':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ استعادة النسخ للمالك فقط.", show_alert=True)
+            return
+        pending = PENDING_RESTORE_UPLOADS.get(uid)
+        if not pending:
+            safe_answer_callback(call.id, "⚠️ لا توجد نسخة بانتظار التأكيد.", show_alert=True)
+            return
+        try:
+            table_count, row_count = restore_postgres_snapshot(pending['path'], uid)
+            cancel_pending_restore(uid)
+            RESTORE_UPLOAD_WAITING.discard(uid)
+            user_states.clear()
+            user_mode.clear()
+            user_section.clear()
+            withdraw_sessions.clear()
+            safe_answer_callback(call.id, "✅ تمت الاستعادة بنجاح.", show_alert=True)
+            bot.send_message(
+                call.message.chat.id,
+                f"✅ تمت استعادة النسخة بنجاح. الجداول: {table_count}، الصفوف المستعادة: {row_count}.",
+            )
+        except Exception:
+            logger.exception("Neon snapshot restore failed")
+            safe_answer_callback(call.id, "❌ فشلت الاستعادة وتراجعت المعاملة؛ البيانات الحالية لم تتغير.", show_alert=True)
+        return
+
+    if data == 'cancel_neon_restore':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ هذا الإجراء للمالك فقط.", show_alert=True)
+            return
+        cancel_pending_restore(uid)
+        RESTORE_UPLOAD_WAITING.discard(uid)
+        safe_answer_callback(call.id, "تم إلغاء الاستعادة.", show_alert=False)
+        return
+
+    if data in ('import_db', 'list_backups', 'auto_backup_settings'):
         safe_answer_callback(call.id, "هذه الميزة قيد التطوير", show_alert=True)
         return
 
@@ -8288,8 +8338,13 @@ def handle_ai_command(message):
 def main_router(message):
     """الراوتر الرئيسي لجميع الرسائل النصية"""
     uid = message.from_user.id
+    if getattr(message, 'content_type', 'text') == 'document':
+        handle_backup_document(message)
+        return
     text = message.text
-    
+    if not isinstance(text, str):
+        return
+
     # التحقق من السبام
     if not check_spam(uid):
         return
