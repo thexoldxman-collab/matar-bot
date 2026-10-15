@@ -7110,41 +7110,6 @@ AI_ALLOWED_CODE_PATHS = {
 }
 
 
-def apply_ai_file_changes(sources, file_proposals):
-    """Validate a bounded multi-file AI proposal before any GitHub write."""
-    import py_compile as _py_compile
-    import tempfile as _tempfile
-
-    if not isinstance(sources, dict) or not isinstance(file_proposals, list) or not 1 <= len(file_proposals) <= 5:
-        raise ValueError('invalid file proposal')
-    updated = {}
-    total_changes = 0
-    for item in file_proposals:
-        if not isinstance(item, dict):
-            raise ValueError('invalid file proposal item')
-        path = item.get('path')
-        if path not in AI_ALLOWED_CODE_PATHS or path not in sources or path in updated:
-            raise ValueError('file path is not allowed, missing, or duplicated')
-        changes = item.get('changes')
-        if not isinstance(changes, list) or not changes:
-            raise ValueError('each file needs at least one literal change')
-        total_changes += len(changes)
-        if total_changes > 8:
-            raise ValueError('too many replacements in one proposal')
-        candidate = apply_ai_text_changes(sources[path], changes)
-        if path == 'requirements.txt':
-            candidate = validate_ai_requirements(candidate)
-        elif path == 'render.yaml':
-            candidate = validate_ai_render_yaml(candidate)
-        elif path.endswith('.py'):
-            with _tempfile.NamedTemporaryFile(mode='w', suffix='.py', encoding='utf-8') as temp:
-                temp.write(candidate)
-                temp.flush()
-                _py_compile.compile(temp.name, doraise=True)
-        updated[path] = candidate
-    return updated
-
-
 def validate_ai_requirements(content):
     """Reject pip options, VCS URLs, and direct URLs from AI-generated dependency edits."""
     if not isinstance(content, str) or len(content) > 12000:
