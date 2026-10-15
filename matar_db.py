@@ -480,7 +480,7 @@ def restore_postgres_snapshot(connection: PostgresConnection, snapshot: Any) -> 
 
         sequence_columns = connection.execute(
             "SELECT table_name, column_name FROM information_schema.columns "
-            "WHERE table_schema=current_schema() AND column_default LIKE 'nextval(%'"
+            "WHERE table_schema=current_schema() AND POSITION('nextval(' IN column_default)=1"
         ).fetchall()
         for table_name, column_name in sequence_columns:
             table_sql, column_sql = quote(table_name), quote(column_name)
