@@ -370,6 +370,20 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(status, 'claimed_by_other')
         self.assertEqual(balance, 50.0)
 
+    def test_ai_pr_checks_require_every_check_to_pass(self):
+        m = self.m
+        self.assertEqual(m._ai_pr_checks_ready([])[0], False)
+        self.assertEqual(m._ai_pr_checks_ready([
+            {'status': 'in_progress', 'conclusion': None}
+        ])[0], False)
+        self.assertEqual(m._ai_pr_checks_ready([
+            {'status': 'completed', 'conclusion': 'failure'}
+        ])[0], False)
+        self.assertEqual(m._ai_pr_checks_ready([
+            {'status': 'completed', 'conclusion': 'success'},
+            {'status': 'completed', 'conclusion': 'success'},
+        ])[0], True)
+
     def test_ai_text_change_applies_only_unique_literal_replacement(self):
         source = "alpha\\nold block\\nomega"
         updated = self.m.apply_ai_text_changes(source, [
