@@ -6907,8 +6907,11 @@ def process_custom_expiry(message, value, count, gift_type):
             parse_mode="Markdown"
         )
         
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
+    except ValueError as exc:
+        bot.send_message(message.chat.id, f"❌ {exc}", parse_mode="Markdown")
+    except Exception:
+        logger.exception("Custom-expiry gift creation failed")
+        bot.send_message(message.chat.id, "❌ تعذر إنشاء كود الهدية؛ لم يتم اعتماد العملية.")
 
 # =============================================================================
 # 20. المساعد الذكي المجاني الاختياري (Gemini)
