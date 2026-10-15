@@ -183,29 +183,56 @@ class RegressionTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row, ('New', 'new_user', 'new_ab12cd', 'new-password', 0.0, 0.0, 0))
 
-    def test_referral_payout_updates_balance_and_ledger_atomically(self):
+    def test_referral_payout_updates_balance_cashier_and_ledger_atomically(self):
         m = self.m
         uid = 810005
+        old_cashier = m.cursor.execute(
+            "SELECT balance,last_updated FROM cashier_balance WHERE admin_id=?", (m.ADMIN_ID,)
+        ).fetchone()
+        m.cursor.execute(
+            "UPDATE cashier_balance SET balance=1000,last_updated='2026-10-15 00:00:00' WHERE admin_id=?",
+            (m.ADMIN_ID,),
+        )
         m.cursor.execute(
             "INSERT OR REPLACE INTO users(user_id, balance, deleted) VALUES (?,?,0)",
             (uid, 100.0),
         )
         m.conn.commit()
-        new_balance, receipt = m.credit_referral_payout_atomic(uid, 25, m.ADMIN_ID)
-        row = m.cursor.execute(
-            "SELECT balance FROM users WHERE user_id=?", (uid,)
-        ).fetchone()
-        ledger = m.cursor.execute(
-            "SELECT type, amount, status, receipt_number FROM transactions WHERE receipt_number=?",
-            (receipt,),
-        ).fetchone()
-        self.assertEqual(new_balance, 125.0)
-        self.assertEqual(row[0], 125.0)
-        self.assertEqual(ledger, ('referral_pay', 25.0, 'success', receipt))
+        try:
+            new_balance, receipt = m.credit_referral_payout_atomic(uid, 25, m.ADMIN_ID)
+            row = m.cursor.execute(
+                "SELECT balance FROM users WHERE user_id=?", (uid,)
+            ).fetchone()
+            cashier_balance = m.cursor.execute(
+                "SELECT balance FROM cashier_balance WHERE admin_id=?", (m.ADMIN_ID,)
+            ).fetchone()[0]
+            ledger = m.cursor.execute(
+                "SELECT type, amount, status, receipt_number, method FROM transactions WHERE receipt_number=?",
+                (receipt,),
+            ).fetchone()
+            self.assertEqual(new_balance, 125.0)
+            self.assertEqual(row[0], 125.0)
+            self.assertEqual(cashier_balance, 975.0)
+            self.assertEqual(ledger, ('referral_pay', 25.0, 'success', receipt, 'cashier'))
+        finally:
+            if old_cashier:
+                m.cursor.execute(
+                    "UPDATE cashier_balance SET balance=?,last_updated=? WHERE admin_id=?",
+                    (old_cashier[0], old_cashier[1], m.ADMIN_ID),
+                )
+            m.cursor.execute("DELETE FROM users WHERE user_id=?", (uid,))
+            m.conn.commit()
 
-    def test_referral_payout_rolls_back_balance_if_ledger_insert_fails(self):
+    def test_referral_payout_rolls_back_user_and_cashier_if_ledger_insert_fails(self):
         m = self.m
         uid = 810006
+        old_cashier = m.cursor.execute(
+            "SELECT balance,last_updated FROM cashier_balance WHERE admin_id=?", (m.ADMIN_ID,)
+        ).fetchone()
+        m.cursor.execute(
+            "UPDATE cashier_balance SET balance=1000,last_updated='2026-10-15 00:00:00' WHERE admin_id=?",
+            (m.ADMIN_ID,),
+        )
         m.cursor.execute(
             "INSERT OR REPLACE INTO users(user_id, balance, deleted) VALUES (?,?,0)",
             (uid, 100.0),
@@ -224,9 +251,57 @@ class RegressionTests(unittest.TestCase):
             balance = m.cursor.execute(
                 "SELECT balance FROM users WHERE user_id=?", (uid,)
             ).fetchone()[0]
+            cashier_balance = m.cursor.execute(
+                "SELECT balance FROM cashier_balance WHERE admin_id=?", (m.ADMIN_ID,)
+            ).fetchone()[0]
             self.assertEqual(balance, 100.0)
+            self.assertEqual(cashier_balance, 1000.0)
         finally:
             m.cursor.execute("DROP TRIGGER IF EXISTS test_fail_referral_ledger")
+            if old_cashier:
+                m.cursor.execute(
+                    "UPDATE cashier_balance SET balance=?,last_updated=? WHERE admin_id=?",
+                    (old_cashier[0], old_cashier[1], m.ADMIN_ID),
+                )
+            m.cursor.execute("DELETE FROM users WHERE user_id=?", (uid,))
+            m.conn.commit()
+
+    def test_referral_payout_refuses_when_cashier_funds_are_insufficient(self):
+        m = self.m
+        uid = 810024
+        old_cashier = m.cursor.execute(
+            "SELECT balance,last_updated FROM cashier_balance WHERE admin_id=?", (m.ADMIN_ID,)
+        ).fetchone()
+        m.cursor.execute(
+            "UPDATE cashier_balance SET balance=5,last_updated='2026-10-15 00:00:00' WHERE admin_id=?",
+            (m.ADMIN_ID,),
+        )
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id,balance,deleted) VALUES (?,?,0)",
+            (uid, 100.0),
+        )
+        m.conn.commit()
+        try:
+            with self.assertRaises(ValueError):
+                m.credit_referral_payout_atomic(uid, 25, m.ADMIN_ID)
+            self.assertEqual(
+                m.cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,)).fetchone()[0],
+                100.0,
+            )
+            self.assertEqual(
+                m.cursor.execute("SELECT balance FROM cashier_balance WHERE admin_id=?", (m.ADMIN_ID,)).fetchone()[0],
+                5.0,
+            )
+            self.assertFalse(m.cursor.execute(
+                "SELECT 1 FROM transactions WHERE user_id=? AND type='referral_pay'", (uid,)
+            ).fetchone())
+        finally:
+            if old_cashier:
+                m.cursor.execute(
+                    "UPDATE cashier_balance SET balance=?,last_updated=? WHERE admin_id=?",
+                    (old_cashier[0], old_cashier[1], m.ADMIN_ID),
+                )
+            m.cursor.execute("DELETE FROM users WHERE user_id=?", (uid,))
             m.conn.commit()
 
     def test_referral_payout_rejects_nonfinite_and_nonpositive_amounts(self):
