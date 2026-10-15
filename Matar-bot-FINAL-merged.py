@@ -1662,7 +1662,30 @@ def close_gift_and_refund_atomic(code, actor_id, require_expired=False):
                 conn.rollback()
                 return 'invalid_amount', 0.0
 
-            if remaining > 0 and not auto_returned:
+            if not require_expired and auto_returned:
+                # Already refunded/closed: cancellation may still disable any remaining uses,
+                # but must never issue a second refund.
+                conn.execute("UPDATE gifts SET limit_count=used_count WHERE code=?", (code,))
+                conn.commit()
+                return 'ok', 0.0
+
+            # Claim the one-time refund before touching the cashier. In PostgreSQL,
+            # this conditional update serializes concurrent cancellation/refund attempts.
+            if require_expired:
+                cur = conn.execute(
+                    "UPDATE gifts SET auto_returned=1, returned_at=? WHERE code=? AND auto_returned=0",
+                    (now, code),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE gifts SET limit_count=used_count, auto_returned=1, returned_at=? WHERE code=? AND auto_returned=0",
+                    (now, code),
+                )
+            if cur.rowcount != 1:
+                conn.rollback()
+                return 'already_returned', 0.0
+
+            if remaining > 0:
                 if created_by is None:
                     conn.rollback()
                     return 'cashier_missing', 0.0
@@ -1683,19 +1706,6 @@ def close_gift_and_refund_atomic(code, actor_id, require_expired=False):
                      now, actor_id, 'إرجاع الرصيد المتبقي من كود هدية', receipt, code),
                 )
 
-            if require_expired:
-                cur = conn.execute(
-                    "UPDATE gifts SET auto_returned=1, returned_at=? WHERE code=? AND auto_returned=0",
-                    (now, code),
-                )
-            else:
-                cur = conn.execute(
-                    "UPDATE gifts SET limit_count=used_count, auto_returned=1, returned_at=COALESCE(returned_at,?) WHERE code=?",
-                    (now, code),
-                )
-            if cur.rowcount != 1:
-                conn.rollback()
-                return 'already_returned', 0.0
             conn.commit()
             return 'ok', float(remaining)
         except Exception:
