@@ -657,6 +657,68 @@ class RegressionTests(unittest.TestCase):
             m.cursor.execute("DELETE FROM gifts WHERE code=?", (code,))
             m.conn.commit()
 
+    def test_gift_redemption_writes_ledger_atomically(self):
+        m = self.m
+        uid, code = 810022, 'TESTGIFTLEDGER'
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id,balance,deleted) VALUES (?,?,0)",
+            (uid, 20.0),
+        )
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO gifts(code,value,limit_count,used_count,created_by,created_at) VALUES (?,?,?,?,?,?)",
+            (code, 15.0, 1, 0, m.ADMIN_ID, '2026-10-15 00:00:00'),
+        )
+        m.conn.commit()
+        try:
+            status, amount = m.redeem_gift_atomic(uid, code)
+            self.assertEqual((status, amount), ('ok', 15.0))
+            self.assertEqual(m.cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,)).fetchone()[0], 35.0)
+            self.assertEqual(m.cursor.execute("SELECT used_count FROM gifts WHERE code=?", (code,)).fetchone()[0], 1)
+            ledger = m.cursor.execute(
+                "SELECT amount,type,status FROM transactions WHERE user_id=? AND type='gift_redeem' ORDER BY id DESC LIMIT 1",
+                (uid,),
+            ).fetchone()
+            self.assertEqual(ledger, (15.0, 'gift_redeem', 'success'))
+        finally:
+            m.cursor.execute("DELETE FROM transactions WHERE user_id=? AND type='gift_redeem'", (uid,))
+            m.cursor.execute("DELETE FROM gift_usage WHERE user_id=? AND code=?", (uid, code))
+            m.cursor.execute("DELETE FROM gifts WHERE code=?", (code,))
+            m.cursor.execute("DELETE FROM users WHERE user_id=?", (uid,))
+            m.conn.commit()
+
+    def test_gift_redemption_rolls_back_if_ledger_insert_fails(self):
+        m = self.m
+        uid, code = 810023, 'TESTGIFTLEDGERFAIL'
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id,balance,deleted) VALUES (?,?,0)",
+            (uid, 20.0),
+        )
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO gifts(code,value,limit_count,used_count,created_by,created_at) VALUES (?,?,?,?,?,?)",
+            (code, 15.0, 1, 0, m.ADMIN_ID, '2026-10-15 00:00:00'),
+        )
+        m.conn.commit()
+        m.conn.execute("DROP TRIGGER IF EXISTS fail_gift_redeem_ledger_test")
+        m.conn.execute(
+            "CREATE TRIGGER fail_gift_redeem_ledger_test BEFORE INSERT ON transactions "
+            "WHEN NEW.type='gift_redeem' BEGIN SELECT RAISE(ABORT, 'forced gift redeem ledger failure'); END"
+        )
+        m.conn.commit()
+        try:
+            with self.assertRaises(m.sqlite3.IntegrityError):
+                m.redeem_gift_atomic(uid, code)
+            self.assertEqual(m.cursor.execute("SELECT balance FROM users WHERE user_id=?", (uid,)).fetchone()[0], 20.0)
+            self.assertEqual(m.cursor.execute("SELECT used_count FROM gifts WHERE code=?", (code,)).fetchone()[0], 0)
+            self.assertIsNone(m.cursor.execute("SELECT 1 FROM gift_usage WHERE user_id=? AND code=?", (uid, code)).fetchone())
+        finally:
+            m.conn.rollback()
+            m.conn.execute("DROP TRIGGER IF EXISTS fail_gift_redeem_ledger_test")
+            m.cursor.execute("DELETE FROM transactions WHERE user_id=? AND type='gift_redeem'", (uid,))
+            m.cursor.execute("DELETE FROM gift_usage WHERE user_id=? AND code=?", (uid, code))
+            m.cursor.execute("DELETE FROM gifts WHERE code=?", (code,))
+            m.cursor.execute("DELETE FROM users WHERE user_id=?", (uid,))
+            m.conn.commit()
+
     def test_gift_transfer_rolls_back_if_transaction_ledger_insert_fails(self):
         m = self.m
         sender, target = 810016, 810017
