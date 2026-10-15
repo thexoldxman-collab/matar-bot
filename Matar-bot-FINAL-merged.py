@@ -7994,6 +7994,30 @@ def validate_ai_button_change(button_id, field, value):
     return {'kind': 'button', 'button_id': button_id, 'field': field, 'value': normalized}
 
 
+def validate_ai_submenu_creation(button_text, parent_button):
+    """التحقق من إنشاء قائمة فرعية جديدة تحت القائمة الرئيسية أو زر أب موجود."""
+    if not isinstance(button_text, str):
+        raise ValueError('اسم القائمة يجب أن يكون نصاً.')
+    button_text = button_text.strip()
+    parent_button = str(parent_button or 'main').strip()
+    if not button_text or len(button_text) > 120:
+        raise ValueError('اسم القائمة فارغ أو أطول من الحد المسموح.')
+    if parent_button != 'main':
+        parent = conn.execute(
+            "SELECT 1 FROM dynamic_buttons WHERE button_text=? AND is_active=1 LIMIT 1",
+            (parent_button,),
+        ).fetchone()
+        if not parent:
+            raise ValueError('القائمة الأب غير موجودة أو غير نشطة.')
+    duplicate = conn.execute(
+        "SELECT 1 FROM dynamic_buttons WHERE button_text=? AND is_active=1 LIMIT 1",
+        (button_text,),
+    ).fetchone()
+    if duplicate:
+        raise ValueError('يوجد زر نشط بهذا الاسم بالفعل.')
+    return {'kind': 'create_submenu', 'button_text': button_text, 'parent_button': parent_button}
+
+
 def validate_ai_button_creation(button_text, parent_button, message_text):
     """التحقق من إنشاء زر رسالة بسيط دون السماح بإجراء برمجي حر."""
     if not isinstance(button_text, str) or not isinstance(message_text, str):
