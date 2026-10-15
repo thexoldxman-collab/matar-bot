@@ -31,5 +31,64 @@ if module.conn.in_transaction:
     module.conn.rollback()
     raise SystemExit("Startup left an unexpected open PostgreSQL transaction.")
 
-print(f"PostgreSQL startup passed: {tables} tables created, compatibility checks passed.")
+# Exercise the financial transaction paths against a real PostgreSQL engine.
+import json
+import secrets
+
+test_user_id = -int(secrets.randbelow(8_000_000_000_000_000) + 1)
+backup_path = None
+try:
+    module.conn.execute(
+        "INSERT INTO users(user_id,balance,site_balance,deleted,created_at) VALUES (?,?,?,?,?)",
+        (test_user_id, 0, 0, 0, "2000-01-01 00:00:00"),
+    )
+    module.conn.commit()
+
+    module.admin_adjust_balance_atomic(test_user_id, 100, "bot_charge", module.ADMIN_ID)
+    bot_balance, site_balance = module.transfer_internal_balance(test_user_id, 25, "to_site")
+    if abs(bot_balance - 75) > 0.001 or abs(site_balance - 25) > 0.001:
+        raise SystemExit(f"PostgreSQL balance transfer mismatch: {bot_balance}, {site_balance}")
+
+    pending, status = module.create_pending_withdraw_atomic(
+        test_user_id, "integration-test", "test-account", 10, 0, 10, "USD"
+    )
+    if status != "ok" or not pending:
+        raise SystemExit(f"PostgreSQL withdrawal reservation failed: {status}")
+    _, status = module.cancel_pending_withdraw_atomic(pending[0], module.ADMIN_ID, "CI integration test")
+    if status != "ok":
+        raise SystemExit(f"PostgreSQL withdrawal cancellation failed: {status}")
+
+    balance, _ = module.credit_referral_payout_atomic(test_user_id, 5, module.ADMIN_ID)
+    if abs(balance - 80) > 0.001:
+        raise SystemExit(f"PostgreSQL referral payout mismatch: {balance}")
+
+    backup_path = module.create_consistent_backup(module.ADMIN_ID)
+    with open(backup_path, "r", encoding="utf-8") as backup_file:
+        snapshot = json.load(backup_file)
+    if snapshot.get("format") != "matar-postgres-snapshot-v1" or "users" not in snapshot.get("tables", {}):
+        raise SystemExit("PostgreSQL JSON snapshot validation failed.")
+
+finally:
+    module.conn.rollback()
+    for table in (
+        "transactions", "pending_withdraws", "wheel_spins", "wheel_bonuses",
+        "gift_usage", "ai_conversations", "referrals_log", "referral_earnings",
+    ):
+        module.conn.execute(f"DELETE FROM {table} WHERE user_id=?", (test_user_id,))
+    module.conn.execute("DELETE FROM users WHERE user_id=?", (test_user_id,))
+    if backup_path:
+        import os
+        backup_name = Path(backup_path).name
+        module.conn.execute("DELETE FROM backups WHERE backup_name=?", (backup_name,))
+        try:
+            os.remove(backup_path)
+        except OSError:
+            pass
+    module.conn.commit()
+
+if module.conn.in_transaction:
+    module.conn.rollback()
+    raise SystemExit("PostgreSQL test left an unexpected open transaction.")
+
+print(f"PostgreSQL startup and financial smoke tests passed: {tables} tables, atomic operations and JSON backup verified.")
 module.conn.close()
