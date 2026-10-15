@@ -69,7 +69,7 @@ def translate_sql(sql: str) -> tuple[str | None, str | None]:
         sign = '+' if amount >= 0 else '-'
         return f"TO_CHAR(CURRENT_DATE {sign} INTERVAL '{abs(amount)} {unit}', 'YYYY-MM-DD')"
     query = re.sub(
-        r"\\bDATE\\s*\\(\\s*'now'\\s*,\\s*'([+-]?)(\\d+)\\s+(days?|weeks?|months?|years?)'\\s*\\)",
+        r"\bDATE\s*\(\s*'now'\s*,\s*'([+-]?)(\d+)\s+(days?|weeks?|months?|years?)'\s*\)",
         _date_modifier,
         query,
         flags=re.I,
