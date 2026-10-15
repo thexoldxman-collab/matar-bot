@@ -432,6 +432,24 @@ class RegressionTests(unittest.TestCase):
             m.update_db_setting('binance_address', previous_address or '', m.ADMIN_ID)
             m.update_db_setting('binance_pay_id', previous_pay_id or '', m.ADMIN_ID)
 
+    def test_backup_menu_no_longer_reports_unimplemented_actions_as_success(self):
+        m = self.m
+        with patch.object(m.bot, 'answer_callback_query'), patch.object(m.bot, 'send_message') as send:
+            m.handle_all_callbacks(self.fake_call('auto_backup_settings'))
+        self.assertTrue(any('غير مفعّل' in str(call.args) or 'غير مفعّل' in str(call.kwargs) for call in send.call_args_list))
+
+    def test_backup_listing_handler_returns_a_user_message(self):
+        m = self.m
+        with patch.object(m.bot, 'answer_callback_query'), patch.object(m.bot, 'send_message') as send:
+            m.handle_all_callbacks(self.fake_call('list_backups'))
+        send.assert_called()
+
+    def test_api_test_button_does_not_claim_unconfigured_payment_api_is_connected(self):
+        m = self.m
+        with patch.object(m.bot, 'answer_callback_query') as answer:
+            m.handle_all_callbacks(self.fake_call('test_api_connection'))
+        self.assertTrue(any('غير متاح' in str(call.args) for call in answer.call_args_list))
+
     def test_ai_pr_checks_require_every_check_to_pass(self):
         m = self.m
         self.assertEqual(m._ai_pr_checks_ready([])[0], False)
