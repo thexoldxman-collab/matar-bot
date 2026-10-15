@@ -10,6 +10,7 @@ from flask import Flask
 from threading import Thread, RLock
 import os
 import sqlite3
+from matar_db import connect_database, is_postgres_connection, DB_INTEGRITY_ERRORS
 from datetime import datetime, timedelta
 import random
 import secrets
@@ -409,17 +410,18 @@ admin_logger_system = AdminLogger()
 
 def setup_database():
     """إنشاء الجداول دون حذف أو إعادة ضبط بيانات موجودة."""
-    # مسار واحد تستخدمه القاعدة والإحصائيات والنسخ الاحتياطي معاً.
-    global DB_PATH
-    DB_PATH = os.path.abspath(os.environ.get('DATABASE_PATH', 'matar_ultimate.db'))
+    global DB_PATH, DATABASE_URL, BACKUP_DIR
+    DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
+    if os.environ.get('REQUIRE_PERSISTENT_DATABASE', '0').strip() == '1' and not DATABASE_URL:
+        raise RuntimeError('DATABASE_URL is required here to prevent losing bot data on temporary storage.')
+    DB_PATH = os.path.abspath(os.environ.get('DATABASE_PATH', '/tmp/matar_ultimate.db'))
     os.makedirs(os.path.dirname(DB_PATH) or '.', exist_ok=True)
-    global BACKUP_DIR
     BACKUP_DIR = os.path.abspath(os.environ.get('BACKUP_DIR', os.path.join(os.path.dirname(DB_PATH) or '.', 'backups')))
     os.makedirs(BACKUP_DIR, exist_ok=True)
 
-    # حماية إضافية: خذ لقطة SQLite متسقة من قاعدة موجودة قبل أي CREATE/ALTER.
-    # هذا لا يستبدل القرص الدائم، لكنه يمنع ضياع آخر نسخة سليمة أثناء النشر.
-    if os.path.isfile(DB_PATH) and os.path.getsize(DB_PATH) > 0:
+    # خذ نسخة حماية قبل أي ترحيل فقط عند استخدام SQLite المحلي.
+    # قاعدة Neon لا تُنسخ عبر SQLite backup API.
+    if not DATABASE_URL and os.path.isfile(DB_PATH) and os.path.getsize(DB_PATH) > 0:
         startup_backup = os.path.join(
             BACKUP_DIR,
             f"pre_startup_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.db"
@@ -441,14 +443,15 @@ def setup_database():
             source.close()
             target.close()
 
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
+    conn = connect_database(DATABASE_URL, DB_PATH)
     cursor = conn.cursor()
-    
-    # تفعيل WAL mode لأقصى درجات الأمان
-    cursor.execute("PRAGMA journal_mode=WAL")
-    cursor.execute("PRAGMA synchronous=NORMAL")
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.execute("PRAGMA wal_autocheckpoint=100")
+
+    # إعدادات WAL خاصة بـ SQLite فقط؛ Neon/PostgreSQL يديرها بنفسه.
+    if not DATABASE_URL:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA wal_autocheckpoint=100")
     
     # ===== جداول المستخدمين الأساسية =====
     cursor.execute("""CREATE TABLE IF NOT EXISTS users(
@@ -974,18 +977,39 @@ def setup_database():
 conn, cursor = setup_database()
 
 def create_consistent_backup(created_by=None):
-    """إنشاء نسخة SQLite متسقة عبر backup API داخل مجلد دائم."""
-    import sqlite3 as _sqlite3
+    """إنشاء نسخة احتياطية متسقة؛ SQLite ملف DB وNeon لقطة JSON قابلة للتنزيل."""
     import os as _os
-    filename = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.db"
+    filename = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}" + (".json" if is_postgres_connection(conn) else ".db")
     destination = _os.path.join(BACKUP_DIR, filename)
     with db_lock:
-        target = _sqlite3.connect(destination)
-        try:
-            conn.backup(target)
-            target.commit()
-        finally:
-            target.close()
+        if is_postgres_connection(conn):
+            import json as _json
+            snapshot = {'format': 'matar-postgres-snapshot-v1', 'created_at': datetime.now().isoformat(), 'tables': {}}
+            conn.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            try:
+                table_names = [row[0] for row in conn.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE' ORDER BY table_name"
+                ).fetchall()]
+                for table_name in table_names:
+                    safe_name = '"' + table_name.replace('"', '""') + '"'
+                    table_cursor = conn.execute(f"SELECT * FROM {safe_name}")
+                    columns = [column[0] for column in (table_cursor.description or ())]
+                    rows = table_cursor.fetchall()
+                    snapshot['tables'][table_name] = {'columns': columns, 'rows': rows}
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            with open(destination, 'w', encoding='utf-8') as backup_file:
+                _json.dump(snapshot, backup_file, ensure_ascii=False, default=str, separators=(',', ':'))
+        else:
+            import sqlite3 as _sqlite3
+            target = _sqlite3.connect(destination)
+            try:
+                conn.backup(target)
+                target.commit()
+            finally:
+                target.close()
     size = _os.path.getsize(destination)
     cursor.execute("INSERT INTO backups(backup_name, backup_type, file_path, created_at, created_by, size) VALUES (?,?,?,?,?,?)", (filename, 'manual', destination, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), created_by, size))
     conn.commit()
@@ -1545,7 +1569,7 @@ def redeem_gift_atomic(user_id, code):
                 conn.rollback(); return 'exhausted', 0
             try:
                 conn.execute("INSERT INTO gift_usage(user_id, code, used_at) VALUES (?,?,?)", (user_id, code, now.strftime('%Y-%m-%d %H:%M:%S')))
-            except sqlite3.IntegrityError:
+            except DB_INTEGRITY_ERRORS:
                 conn.rollback(); return 'already_used', 0
             conn.commit(); return 'ok', float(value)
         except Exception:
@@ -6536,12 +6560,14 @@ def handle_all_callbacks(call):
 
     if data == 'export_db':
         try:
-            with open(DB_PATH, 'rb') as f:
+            export_path = create_consistent_backup(uid) if is_postgres_connection(conn) else DB_PATH
+            with open(export_path, 'rb') as f:
                 bot.send_document(call.message.chat.id, f,
-                                  caption="📤 **قاعدة البيانات الحالية**",
+                                  caption="📤 **نسخة قاعدة البيانات الحالية**",
                                   parse_mode="Markdown")
         except Exception as e:
-            bot.send_message(call.message.chat.id, f"❌ **فشل التصدير:** {e}")
+            logger.exception("Database export failed")
+            bot.send_message(call.message.chat.id, "❌ **فشل تصدير قاعدة البيانات. راجع السجلات.**")
         return
 
     if data in ('import_db', 'restore_backup', 'list_backups', 'auto_backup_settings'):
