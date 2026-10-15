@@ -4886,14 +4886,19 @@ def handle_all_callbacks(call):
         safe_answer_callback(call.id)
         create_ai_draft_from_last_message(uid, call.message.chat.id)
         return
-    if data == 'ai_setting_confirm':
+    if data.startswith('ai_setting_confirm_'):
         safe_answer_callback(call.id)
-        confirm_ai_setting_change(uid, call.message.chat.id)
+        confirm_ai_setting_change(uid, call.message.chat.id, data.rsplit('_', 1)[1])
         return
-    if data == 'ai_setting_cancel':
+    if data.startswith('ai_setting_cancel_'):
         safe_answer_callback(call.id)
-        ai_pending_actions.pop(uid, None)
-        bot.send_message(call.message.chat.id, 'تم إلغاء التعديل؛ لم يتغير أي إعداد.')
+        pending = ai_pending_actions.get(uid)
+        token = data.rsplit('_', 1)[1]
+        if pending and pending.get('token') == token:
+            ai_pending_actions.pop(uid, None)
+            bot.send_message(call.message.chat.id, 'تم إلغاء التعديل؛ لم يتغير أي إعداد.')
+        else:
+            bot.send_message(call.message.chat.id, 'هذا زر قديم أو انتهت صلاحيته؛ لم يتغير أي إعداد.')
         return
     if data.startswith('ai_pr_check_'):
         safe_answer_callback(call.id)
@@ -7341,7 +7346,9 @@ def validate_ai_setting_change(key, value):
         raise ValueError('هذا الإعداد غير مسموح بتعديله مباشرة من المساعد.')
     kind = spec['type']
     if kind == 'text':
-        normalized = str(value).strip()
+        if not isinstance(value, str):
+            raise ValueError('القيمة النصية يجب أن تكون نصاً واضحاً.')
+        normalized = value.strip()
         if not normalized or len(normalized) > spec['max_length']:
             raise ValueError('النص فارغ أو أطول من الحد المسموح.')
         return normalized
@@ -7448,14 +7455,14 @@ def classify_ai_setting_request(request_text):
         return None, 'تعذر تحليل طلب الإعداد بأمان؛ لم يتغير أي إعداد.'
 
 
-def confirm_ai_setting_change(uid, chat_id):
+def confirm_ai_setting_change(uid, chat_id, token):
     """تطبيق إعداد معروض فقط بعد موافقة المالك، مع منع الكتابة فوق تغيير أحدث."""
     if uid != ADMIN_ID:
         bot.send_message(chat_id, '❌ تأكيد تعديلات الإعدادات متاح للمالك فقط.')
         return
     pending = ai_pending_actions.get(uid)
-    if not pending:
-        bot.send_message(chat_id, '⚠️ انتهت صلاحية طلب التعديل؛ أعد طلبه من المساعد.')
+    if not pending or pending.get('token') != token:
+        bot.send_message(chat_id, '⚠️ هذا زر قديم أو انتهت صلاحية طلب التعديل؛ لم يتغير أي إعداد.')
         return
     key = pending.get('key')
     try:
@@ -7510,7 +7517,9 @@ def process_ai_message(message):
             if str(old_value or '') == str(new_value):
                 bot.send_message(message.chat.id, 'الإعداد مضبوط بالفعل على هذه القيمة؛ لم أغيّر شيئاً.')
                 return
+            token = secrets.token_hex(4)
             ai_pending_actions[uid] = {
+                'token': token,
                 'key': key,
                 'value': new_value,
                 'old_value': old_value,
@@ -7518,8 +7527,8 @@ def process_ai_message(message):
             }
             markup = types.InlineKeyboardMarkup(row_width=2)
             markup.add(
-                types.InlineKeyboardButton('✅ تأكيد التعديل', callback_data='ai_setting_confirm'),
-                types.InlineKeyboardButton('❌ إلغاء', callback_data='ai_setting_cancel'),
+                types.InlineKeyboardButton('✅ تأكيد التعديل', callback_data=f'ai_setting_confirm_{token}'),
+                types.InlineKeyboardButton('❌ إلغاء', callback_data=f'ai_setting_cancel_{token}'),
             )
             label = AI_SETTING_ALLOWLIST[key]['label']
             preview = f"🛠 معاينة تعديل إعداد\\nالإعداد: {label}\\nالقيمة الحالية: {old_value or '(فارغ)'}\\nالقيمة المقترحة: {new_value}\\n\\nلن يتغير شيء قبل ضغط «تأكيد التعديل»."
