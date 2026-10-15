@@ -181,6 +181,59 @@ class RegressionTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row, ('New', 'new_user', 'new_ab12cd', 'new-password', 0.0, 0.0, 0))
 
+    def test_referral_payout_updates_balance_and_ledger_atomically(self):
+        m = self.m
+        uid = 810005
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id, balance, deleted) VALUES (?,?,0)",
+            (uid, 100.0),
+        )
+        m.conn.commit()
+        new_balance, receipt = m.credit_referral_payout_atomic(uid, 25, m.ADMIN_ID)
+        row = m.cursor.execute(
+            "SELECT balance FROM users WHERE user_id=?", (uid,)
+        ).fetchone()
+        ledger = m.cursor.execute(
+            "SELECT type, amount, status, receipt_number FROM transactions WHERE receipt_number=?",
+            (receipt,),
+        ).fetchone()
+        self.assertEqual(new_balance, 125.0)
+        self.assertEqual(row[0], 125.0)
+        self.assertEqual(ledger, ('referral_pay', 25.0, 'success', receipt))
+
+    def test_referral_payout_rolls_back_balance_if_ledger_insert_fails(self):
+        m = self.m
+        uid = 810006
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO users(user_id, balance, deleted) VALUES (?,?,0)",
+            (uid, 100.0),
+        )
+        m.conn.commit()
+        m.cursor.execute("""
+            CREATE TRIGGER IF NOT EXISTS test_fail_referral_ledger
+            BEFORE INSERT ON transactions
+            WHEN NEW.type='referral_pay'
+            BEGIN SELECT RAISE(ABORT, 'forced test failure'); END
+        """)
+        m.conn.commit()
+        try:
+            with self.assertRaises(Exception):
+                m.credit_referral_payout_atomic(uid, 25, m.ADMIN_ID)
+            balance = m.cursor.execute(
+                "SELECT balance FROM users WHERE user_id=?", (uid,)
+            ).fetchone()[0]
+            self.assertEqual(balance, 100.0)
+        finally:
+            m.cursor.execute("DROP TRIGGER IF EXISTS test_fail_referral_ledger")
+            m.conn.commit()
+
+    def test_referral_payout_rejects_nonfinite_and_nonpositive_amounts(self):
+        m = self.m
+        for amount in (0, -1, float('nan'), float('inf')):
+            with self.subTest(amount=amount):
+                with self.assertRaises(ValueError):
+                    m.credit_referral_payout_atomic(810005, amount, m.ADMIN_ID)
+
 
 if __name__ == '__main__':
     unittest.main()
