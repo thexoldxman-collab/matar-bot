@@ -7407,11 +7407,11 @@ def apply_ai_file_changes(sources, file_proposals):
         candidate = apply_ai_text_changes(sources[path], changes)
         if path in {'tests/test_regressions.py', 'tests/test_db_backend.py', 'postgres_startup_smoke.py'}:
             old_tests = set(re.findall(r'^\s*def\s+(test_[A-Za-z0-9_]+)\s*\(', sources[path], re.M))
-            new_tests = set(re.findall(r'^\\s*def\\s+(test_[A-Za-z0-9_]+)\\s*\\(', candidate, re.M))
+            new_tests = set(re.findall(r'^\s*def\s+(test_[A-Za-z0-9_]+)\s*\(', candidate, re.M))
             if not old_tests.issubset(new_tests):
                 raise ValueError('AI changes may not remove or rename existing tests')
             old_assertions = len(re.findall(r'\bassert\b|\.assert[A-Za-z_]+', sources[path]))
-            new_assertions = len(re.findall(r'\\bassert\\b|\\.assert[A-Za-z_]+', candidate))
+            new_assertions = len(re.findall(r'\bassert\b|\.assert[A-Za-z_]+', candidate))
             if new_assertions < old_assertions:
                 raise ValueError('AI changes may not reduce existing test assertions')
         if path == 'requirements.txt':
