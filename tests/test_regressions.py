@@ -416,6 +416,30 @@ class RegressionTests(unittest.TestCase):
                 {"old_text": "five", "new_text": "six"},
             ])
 
+    def test_ai_dev_preserves_existing_test_names_and_assertions(self):
+        m = self.m
+        path = 'tests/test_regressions.py'
+        source = "def test_keep():\\n    assert True\\n"
+        with self.assertRaises(ValueError):
+            m.apply_ai_file_changes(
+                {path: source},
+                [{'path': path, 'changes': [{'old_text': 'def test_keep():\\n    assert True\\n',
+                                             'new_text': 'def test_replacement():\\n    assert True\\n'}]}],
+            )
+        with self.assertRaises(ValueError):
+            m.apply_ai_file_changes(
+                {path: source},
+                [{'path': path, 'changes': [{'old_text': 'assert True',
+                                             'new_text': 'pass'}]}],
+            )
+        accepted = m.apply_ai_file_changes(
+            {path: source},
+            [{'path': path, 'changes': [{'old_text': 'def test_keep():\\n    assert True\\n',
+                                         'new_text': 'def test_keep():\\n    assert True\\n\\ndef test_extra():\\n    assert True\\n'}]}],
+        )
+        self.assertIn('def test_extra', accepted[path])
+        self.assertIn('test_keep', accepted[path])
+
     def test_ai_setting_validator_rejects_unsupported_key_and_nonfinite_value(self):
         m = self.m
         with self.assertRaises(ValueError):
