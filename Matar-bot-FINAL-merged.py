@@ -6937,9 +6937,21 @@ def handle_all_callbacks(call):
             safe_answer_callback(call.id, "⚠️ لا توجد نسخة بانتظار التأكيد.", show_alert=True)
             return
         try:
+            # Before any destructive restore, send the owner a fresh safety snapshot.
+            safety_backup = create_consistent_backup(uid)
+            with open(safety_backup, 'rb') as safety_file:
+                bot.send_document(
+                    call.message.chat.id,
+                    safety_file,
+                    caption="🛟 نسخة أمان من قاعدة البيانات الحالية قبل الاستعادة. احتفظ بها خارج Render.",
+                )
             table_count, row_count = restore_postgres_snapshot(pending['path'], uid)
             cancel_pending_restore(uid)
             RESTORE_UPLOAD_WAITING.discard(uid)
+            try:
+                os.remove(safety_backup)
+            except OSError:
+                pass
             user_states.clear()
             user_mode.clear()
             user_section.clear()
