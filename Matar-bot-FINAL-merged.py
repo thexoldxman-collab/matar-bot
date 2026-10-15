@@ -1029,59 +1029,16 @@ MAX_RESTORE_FILE_BYTES = 20 * 1024 * 1024
 
 
 def _load_validated_postgres_snapshot(snapshot_path):
-    """تحقق صارم من ملف لقطة Neon قبل عرضه أو استعادته."""
+    """تحقق من لقطة Neon وحدود حجمها قبل عرضها أو استعادتها."""
     import json as _json
     if os.path.getsize(snapshot_path) > MAX_RESTORE_FILE_BYTES:
         raise ValueError("حجم النسخة أكبر من الحد المسموح (20 ميغابايت).")
     with open(snapshot_path, 'r', encoding='utf-8') as backup_file:
         snapshot = _json.load(backup_file)
-    if not isinstance(snapshot, dict) or snapshot.get('format') != 'matar-postgres-snapshot-v1':
-        raise ValueError("صيغة النسخة غير معروفة؛ ارفع ملف JSON صادر من ماتر.")
-    tables = snapshot.get('tables')
-    if not isinstance(tables, dict) or not tables:
-        raise ValueError("النسخة لا تحتوي جداول قاعدة البيانات.")
-
-    current_tables = {
-        row[0] for row in conn.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema=current_schema() AND table_type='BASE TABLE'"
-        ).fetchall()
-    }
-    if set(tables) != current_tables:
-        raise ValueError("جداول النسخة لا تطابق مخطط قاعدة البيانات الحالي؛ أوقفت الاستعادة لحماية البيانات.")
-
-    row_count = 0
-    for table_name, payload in tables.items():
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_name):
-            raise ValueError("اسم جدول غير صالح في النسخة.")
-        if not isinstance(payload, dict):
-            raise ValueError("بيانات جدول غير صالحة في النسخة.")
-        columns, rows = payload.get('columns'), payload.get('rows')
-        if not isinstance(columns, list) or not columns or len(set(columns)) != len(columns):
-            raise ValueError(f"قائمة أعمدة غير صالحة في جدول {table_name}.")
-        if not isinstance(rows, list):
-            raise ValueError(f"صفوف غير صالحة في جدول {table_name}.")
-        current_columns = {
-            row[0] for row in conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema=current_schema() AND table_name=?",
-                (table_name,),
-            ).fetchall()
-        }
-        if not set(columns).issubset(current_columns):
-            raise ValueError(f"النسخة تحتوي أعمدة غير معروفة في جدول {table_name}.")
-        for row in rows:
-            if not isinstance(row, list) or len(row) != len(columns):
-                raise ValueError(f"صف غير صالح في جدول {table_name}.")
-            if any(isinstance(value, (dict, list)) for value in row):
-                raise ValueError(f"نوع بيانات غير مدعوم في جدول {table_name}.")
-        row_count += len(rows)
-        if row_count > 500000:
-            raise ValueError("عدد الصفوف أكبر من الحد المسموح للاستعادة الآمنة.")
-    for required in ('users', 'transactions', 'pending_charges', 'pending_withdraws', 'settings', 'dynamic_buttons'):
-        if required not in tables:
-            raise ValueError(f"النسخة ناقصة: جدول {required}.")
-    return snapshot, row_count
+    summary = validate_snapshot_data(conn, snapshot)
+    if summary['rows'] > 500000:
+        raise ValueError("عدد الصفوف أكبر من الحد المسموح للاستعادة الآمنة.")
+    return snapshot, summary['rows']
 
 
 def restore_postgres_snapshot(snapshot_path, actor_id):
