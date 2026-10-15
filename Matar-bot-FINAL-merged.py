@@ -7867,42 +7867,76 @@ def process_syriatel_charge_amount(message, charge_id):
     except ValueError:
         bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
 
+def claim_pending_charge(charge_id, admin_id):
+    """حجز طلب شحن ذرياً كي لا يستلمه مشرفان بالتزامن."""
+    with db_lock:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            row = conn.execute(
+                "SELECT status, user_id, amount, receipt_number, syriatel_code, method "
+                "FROM pending_charges WHERE id=?",
+                (charge_id,),
+            ).fetchone()
+            if not row:
+                conn.rollback()
+                return None, 'not_found'
+            status, user_id, amount, receipt, code, method = row
+            if status != 'pending':
+                conn.rollback()
+                return None, 'not_pending'
+            cur = conn.execute(
+                "UPDATE pending_charges SET status='processing', processed_by=? "
+                "WHERE id=? AND status='pending'",
+                (admin_id, charge_id),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                return None, 'already_claimed'
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return {
+        'user_id': user_id,
+        'amount': amount,
+        'receipt_number': receipt,
+        'syriatel_code': code,
+        'method': method,
+    }, 'ok'
+
+
 def handle_ops_execute_charge(call, charge_id):
-    """تنفيذ طلب شحن من غرفة العمليات"""
+    """حجز طلب الشحن داخل معاملة وقفل واحد قبل بدء المعالجة."""
     uid = call.from_user.id
     executor_name = get_moderator_name(uid)
-    
-    cursor.execute("SELECT status, user_id, amount, receipt_number, syriatel_code, method FROM pending_charges WHERE id=?", (charge_id,))
-    row = cursor.fetchone()
-    if not row:
-        bot.answer_callback_query(call.id, "❌ الطلب غير موجود!", show_alert=True)
+    claim, status = claim_pending_charge(charge_id, uid)
+    if status != 'ok':
+        messages = {
+            'not_found': '❌ الطلب غير موجود!',
+            'not_pending': '⚠️ هذا الطلب قيد المعالجة أو تمت معالجته مسبقاً!',
+            'already_claimed': '⚠️ استلم شخص آخر هذا الطلب للتنفيذ!',
+        }
+        bot.answer_callback_query(call.id, messages.get(status, '❌ تعذر استلام الطلب.'), show_alert=True)
         return
-    
-    status, user_id, amount, receipt, code, method = row
-    
-    if status != 'pending':
-        bot.answer_callback_query(call.id, "⚠️ هذا الطلب معالج مسبقاً بواسطة شخص آخر!", show_alert=True)
-        return
-    
-    # تعليم الطلب بأنه قيد التنفيذ لمنع التكرار
-    cursor.execute("UPDATE pending_charges SET status='processing', processed_by=? WHERE id=? AND status='pending'",
-                   (uid, charge_id))
-    conn.commit()
-    
-    if cursor.rowcount == 0:
-        bot.answer_callback_query(call.id, "⚠️ يتم تنفيذ هذا الطلب من قِبل شخص آخر!", show_alert=True)
-        return
-    
+
+    user_id = claim['user_id']
+    amount = float(claim['amount'] or 0)
     # لا نحذف اللوحة؛ ننتقل إلى لوحة المرحلة التالية كي لا يعلق المشرف.
     try:
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=charge_processing_keyboard(charge_id))
-        bot.send_message(call.message.chat.id,
-                         f"⚙️ **{executor_name}** يقوم بتنفيذ طلب الشحن #{charge_id}\n"
-                         f"👤 المستخدم: {user_id} | 💵 المبلغ: {amount:,.0f} ل.س",
-                         parse_mode="Markdown")
+        bot.edit_message_reply_markup(
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=charge_processing_keyboard(charge_id),
+        )
+        bot.send_message(
+            call.message.chat.id,
+            f"⚙️ **{executor_name}** يقوم بتنفيذ طلب الشحن #{charge_id}\\n"
+            f"👤 المستخدم: {user_id} | 💵 المبلغ: {amount:,.0f} ل.س",
+            parse_mode="Markdown",
+        )
     except Exception:
         pass
-    
+
     bot.answer_callback_query(call.id, "✅ بدأت بتنفيذ الطلب", show_alert=False)
 
 def handle_ops_cancel_charge(call, charge_id):
