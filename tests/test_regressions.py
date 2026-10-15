@@ -657,6 +657,130 @@ class RegressionTests(unittest.TestCase):
             m.cursor.execute("DELETE FROM gifts WHERE code=?", (code,))
             m.conn.commit()
 
+    def test_gift_creation_rolls_back_when_cashier_balance_is_insufficient(self):
+        m = self.m
+        admin = m.ADMIN_ID
+        old_cashier = m.cursor.execute(
+            "SELECT balance,last_updated FROM cashier_balance WHERE admin_id=?", (admin,)
+        ).fetchone()
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO cashier_balance(admin_id,balance,last_updated) VALUES (?,?,?)",
+            (admin, 10.0, '2026-10-15 00:00:00'),
+        )
+        m.conn.commit()
+        try:
+            with patch.object(m, 'generate_gift_code', return_value='TESTINSUFFICIENTGIFT'), \
+                 patch.object(m, 'log_admin_action'):
+                with self.assertRaises(ValueError):
+                    m.GiftManager.create_gift(admin, 20.0, 1, 'individual', 0)
+            self.assertIsNone(m.cursor.execute(
+                "SELECT 1 FROM gifts WHERE code='TESTINSUFFICIENTGIFT'"
+            ).fetchone())
+            self.assertEqual(
+                m.cursor.execute("SELECT balance FROM cashier_balance WHERE admin_id=?", (admin,)).fetchone()[0],
+                10.0,
+            )
+        finally:
+            m.cursor.execute("DELETE FROM gifts WHERE code='TESTINSUFFICIENTGIFT'")
+            m.cursor.execute("DELETE FROM transactions WHERE type='gift_create' AND external_ref='TESTINSUFFICIENTGIFT'")
+            if old_cashier:
+                m.cursor.execute(
+                    "UPDATE cashier_balance SET balance=?,last_updated=? WHERE admin_id=?",
+                    (old_cashier[0], old_cashier[1], admin),
+                )
+            m.conn.commit()
+
+    def test_gift_refund_rolls_back_if_ledger_insert_fails(self):
+        m = self.m
+        admin, code = m.ADMIN_ID, 'TESTGIFTREFUNDROLLBACK'
+        old_cashier = m.cursor.execute(
+            "SELECT balance,last_updated FROM cashier_balance WHERE admin_id=?", (admin,)
+        ).fetchone()
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO cashier_balance(admin_id,balance,last_updated) VALUES (?,?,?)",
+            (admin, 50.0, '2026-10-15 00:00:00'),
+        )
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO gifts(code,value,limit_count,used_count,created_by,created_at,expires_at,auto_returned) "
+            "VALUES (?,?,?,?,?,?,?,0)",
+            (code, 10.0, 5, 2, admin, '2000-01-01 00:00:00', '2000-01-02 00:00:00'),
+        )
+        m.conn.commit()
+        m.conn.execute("DROP TRIGGER IF EXISTS fail_gift_refund_ledger_test")
+        m.conn.execute(
+            "CREATE TRIGGER fail_gift_refund_ledger_test BEFORE INSERT ON transactions "
+            "WHEN NEW.type='gift_refund' BEGIN SELECT RAISE(ABORT, 'forced gift refund ledger failure'); END"
+        )
+        m.conn.commit()
+        try:
+            with self.assertRaises(m.sqlite3.IntegrityError):
+                m.close_gift_and_refund_atomic(code, admin, require_expired=True)
+            self.assertEqual(
+                m.cursor.execute("SELECT balance FROM cashier_balance WHERE admin_id=?", (admin,)).fetchone()[0],
+                50.0,
+            )
+            self.assertEqual(
+                m.cursor.execute("SELECT auto_returned FROM gifts WHERE code=?", (code,)).fetchone()[0],
+                0,
+            )
+        finally:
+            m.conn.rollback()
+            m.conn.execute("DROP TRIGGER IF EXISTS fail_gift_refund_ledger_test")
+            m.cursor.execute("DELETE FROM transactions WHERE type='gift_refund' AND external_ref=?", (code,))
+            m.cursor.execute("DELETE FROM gifts WHERE code=?", (code,))
+            if old_cashier:
+                m.cursor.execute(
+                    "UPDATE cashier_balance SET balance=?,last_updated=? WHERE admin_id=?",
+                    (old_cashier[0], old_cashier[1], admin),
+                )
+            m.conn.commit()
+
+    def test_gift_cancellation_refunds_cashier_and_closes_code_atomically(self):
+        m = self.m
+        admin, code = m.ADMIN_ID, 'TESTGIFTCANCELATOMIC'
+        old_cashier = m.cursor.execute(
+            "SELECT balance,last_updated FROM cashier_balance WHERE admin_id=?", (admin,)
+        ).fetchone()
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO cashier_balance(admin_id,balance,last_updated) VALUES (?,?,?)",
+            (admin, 20.0, '2026-10-15 00:00:00'),
+        )
+        m.cursor.execute(
+            "INSERT OR REPLACE INTO gifts(code,value,limit_count,used_count,created_by,created_at,auto_returned) "
+            "VALUES (?,?,?,?,?,?,0)",
+            (code, 5.0, 4, 1, admin, '2026-10-15 00:00:00'),
+        )
+        m.conn.commit()
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=admin),
+            chat=SimpleNamespace(id=admin),
+            text=code,
+        )
+        try:
+            with patch.object(m.bot, 'send_message'):
+                m.process_cancel_gift_code(message)
+            gift = m.cursor.execute(
+                "SELECT limit_count,used_count,auto_returned FROM gifts WHERE code=?", (code,)
+            ).fetchone()
+            self.assertEqual(gift, (1, 1, 1))
+            self.assertEqual(
+                m.cursor.execute("SELECT balance FROM cashier_balance WHERE admin_id=?", (admin,)).fetchone()[0],
+                35.0,
+            )
+            self.assertEqual(
+                m.cursor.execute("SELECT amount,type FROM transactions WHERE type='gift_refund' AND external_ref=?", (code,)).fetchone(),
+                (15.0, 'gift_refund'),
+            )
+        finally:
+            m.cursor.execute("DELETE FROM transactions WHERE type='gift_refund' AND external_ref=?", (code,))
+            m.cursor.execute("DELETE FROM gifts WHERE code=?", (code,))
+            if old_cashier:
+                m.cursor.execute(
+                    "UPDATE cashier_balance SET balance=?,last_updated=? WHERE admin_id=?",
+                    (old_cashier[0], old_cashier[1], admin),
+                )
+            m.conn.commit()
+
     def test_pending_charge_creation_is_atomic_and_rejects_duplicate_receipts(self):
         m = self.m
         uid, receipt = 810024, 'TEST-PENDING-RECEIPT'
