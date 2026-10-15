@@ -10,7 +10,7 @@ from flask import Flask
 from threading import Thread, RLock
 import os
 import sqlite3
-from matar_db import connect_database, is_postgres_connection, DB_INTEGRITY_ERRORS
+from matar_db import connect_database, is_postgres_connection, verify_postgres_compatibility, DB_INTEGRITY_ERRORS
 from datetime import datetime, timedelta
 import random
 import secrets
@@ -970,6 +970,10 @@ def setup_database():
         cursor.execute('ALTER TABLE moderators ADD COLUMN can_use_ai INTEGER DEFAULT 0')
 
     conn.commit()
+    if DATABASE_URL:
+        # تحقق حقيقي من توافق SQL مع Neon، مع التراجع عن جميع بيانات الاختبار.
+        verify_postgres_compatibility(conn)
+        logger.info("✅ تم التحقق من توافق Neon/PostgreSQL مع قاعدة ماتر")
     logger.info("✅ تم إنشاء قاعدة البيانات بنجاح مع 30+ جدول")
     return conn, cursor
 
