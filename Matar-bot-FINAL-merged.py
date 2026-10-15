@@ -1575,6 +1575,14 @@ def redeem_gift_atomic(user_id, code):
                 conn.execute("INSERT INTO gift_usage(user_id, code, used_at) VALUES (?,?,?)", (user_id, code, now.strftime('%Y-%m-%d %H:%M:%S')))
             except DB_INTEGRITY_ERRORS:
                 conn.rollback(); return 'already_used', 0
+            receipt = generate_receipt_number('GFT')
+            conn.execute(
+                """INSERT INTO transactions
+                (user_id,type,amount,commission,net_amount,method,status,transaction_date,admin_id,details,receipt_number,external_ref)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (user_id, 'gift_redeem', float(value), 0, float(value), 'gift', 'success',
+                 now.strftime('%Y-%m-%d %H:%M:%S'), created_by, 'استرداد كود هدية', receipt, code),
+            )
             conn.commit(); return 'ok', float(value)
         except Exception:
             conn.rollback(); raise
@@ -2360,7 +2368,6 @@ class ActionSystem:
         if status != 'ok':
             bot.send_message(chat_id, messages.get(status, '❌ تعذر استخدام الكود'), parse_mode='Markdown'); return
         bot.send_message(chat_id, f"🎉 **تهانينا! تم شحن {amount:,.0f} ل.س إلى رصيدك**", parse_mode='Markdown')
-        log_transaction(uid, 'gift_redeem', amount, 'gift', 'success')
         finance_logger.info(f'استخدام كود هدية: {uid} - {code}')
 
     @staticmethod
