@@ -6698,7 +6698,11 @@ def handle_all_callbacks(call):
         return
 
     if data == 'test_api_connection':
-        safe_answer_callback(call.id, "🔌 اختبار الاتصال قيد التطوير", show_alert=True)
+        safe_answer_callback(
+            call.id,
+            "اختبار الدفع الآلي غير متاح حالياً؛ لم يتم ربط واجهة رسمية موثقة. تبقى عمليات الشحن يدوية ولا يُمنح الرصيد تلقائياً.",
+            show_alert=True,
+        )
         return
 
     if data == 'toggle_auto_verify':
@@ -6857,7 +6861,7 @@ def handle_all_callbacks(call):
             bot.send_message(call.message.chat.id, "❌ **فشل تصدير قاعدة البيانات. راجع السجلات.**")
         return
 
-    if data == 'restore_backup':
+    if data in ('restore_backup', 'import_db'):
         if uid != ADMIN_ID:
             safe_answer_callback(call.id, "❌ استعادة النسخ للمالك فقط.", show_alert=True)
             return
@@ -6869,6 +6873,51 @@ def handle_all_callbacks(call):
         bot.send_message(
             call.message.chat.id,
             "📤 أرسل الآن ملف JSON الذي نزلته من نسخة ماتر الاحتياطية. سأفحصه أولاً ولن أستبدل البيانات إلا بعد تأكيد منفصل.",
+        )
+        return
+
+    if data == 'list_backups':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ عرض النسخ للمالك فقط.", show_alert=True)
+            return
+        try:
+            rows = conn.execute(
+                "SELECT backup_name,backup_type,created_at,size,file_path FROM backups ORDER BY id DESC LIMIT 10"
+            ).fetchall()
+            if not rows:
+                bot.send_message(
+                    call.message.chat.id,
+                    "📭 لا توجد سجلات نسخ احتياطية بعد. استخدم «حفظ فوري» أو «تصدير قاعدة البيانات»، واحفظ الملف المرسل خارج Render.",
+                )
+            else:
+                lines = ["📋 **آخر 10 سجلات للنسخ الاحتياطية**", ""]
+                for name, kind, created_at, size, file_path in rows:
+                    available = bool(file_path and os.path.isfile(file_path))
+                    size_mb = max(0, int(size or 0)) / (1024 * 1024)
+                    safe_name = str(name or 'نسخة').replace('`', '')[:70]
+                    lines.append(
+                        f"• `{safe_name}` — {str(kind or 'manual')}\n"
+                        f"  الوقت: {str(created_at or 'غير معروف')} | الحجم: {size_mb:.2f} MB\n"
+                        f"  الملف المحلي: {'متاح حالياً' if available else 'غير متاح؛ استخدم النسخة التي حفظتها في تيليغرام'}"
+                    )
+                bot.send_message(call.message.chat.id, "\n".join(lines), parse_mode="Markdown")
+            safe_answer_callback(call.id)
+        except Exception:
+            logger.exception("Failed to list backup records")
+            safe_answer_callback(call.id, "تعذر عرض سجلات النسخ. راجع السجل.", show_alert=True)
+        return
+
+    if data == 'auto_backup_settings':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ إعدادات النسخ للمالك فقط.", show_alert=True)
+            return
+        safe_answer_callback(call.id, "النسخ التلقائي غير مفعّل.", show_alert=True)
+        bot.send_message(
+            call.message.chat.id,
+            "⚠️ **النسخ التلقائي غير مفعّل في هذه النسخة.**\n"
+            "استخدم «حفظ فوري» أو «تصدير قاعدة البيانات» واحفظ الملف المرسل خارج Render. "
+            "لا تعتمد على ملفات الخدمة المحلية المجانية كنسخة دائمة.",
+            parse_mode="Markdown",
         )
         return
 
@@ -6919,9 +6968,6 @@ def handle_all_callbacks(call):
         safe_answer_callback(call.id, "تم إلغاء الاستعادة.", show_alert=False)
         return
 
-    if data in ('import_db', 'list_backups', 'auto_backup_settings'):
-        safe_answer_callback(call.id, "هذه الميزة قيد التطوير", show_alert=True)
-        return
 
     if data == 'admin_backup':
         ActionSystem.backup_system(uid, call.message.chat.id)
