@@ -127,6 +127,21 @@ def translate_sql(sql: str) -> tuple[str | None, str | None]:
             generated_id = AUTOINCREMENT_COLUMNS[table]
             query = _append_sql_clause(query, f"RETURNING {generated_id}")
 
+    # SQLite accepts text date parameters next to DATE(column); PostgreSQL
+    # requires explicit casts because legacy timestamp columns are stored as TEXT.
+    query = re.sub(
+        r"(CAST\([^)]*\s+AS\s+DATE\)\s*(?:>=|<=|<>|!=|=|>|<)\s*)\?",
+        r"\1CAST(? AS DATE)",
+        query,
+        flags=re.I,
+    )
+    query = re.sub(
+        r"(CAST\([^)]*\s+AS\s+DATE\)\s+BETWEEN\s+)\?\s+AND\s+\?",
+        r"\1CAST(? AS DATE) AND CAST(? AS DATE)",
+        query,
+        flags=re.I,
+    )
+
     # PostgreSQL uses %s placeholders. The bot's parameterized SQL does not
     # use literal question marks inside SQL string constants.
     query = query.replace("?", "%s")
