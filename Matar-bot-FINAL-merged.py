@@ -1078,6 +1078,48 @@ def log_transaction(user_id, type, amount, method, status, commission=0, net_amo
     
     return receipt
 
+def credit_referral_payout_atomic(user_id, amount, admin_id):
+    """إضافة أرباح الإحالة وسجل المعاملة ضمن معاملة SQLite واحدة."""
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        raise ValueError('invalid payout amount')
+    if not math.isfinite(amount) or amount <= 0:
+        raise ValueError('invalid payout amount')
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    receipt = generate_receipt_number("REF")
+    with db_lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cur = conn.execute(
+                "UPDATE users SET balance=balance+?, last_active=? WHERE user_id=? AND deleted=0",
+                (amount, now, user_id),
+            )
+            if cur.rowcount != 1:
+                raise ValueError("target user not found or inactive")
+            conn.execute(
+                """INSERT INTO transactions
+                (user_id, type, amount, commission, net_amount, method, status,
+                 transaction_date, admin_id, details, receipt_number, external_ref)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (user_id, "referral_pay", amount, 0, amount, "admin", "success",
+                 now, admin_id, "صرف أرباح الإحالة", receipt, ""),
+            )
+            new_balance = conn.execute(
+                "SELECT balance FROM users WHERE user_id=?", (user_id,)
+            ).fetchone()[0]
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    finance_logger.info(
+        "Referral payout completed: %s - User: %s - Amount: %s",
+        receipt, user_id, amount,
+    )
+    return float(new_balance), receipt
+
 def create_pending_withdraw_atomic(user_id, method, account, amount, commission, net_amount,
                                    currency, details=""):
     """حجز رصيد المستخدم وإنشاء طلب السحب وسجلّه في معاملة SQLite واحدة."""
@@ -8279,10 +8321,8 @@ def process_referral_pay(message):
         parts = message.text.strip().split(',')
         target = int(parts[0].strip())
         amount = float(parts[1].strip())
-        if amount <= 0 or update_user_balance(target, amount, add=True) is None:
-            raise ValueError('invalid target or amount')
-        log_transaction(target, "referral_pay", amount, "admin", "success", admin_id=uid)
-        bot.send_message(message.chat.id, f"✅ **تم إرسال {amount:,.0f} ل.س لأرباح الإحالة للمستخدم** `{target}`", parse_mode="Markdown")
+        new_balance, receipt = credit_referral_payout_atomic(target, amount, uid)
+        bot.send_message(message.chat.id, f"✅ **تم إرسال {amount:,.0f} ل.س لأرباح الإحالة للمستخدم** `{target}`\n💳 الرصيد الجديد: `{new_balance:,.0f}` ل.س\n🧾 رقم العملية: `{receipt}`", parse_mode="Markdown")
         try:
             bot.send_message(target, f"🎉 **تم إضافة {amount:,.0f} ل.س كأرباح إحالة لرصيدك!**", parse_mode="Markdown")
         except Exception:
