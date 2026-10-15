@@ -760,6 +760,10 @@ def setup_database():
         notification_msg_id INTEGER,
         txn_receipt TEXT
     )""")
+    # Prevent the same external receipt from being submitted in multiple active requests.
+    cursor.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_charges_active_receipt
+        ON pending_charges(receipt_number)
+        WHERE receipt_number IS NOT NULL AND status IN ('pending','processing','completed')""")
     
     # ===== طلبات السحب المعلقة =====
     cursor.execute("""CREATE TABLE IF NOT EXISTS pending_withdraws(
@@ -1102,6 +1106,49 @@ def log_transaction(user_id, type, amount, method, status, commission=0, net_amo
     finance_logger.info(f"Transaction: {receipt} - User: {user_id} - Type: {type} - Amount: {amount} - Status: {status}")
     
     return receipt
+
+def create_pending_charge_atomic(user_id, pending_method, ledger_method, external_receipt,
+                                 syriatel_code=None, details=""):
+    """إنشاء طلب شحن وسجلّه المحاسبي مع منع تكرار رقم العملية."""
+    external_receipt = str(external_receipt or '').strip()
+    if not external_receipt or len(external_receipt) > 300:
+        raise ValueError('invalid external receipt')
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    transaction_receipt = generate_receipt_number('CHQ')
+    with db_lock:
+        conn.execute('BEGIN IMMEDIATE')
+        try:
+            duplicate = conn.execute(
+                "SELECT 1 FROM pending_charges WHERE receipt_number=? AND status IN ('pending','processing','completed') LIMIT 1",
+                (external_receipt,),
+            ).fetchone()
+            already_processed = conn.execute(
+                "SELECT 1 FROM processed_transactions WHERE receipt_number=? LIMIT 1",
+                (external_receipt,),
+            ).fetchone()
+            if duplicate or already_processed:
+                conn.rollback()
+                return None, 'duplicate_receipt'
+            conn.execute(
+                """INSERT INTO transactions
+                (user_id,type,amount,commission,net_amount,method,status,transaction_date,
+                 admin_id,details,receipt_number,external_ref)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (user_id, 'charge_request', 0, 0, 0, ledger_method, 'pending',
+                 now, None, details, transaction_receipt, external_receipt),
+            )
+            cur = conn.execute(
+                """INSERT INTO pending_charges
+                (user_id,method,receipt_number,syriatel_code,status,created_at,txn_receipt)
+                VALUES (?,?,?,?,?,?,?)""",
+                (user_id, pending_method, external_receipt, syriatel_code, 'pending', now, transaction_receipt),
+            )
+            charge_id = cur.lastrowid
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return (charge_id, transaction_receipt), 'ok'
 
 def credit_referral_payout_atomic(user_id, amount, admin_id):
     """إضافة أرباح الإحالة وسجل المعاملة ضمن معاملة SQLite واحدة."""
