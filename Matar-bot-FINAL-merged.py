@@ -1581,6 +1581,76 @@ def transfer_internal_balance(user_id, amount, direction):
             conn.rollback()
             raise
 
+def admin_adjust_balance_atomic(target_user_id, amount, action, admin_id):
+    """تعديل أرصدة المستخدم/الكاشير وتسجيل العملية في معاملة واحدة."""
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        raise ValueError("invalid amount")
+    if not math.isfinite(amount) or amount <= 0:
+        raise ValueError("amount must be finite and positive")
+
+    actions = {
+        "bot_charge": ("admin_charge", "balance"),
+        "site_charge": ("admin_site_charge", "site_balance"),
+        "bot_withdraw": ("admin_withdraw", "balance"),
+        "site_withdraw": ("admin_site_withdraw", "site_balance"),
+    }
+    if action not in actions:
+        raise ValueError("invalid admin balance action")
+    transaction_type, result_column = actions[action]
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    receipt = generate_receipt_number("ADM")
+    with db_lock:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if action == "bot_charge":
+                cur = conn.execute(
+                    "UPDATE users SET balance=balance+?, last_active=? WHERE user_id=? AND deleted=0",
+                    (amount, now, target_user_id))
+            elif action == "site_charge":
+                cur = conn.execute(
+                    "UPDATE users SET site_balance=site_balance+?, last_active=? WHERE user_id=? AND deleted=0",
+                    (amount, now, target_user_id))
+            elif action == "bot_withdraw":
+                cur = conn.execute(
+                    "UPDATE users SET balance=balance-?, last_active=? WHERE user_id=? AND deleted=0 AND balance>=?",
+                    (amount, now, target_user_id, amount))
+                if cur.rowcount == 1:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO cashier_balance(admin_id, balance, last_updated) VALUES (?,?,?)",
+                        (admin_id, 0, now))
+                    conn.execute(
+                        "UPDATE cashier_balance SET balance=balance+?, last_updated=? WHERE admin_id=?",
+                        (amount, now, admin_id))
+            else:  # site_withdraw: move value from site balance into bot balance.
+                cur = conn.execute(
+                    "UPDATE users SET site_balance=site_balance-?, balance=balance+?, last_active=? WHERE user_id=? AND deleted=0 AND site_balance>=?",
+                    (amount, amount, now, target_user_id, amount))
+
+            if cur.rowcount != 1:
+                conn.rollback()
+                raise ValueError("user missing, inactive, or balance insufficient")
+
+            conn.execute(
+                """INSERT INTO transactions
+                (user_id, type, amount, commission, net_amount, method, status,
+                 transaction_date, admin_id, details, receipt_number, external_ref)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (target_user_id, transaction_type, amount, 0, amount, "admin", "success",
+                 now, admin_id, "تعديل رصيد يدوي ذري", receipt, ""))
+
+            new_value = conn.execute(
+                f"SELECT {result_column} FROM users WHERE user_id=?",
+                (target_user_id,),
+            ).fetchone()[0]
+            conn.commit()
+            return float(new_value), receipt
+        except Exception:
+            conn.rollback()
+            raise
+
+
 # =============================================================================
 # عجلة الحظ: نظام مالي ذري قابل للتحكم
 # =============================================================================
@@ -3901,16 +3971,16 @@ def process_charge_user_amount(message, target, charge_type):
     try:
         amount = float(message.text)
         
+        if not math.isfinite(amount) or amount <= 0:
+            raise ValueError
         if charge_type == '💰 شحن في البوت':
-            new_balance = update_user_balance(target, amount, add=True)
+            new_balance, _receipt = admin_adjust_balance_atomic(target, amount, "bot_charge", uid)
             bot.send_message(message.chat.id, f"✅ **تم شحن {amount:,.0f} ل.س للمستخدم {target} في البوت**\n💰 رصيده الجديد: {new_balance:,.0f} ل.س", parse_mode="Markdown")
             bot.send_message(target, f"💰 **تم شحن {amount:,.0f} ل.س إلى رصيدك في البوت من قبل الإدارة**", parse_mode="Markdown")
-            log_transaction(target, "admin_charge", amount, "admin", "success", admin_id=uid)
         else:  # شحن في الموقع
-            new_balance = update_site_balance(target, amount, add=True)
+            new_balance, _receipt = admin_adjust_balance_atomic(target, amount, "site_charge", uid)
             bot.send_message(message.chat.id, f"✅ **تم شحن {amount:,.0f} NSP للمستخدم {target} في الموقع**\n🌐 رصيده الجديد: {new_balance:,.0f} NSP", parse_mode="Markdown")
             bot.send_message(target, f"💰 **تم شحن {amount:,.0f} NSP إلى رصيدك في الموقع من قبل الإدارة**", parse_mode="Markdown")
-            log_transaction(target, "admin_site_charge", amount, "admin", "success", admin_id=uid)
         
         log_admin_action(uid, "شحن رصيد", f"شحن {amount} {charge_type}", target_user=target, amount=amount)
         
@@ -3954,36 +4024,16 @@ def process_withdraw_user_amount(message, target, withdraw_type):
     try:
         amount = float(message.text)
         
+        if not math.isfinite(amount) or amount <= 0:
+            raise ValueError
         if withdraw_type == '💰 سحب من البوت':
-            # التحقق من الرصيد
-            cursor.execute("SELECT balance FROM users WHERE user_id=?", (target,))
-            bal = cursor.fetchone()
-            
-            if not bal or bal[0] < amount:
-                bot.send_message(message.chat.id, f"❌ **رصيد المستخدم غير كافٍ**\n💰 رصيده: {bal[0] if bal else 0:,.0f} ل.س", parse_mode="Markdown")
-                return
-            
-            new_balance = update_user_balance(target, amount, add=False)
-            update_cashier_balance(amount, add=True, admin_id=uid)
-            
+            new_balance, _receipt = admin_adjust_balance_atomic(target, amount, "bot_withdraw", uid)
             bot.send_message(message.chat.id, f"✅ **تم سحب {amount:,.0f} ل.س من المستخدم {target}**\n💰 رصيده الجديد: {new_balance:,.0f} ل.س", parse_mode="Markdown")
             bot.send_message(target, f"💸 **تم سحب {amount:,.0f} ل.س من رصيدك في البوت من قبل الإدارة**", parse_mode="Markdown")
-            log_transaction(target, "admin_withdraw", amount, "admin", "success", admin_id=uid)
-            
-        else:  # سحب من الموقع
-            cursor.execute("SELECT site_balance FROM users WHERE user_id=?", (target,))
-            bal = cursor.fetchone()
-            
-            if not bal or bal[0] < amount:
-                bot.send_message(message.chat.id, f"❌ **رصيد الموقع غير كافٍ**\n🌐 رصيده: {bal[0] if bal else 0:,.0f} NSP", parse_mode="Markdown")
-                return
-            
-            new_balance = update_site_balance(target, amount, add=False)
-            update_user_balance(target, amount, add=True)
-            
+        else:  # سحب من الموقع إلى رصيد البوت
+            new_balance, _receipt = admin_adjust_balance_atomic(target, amount, "site_withdraw", uid)
             bot.send_message(message.chat.id, f"✅ **تم سحب {amount:,.0f} NSP من الموقع للمستخدم {target} وإضافتها لرصيد البوت**\n🌐 رصيد الموقع الجديد: {new_balance:,.0f} NSP", parse_mode="Markdown")
             bot.send_message(target, f"💸 **تم سحب {amount:,.0f} NSP من رصيد موقعك وإضافتها لرصيد البوت**", parse_mode="Markdown")
-            log_transaction(target, "admin_site_withdraw", amount, "admin", "success", admin_id=uid)
         
         log_admin_action(uid, "سحب رصيد", f"سحب {amount} {withdraw_type}", target_user=target, amount=amount)
         
