@@ -11,6 +11,19 @@ class DatabaseTranslationTests(unittest.TestCase):
         self.assertIn("ticket_id BIGSERIAL PRIMARY KEY", sql)
         self.assertEqual(generated_id, None)
 
+    def test_telegram_ids_keep_64_bit_range_in_postgres_schema(self):
+        sql, _ = translate_sql(
+            "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance REAL DEFAULT 0)"
+        )
+        self.assertIn("user_id BIGINT PRIMARY KEY", sql)
+        self.assertIn("balance DOUBLE PRECISION DEFAULT 0", sql)
+
+    def test_alter_table_integer_columns_are_64_bit(self):
+        sql, _ = translate_sql(
+            "ALTER TABLE moderators ADD COLUMN can_use_ai INTEGER DEFAULT 0"
+        )
+        self.assertIn("can_use_ai BIGINT DEFAULT 0", sql)
+
     def test_insert_ignore_uses_conflict_safe_postgres_syntax(self):
         sql, generated_id = translate_sql(
             "INSERT OR IGNORE INTO settings(key, value) VALUES (?,?)"
