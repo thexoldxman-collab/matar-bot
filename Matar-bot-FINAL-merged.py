@@ -7385,7 +7385,9 @@ def apply_ai_file_changes(sources, file_proposals):
 
     allowed = {
         'Matar-bot-FINAL-merged.py', 'matar_db.py', 'requirements.txt',
-        'render.yaml', 'AI_DEV_SETUP_AR.md',
+        'render.yaml', 'AI_DEV_SETUP_AR.md', 'AUDIT_REPORT_AR.md', 'README_AR.md',
+        'tests/test_regressions.py', 'tests/test_db_backend.py',
+        'postgres_startup_smoke.py',
     }
     if not isinstance(sources, dict) or not isinstance(file_proposals, list) or not 1 <= len(file_proposals) <= 5:
         raise ValueError('invalid file proposal')
@@ -7403,6 +7405,15 @@ def apply_ai_file_changes(sources, file_proposals):
         if total_changes > 8:
             raise ValueError('too many changes')
         candidate = apply_ai_text_changes(sources[path], changes)
+        if path in {'tests/test_regressions.py', 'tests/test_db_backend.py', 'postgres_startup_smoke.py'}:
+            old_tests = set(re.findall(r'^\\s*def\\s+(test_[A-Za-z0-9_]+)\\s*\\(', sources[path], re.M))
+            new_tests = set(re.findall(r'^\\s*def\\s+(test_[A-Za-z0-9_]+)\\s*\\(', candidate, re.M))
+            if not old_tests.issubset(new_tests):
+                raise ValueError('AI changes may not remove or rename existing tests')
+            old_assertions = len(re.findall(r'\\bassert\\b|\\.assert[A-Za-z_]+', sources[path]))
+            new_assertions = len(re.findall(r'\\bassert\\b|\\.assert[A-Za-z_]+', candidate))
+            if new_assertions < old_assertions:
+                raise ValueError('AI changes may not reduce existing test assertions')
         if path == 'requirements.txt':
             candidate = validate_ai_requirements(candidate)
         elif path == 'render.yaml':
@@ -7424,6 +7435,11 @@ AI_ALLOWED_CODE_PATHS = {
     'requirements.txt',
     'render.yaml',
     'AI_DEV_SETUP_AR.md',
+    'AUDIT_REPORT_AR.md',
+    'README_AR.md',
+    'tests/test_regressions.py',
+    'tests/test_db_backend.py',
+    'postgres_startup_smoke.py',
 }
 
 
@@ -7494,7 +7510,8 @@ def create_ai_draft_pr(request_text, requester_uid):
             'أخرج JSON صالحاً فقط بالشكل '
             '{"summary":"ملخص عربي قصير","files":[{"path":"مسار مسموح","changes":[{"old_text":"مقطع حرفي مطابق مرة واحدة","new_text":"المقطع البديل"}]}]}. '
             'المسارات المسموحة فقط: ' + ', '.join(sorted(AI_ALLOWED_CODE_PATHS)) + '. '
-            'لا تعدّل الاختبارات أو ملفات GitHub Actions أو أي ملف غير موجود بالقائمة. '
+            'يمكنك تعديل ملفات الاختبارات المسموحة فقط لإضافة/تحديث اختبارات؛ لا تحذف أو تعِد تسمية أي اختبار موجود ولا تقلل عدد assertions. '
+            'لا تعدّل ملفات GitHub Actions أو الأسرار أو أي ملف غير موجود بالقائمة. '
             'أجرِ أقل تعديل ممكن؛ لا تعِد كتابة الملفات كاملة. يجب أن يطابق كل old_text المصدر حرفياً وأن يظهر مرة واحدة فقط. '
             'غيّر من ملف واحد إلى خمسة ملفات، وبحد أقصى 8 استبدالات بالمجموع. '
             'لا تضف أسراراً أو مفاتيح أو رموز دخول، ولا تضع روابط أو خيارات pip في requirements.txt. '
