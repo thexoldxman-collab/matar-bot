@@ -11,13 +11,15 @@ import sqlite3
 import threading
 from typing import Any, Iterable
 
-AUTOINCREMENT_TABLES = {
-    "transactions", "retry_queue", "admin_logs", "tickets",
-    "ticket_conversations", "ai_conversations", "referrals_log",
-    "referral_earnings", "referral_cycles", "dynamic_buttons",
-    "api_connections", "operations_room", "pending_charges",
-    "pending_withdraws", "api_configs", "backups", "wheel_prizes",
-    "wheel_spins", "wheel_bonuses",
+AUTOINCREMENT_COLUMNS = {
+    "transactions": "id", "retry_queue": "id", "admin_logs": "id",
+    "tickets": "ticket_id", "ticket_conversations": "id",
+    "ai_conversations": "id", "referrals_log": "id",
+    "referral_earnings": "id", "referral_cycles": "id",
+    "dynamic_buttons": "id", "api_connections": "id",
+    "operations_room": "id", "pending_charges": "id",
+    "pending_withdraws": "id", "api_configs": "id", "backups": "id",
+    "wheel_prizes": "id", "wheel_spins": "id", "wheel_bonuses": "id",
 }
 
 try:
@@ -86,9 +88,9 @@ def translate_sql(sql: str) -> tuple[str | None, str | None]:
 
     if insert_match:
         table = insert_match.group(1).lower()
-        if table in AUTOINCREMENT_TABLES and not re.search(r"\bRETURNING\b", query, re.I):
-            query = _append_sql_clause(query, "RETURNING id")
-            generated_id = "id"
+        if table in AUTOINCREMENT_COLUMNS and not re.search(r"\bRETURNING\b", query, re.I):
+            generated_id = AUTOINCREMENT_COLUMNS[table]
+            query = _append_sql_clause(query, f"RETURNING {generated_id}")
 
     # PostgreSQL uses %s placeholders. The bot's parameterized SQL does not
     # use literal question marks inside SQL string constants.
