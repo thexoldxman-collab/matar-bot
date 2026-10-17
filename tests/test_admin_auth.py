@@ -53,7 +53,7 @@ class AdminAuthTests(unittest.TestCase):
             chat=SimpleNamespace(id=user_id),
         )
         self.bot.handlers["link"](message)
-        return re.search(r"رمز:\\s*(\\d{6})", self.bot.messages[-1][1]).group(1)
+        return re.search(r"رمز:\s*(\d{6})", self.bot.messages[-1][1]).group(1)
 
     def test_owner_code_is_single_use_and_session_can_logout(self):
         code = self.issue_code(1001)
