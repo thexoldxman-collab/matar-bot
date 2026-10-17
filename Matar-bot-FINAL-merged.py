@@ -3576,14 +3576,6 @@ def get_admin_category_keyboard(category):
             ("📋 سجل الإجراءات", "admin_logs"),
         ],
     }
-    titles = {
-        "users": "👥 المستخدمون والمشرفون",
-        "finance": "💰 المال والعمليات",
-        "services": "🔌 التكاملات والميزات",
-        "content": "🧩 الأزرار والرسائل",
-        "reports": "📊 التقارير والسجلات",
-        "system": "⚙️ النظام والنسخ الاحتياطي",
-    }
     keyboard = types.InlineKeyboardMarkup(row_width=2)
     for label, callback_data in categories.get(category, []):
         keyboard.add(types.InlineKeyboardButton(label, callback_data=callback_data))
@@ -4352,7 +4344,7 @@ def process_charge_user_type(message, target):
     charge_type = message.text
     
     if charge_type == '🔙 إلغاء':
-        bot.send_message(message.chat.id, "✅ **تم الإلغاء**", reply_markup=get_admin_main_keyboard(uid == ADMIN_ID, uid=uid))
+        bot.send_message(message.chat.id, "✅ **تم الإلغاء**", reply_markup=(get_main_keyboard(uid) if uid == ADMIN_ID else get_admin_main_keyboard(is_owner=False, uid=uid)))
         return
     
     msg = bot.send_message(message.chat.id, f"💰 **أدخل المبلغ لشحنه للمستخدم** `{target}`**:**", parse_mode="Markdown")
@@ -8606,7 +8598,7 @@ def main_router(message):
         '📜 الشروط والاحكام', '📞 التواصل مع الدعم', '🔐 إدارة البوت',
         '🔙 العودة للقائمة الرئيسية', '🔙 رجوع',
         '📝 إنشاء حساب جديد', '➕ تعبئة في حسابي', '➖ سحب من حسابي',
-        '🗑 حذف الحساب', '🛠️ إدارة البوت بالكامل', '⚙️ إعدادات متقدمة',
+        '🗑 حذف الحساب',
         '📝 إدارة الأزرار', '📊 نظام الإحالات', '📋 سجل الإجراءات',
         '🔔 إعدادات الإشعارات', '📨 رسالة جماعية', '🤖 المساعد الذكي',
     }
@@ -8802,18 +8794,6 @@ def main_router(message):
             ActionSystem.manage_buttons(uid, message.chat.id)
         else:
             bot.send_message(message.chat.id, "❌ ليس لديك صلاحية للدخول إلى هذه القائمة.")
-
-    elif text == '🛠️ إدارة البوت بالكامل':
-        if uid == ADMIN_ID:
-            ActionSystem.show_full_admin_menu(uid, message.chat.id)
-        else:
-            bot.send_message(message.chat.id, "❌ هذه القائمة للمالك فقط.")
-
-    elif text == '⚙️ إعدادات متقدمة':
-        if uid == ADMIN_ID:
-            ActionSystem.bot_settings(uid, message.chat.id)
-        else:
-            bot.send_message(message.chat.id, "❌ هذه القائمة للمالك فقط.")
 
     elif text == '📊 نظام الإحالات':
         if uid == ADMIN_ID or check_permission(uid, 'can_view_stats'):
