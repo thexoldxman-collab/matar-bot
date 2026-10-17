@@ -1598,6 +1598,54 @@ class RegressionTests(unittest.TestCase):
         self.assertNotIn('search_by_date', callbacks)
         self.assertNotIn('back_to_logs', callbacks)
 
+    def test_open_support_ticket_reply_button_registers_valid_reply_handler(self):
+        m = self.m
+        target_user_id = 812341
+        m.cursor.execute(
+            "INSERT INTO tickets(user_id, message, status, created_at) VALUES (?,?,?,?)",
+            (target_user_id, "مشكلة اختبار", "open", "2026-10-17 00:00:00"),
+        )
+        ticket_id = m.cursor.lastrowid
+        m.conn.commit()
+        call = self.fake_call(f"reply_ticket_{ticket_id}_{target_user_id}")
+        with patch.object(m.bot, 'answer_callback_query'), \\
+             patch.object(m.bot, 'send_message'), \\
+             patch.object(m.bot, 'register_next_step_handler_by_chat_id') as register:
+            m.handle_all_callbacks(call)
+        register.assert_called_once_with(
+            m.ADMIN_ID,
+            m.ActionSystem.process_ticket_reply,
+            ticket_id,
+            target_user_id,
+        )
+
+    def test_support_ticket_reply_is_saved_and_delivered(self):
+        m = self.m
+        target_user_id = 812342
+        m.cursor.execute(
+            "INSERT INTO tickets(user_id, message, status, created_at) VALUES (?,?,?,?)",
+            (target_user_id, "مشكلة اختبار ثانية", "open", "2026-10-17 00:00:00"),
+        )
+        ticket_id = m.cursor.lastrowid
+        m.conn.commit()
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=m.ADMIN_ID),
+            chat=SimpleNamespace(id=m.ADMIN_ID),
+            text="تم حل المشكلة، جرّب الآن.",
+        )
+        with patch.object(m.bot, 'send_message') as send:
+            m.ActionSystem.process_ticket_reply(message, ticket_id, target_user_id)
+        stored = m.cursor.execute(
+            "SELECT sender_id, sender_type, message FROM ticket_conversations WHERE ticket_id=? ORDER BY id DESC LIMIT 1",
+            (ticket_id,),
+        ).fetchone()
+        self.assertEqual(stored, (m.ADMIN_ID, 'admin', "تم حل المشكلة، جرّب الآن."))
+        self.assertTrue(any(call.args[0] == target_user_id for call in send.call_args_list))
+        status = m.cursor.execute(
+            "SELECT status FROM tickets WHERE ticket_id=?", (ticket_id,)
+        ).fetchone()[0]
+        self.assertEqual(status, 'open')
+
     def test_owner_admin_entry_opens_categorized_panel_directly(self):
         m = self.m
         with patch.object(m.ActionSystem, 'show_full_admin_menu') as show_full:
