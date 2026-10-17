@@ -4437,21 +4437,40 @@ def process_create_submenu_step2(message, parent_button):
 
 # ===== دوال معالجة الإعدادات =====
 
-def process_update_syriatel(message):
-    """تحديث أرقام سيرياتل"""
+def _save_service_setting_from_message(message, setting_key, label, allow_empty=False):
+    """معالجة آمنة لتعديل بيانات الخدمة؛ لا تسمح لرسائل غير المالك بتغيير الإعدادات."""
     uid = message.from_user.id
-    numbers = message.text
-    
-    update_db_setting('syriatel_numbers', numbers, uid)
-    bot.send_message(message.chat.id, f"✅ **تم تحديث أرقام سيرياتل إلى:**\n`{numbers}`", parse_mode="Markdown")
+    if uid != ADMIN_ID:
+        bot.send_message(message.chat.id, "❌ تعديل إعدادات الخدمات للمالك فقط.")
+        return
+    value = (getattr(message, 'text', None) or '').strip()
+    if not value and not allow_empty:
+        bot.send_message(message.chat.id, "❌ القيمة لا يمكن أن تكون فارغة. لم يتم تغيير الإعداد.")
+        render_operations_control(message.chat.id)
+        return
+    update_db_setting(setting_key, value, uid)
+    bot.send_message(message.chat.id, f"✅ تم تحديث إعداد {label}.")
+    render_operations_control(message.chat.id)
+
+def process_update_syriatel(message):
+    """تحديث أرقام سيرياتل."""
+    _save_service_setting_from_message(message, 'syriatel_numbers', 'سيرياتل')
 
 def process_update_sham(message):
-    """تحديث عنوان شام"""
-    uid = message.from_user.id
-    address = message.text
-    
-    update_db_setting('sham_address', address, uid)
-    bot.send_message(message.chat.id, f"✅ **تم تحديث عنوان شام إلى:**\n`{address}`", parse_mode="Markdown")
+    """تحديث عنوان شام."""
+    _save_service_setting_from_message(message, 'sham_address', 'شام كاش')
+
+def process_update_usdt_address(message):
+    _save_service_setting_from_message(message, 'usdt_address', 'عنوان USDT')
+
+def process_update_usdt_network(message):
+    _save_service_setting_from_message(message, 'usdt_network', 'شبكة USDT')
+
+def process_update_binance_address(message):
+    _save_service_setting_from_message(message, 'binance_address', 'عنوان Binance')
+
+def process_update_binance_pay_id(message):
+    _save_service_setting_from_message(message, 'binance_pay_id', 'معرّف Binance Pay')
 
 def process_update_limits(message):
     """تحديث الحدود"""
@@ -6306,33 +6325,25 @@ def handle_all_callbacks(call):
     if data == 'edit_usdt_address':
         bot.edit_message_text("📬 **أرسل عنوان محفظة USDT الجديد:**",
                               call.message.chat.id, call.message.message_id)
-        bot.register_next_step_handler_by_chat_id(call.message.chat.id,
-            lambda m: (update_db_setting('usdt_address', m.text.strip(), m.from_user.id),
-                       bot.send_message(m.chat.id, f"✅ تم تحديث عنوان USDT: `{m.text.strip()}`", parse_mode="Markdown")))
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_update_usdt_address)
         return
 
     if data == 'edit_usdt_network':
         bot.edit_message_text("🌐 **أرسل شبكة USDT (مثال: TRC20 أو ERC20):**",
                               call.message.chat.id, call.message.message_id)
-        bot.register_next_step_handler_by_chat_id(call.message.chat.id,
-            lambda m: (update_db_setting('usdt_network', m.text.strip(), m.from_user.id),
-                       bot.send_message(m.chat.id, f"✅ تم تحديث شبكة USDT: `{m.text.strip()}`", parse_mode="Markdown")))
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_update_usdt_network)
         return
 
     if data == 'edit_binance_address':
         bot.edit_message_text("📬 **أرسل عنوان محفظة Binance الجديد:**",
                               call.message.chat.id, call.message.message_id)
-        bot.register_next_step_handler_by_chat_id(call.message.chat.id,
-            lambda m: (update_db_setting('binance_address', m.text.strip(), m.from_user.id),
-                       bot.send_message(m.chat.id, f"✅ تم تحديث عنوان Binance: `{m.text.strip()}`", parse_mode="Markdown")))
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_update_binance_address)
         return
 
     if data == 'edit_binance_pay_id':
         bot.edit_message_text("🆔 **أرسل Binance Pay ID الجديد:**",
                               call.message.chat.id, call.message.message_id)
-        bot.register_next_step_handler_by_chat_id(call.message.chat.id,
-            lambda m: (update_db_setting('binance_pay_id', m.text.strip(), m.from_user.id),
-                       bot.send_message(m.chat.id, f"✅ تم تحديث Binance Pay ID: `{m.text.strip()}`", parse_mode="Markdown")))
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_update_binance_pay_id)
         return
 
     if data == 'edit_syriatel':
