@@ -6,7 +6,7 @@
 
 import telebot
 from telebot import types
-from flask import Flask
+from flask import Flask, request
 from threading import Thread, RLock
 import os
 import sqlite3
@@ -9221,6 +9221,11 @@ def main_router(message):
     if not isinstance(text, str):
         return
 
+    # يجب التقاط /link قبل معالج الرسائل العام وقبل فحص الاشتراك.
+    if text.strip() and text.strip().split()[0].split("@")[0].lower() == "/link":
+        issue_admin_link_code(message)
+        return
+
     # التحقق من السبام
     if not check_spam(uid):
         return
@@ -10816,6 +10821,36 @@ def process_change_user_password(message, target):
 
 # إعداد Flask للتشغيل على Render/Replit
 app = Flask(__name__)
+TELEGRAM_MODE = os.environ.get("TELEGRAM_MODE", "polling").strip().lower()
+TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "").strip()
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://matar-bot.onrender.com").strip().rstrip("/")
+
+
+# ربط آمن لتطبيق الإدارة: رمز تيليغرام أحادي الاستخدام وصلاحيات يحددها الخادم.
+from matar_admin_auth import register_admin_auth
+issue_admin_link_code = register_admin_auth(app, bot, conn, db_lock, ADMIN_ID, is_moderator, check_permission)
+
+@app.route('/telegram/webhook', methods=['POST'])
+def telegram_webhook():
+    """Secure Telegram webhook endpoint; secret is checked before parsing updates."""
+    if TELEGRAM_MODE != "webhook":
+        return "Webhook mode is disabled", 404
+    if not TELEGRAM_WEBHOOK_SECRET:
+        logger.error("Webhook mode requested without TELEGRAM_WEBHOOK_SECRET")
+        return "Webhook is not configured", 503
+    supplied_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not secrets.compare_digest(supplied_secret, TELEGRAM_WEBHOOK_SECRET):
+        return "Forbidden", 403
+    try:
+        update = telebot.types.Update.de_json(request.get_data(as_text=True))
+        if update is None:
+            return "Bad update", 400
+        bot.process_new_updates([update])
+        return "OK", 200
+    except Exception:
+        logger.exception("Failed to process Telegram webhook update")
+        return "Update processing failed", 500
+
 
 @app.route('/')
 def home():
@@ -10931,17 +10966,31 @@ if __name__ == "__main__":
     print("👤 المالك: " + str(ADMIN_ID))
     print("=" * 60)
     
-    # بدء تشغيل البوت مع معالجة الأخطاء
-    while True:
-        try:
-            bot.infinity_polling(timeout=60, long_polling_timeout=60)
-        except Exception as e:
-            logger.error(f"⚠️ خطأ في الاتصال: {e}")
-            error_logger.error(f"خطأ في polling: {e}", exc_info=True)
-            print(f"⚠️ خطأ في الاتصال: {e}")
-            print("🔄 إعادة المحاولة بعد 5 ثوان...")
-            time.sleep(5)
-            continue
+    if TELEGRAM_MODE == "webhook":
+        if not TELEGRAM_WEBHOOK_SECRET:
+            raise RuntimeError("TELEGRAM_WEBHOOK_SECRET is required in webhook mode")
+        if not PUBLIC_BASE_URL.startswith("https://"):
+            raise RuntimeError("PUBLIC_BASE_URL must use HTTPS in webhook mode")
+        webhook_url = PUBLIC_BASE_URL + "/telegram/webhook"
+        if not bot.set_webhook(
+            url=webhook_url,
+            secret_token=TELEGRAM_WEBHOOK_SECRET,
+            drop_pending_updates=False,
+        ):
+            raise RuntimeError("Telegram rejected the webhook configuration")
+        logger.info("Telegram webhook configured; polling is disabled to prevent getUpdates conflicts")
+    else:
+        # Polling is retained for local development; Render should use webhook mode.
+        while True:
+            try:
+                bot.infinity_polling(timeout=60, long_polling_timeout=60)
+            except Exception as e:
+                logger.error(f"⚠️ خطأ في الاتصال: {e}")
+                error_logger.error(f"خطأ في polling: {e}", exc_info=True)
+                print(f"⚠️ خطأ في الاتصال: {e}")
+                print("🔄 إعادة المحاولة بعد 5 ثوان...")
+                time.sleep(5)
+                continue
 
 # =============================================================================
 # 23. ملخص التعديلات والإصلاحات النهائية
