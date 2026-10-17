@@ -11,6 +11,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -38,6 +41,11 @@ private fun MatarAdminApp() {
     var page by remember { mutableStateOf(Page.HOME) }
     var demoMode by remember { mutableStateOf(true) }
     var connected by remember { mutableStateOf(false) }
+    var accessToken by remember { mutableStateOf<String?>(null) }
+    var connecting by remember { mutableStateOf(false) }
+    var savingNotifications by remember { mutableStateOf(false) }
+    var notificationMessage by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
     var pairingCode by remember { mutableStateOf("") }
     var loginMessage by remember { mutableStateOf("") }
     var showLogin by remember { mutableStateOf(true) }
@@ -70,8 +78,28 @@ private fun MatarAdminApp() {
                     code = pairingCode,
                     onCodeChange = { pairingCode = it },
                     message = loginMessage,
+                    connecting = connecting,
                     onConnect = {
-                        loginMessage = "تسجيل الدخول غير مفعّل بعد: يلزم ربط الخادم والتحقق من كود تيليغرام قبل منح أي صلاحية."
+                        val cleanCode = pairingCode.trim().uppercase().replace("-", "")
+                        if (cleanCode.length != 8) {
+                            loginMessage = "اكتب رمز الربط المكوّن من 8 أحرف وأرقام، واطلبه من البوت بالأمر /adminapp."
+                        } else {
+                            scope.launch {
+                                connecting = true
+                                val result = withContext(Dispatchers.IO) { AdminApi.exchangePairingCode(cleanCode) }
+                                connecting = false
+                                if (result.token != null) {
+                                    accessToken = result.token
+                                    connected = true
+                                    showLogin = false
+                                    demoMode = true
+                                    pairingCode = ""
+                                    loginMessage = ""
+                                } else {
+                                    loginMessage = result.error ?: "تعذر تسجيل الدخول."
+                                }
+                            }
+                        }
                     },
                     onPreview = { showLogin = false; demoMode = true }
                 )
@@ -116,7 +144,7 @@ private fun MatarAdminApp() {
                         if (demoMode) {
                             Surface(color = MaterialTheme.colorScheme.tertiaryContainer, modifier = Modifier.fillMaxWidth()) {
                                 Text(
-                                    "معاينة فقط — لا يوجد اتصال بالبوت ولا تُنفّذ أي عملية حقيقية",
+                                    if (connected) "تم التحقق من حساب تيليغرام؛ البيانات والإجراءات ما زالت تجريبية." else "معاينة فقط — لا يوجد اتصال بالبوت ولا تُنفّذ أي عملية حقيقية",
                                     modifier = Modifier.padding(10.dp),
                                     style = MaterialTheme.typography.labelMedium,
                                     textAlign = TextAlign.Center
@@ -146,7 +174,39 @@ private fun MatarAdminApp() {
                                 notifications = notifications,
                                 onNotificationChange = { key, value -> notifications = notifications + (key to value) },
                                 onTheme = { showAppearance = true },
-                                onLogin = { showLogin = true; connected = false }
+                                onSaveNotifications = {
+                                    val token = accessToken
+                                    if (token == null) {
+                                        notificationMessage = "سجّل الدخول عبر تيليغرام أولاً لحفظ الإعدادات."
+                                    } else {
+                                        scope.launch {
+                                            savingNotifications = true
+                                            val keyMap = mapOf(
+                                                "طلب شحن جديد" to "charge_new",
+                                                "طلب سحب جديد" to "withdraw_new",
+                                                "خطأ أو فشل مالي" to "financial_error",
+                                                "إجراءات المشرفين" to "moderator_actions",
+                                                "الإحالات والمستحقات" to "referrals",
+                                                "توقف البوت أو انقطاع الاتصال" to "bot_offline",
+                                                "قرارات المساعد الذكي" to "ai_decisions"
+                                            )
+                                            val prefs = notifications.mapNotNull { (label, enabled) -> keyMap[label]?.let { it to enabled } }.toMap()
+                                            val saved = withContext(Dispatchers.IO) { AdminApi.saveNotifications(token, prefs) }
+                                            savingNotifications = false
+                                            notificationMessage = if (saved) "تم حفظ تفضيلاتك على الخادم. توصيل الإشعارات الفعلية بالخلفية لم يُفعّل بعد." else "تعذر الحفظ؛ تأكد من اتصال الخادم وصلاحية الجلسة."
+                                        }
+                                    }
+                                },
+                                savingNotifications = savingNotifications,
+                                notificationMessage = notificationMessage,
+                                onLogin = {
+                                    val oldToken = accessToken
+                                    if (oldToken != null) scope.launch { withContext(Dispatchers.IO) { AdminApi.logout(oldToken) } }
+                                    accessToken = null
+                                    connected = false
+                                    showLogin = true
+                                    page = Page.HOME
+                                }
                             )
                         }
                     }
@@ -171,7 +231,7 @@ private fun MatarAdminApp() {
 }
 
 @Composable
-private fun LoginScreen(code: String, onCodeChange: (String) -> Unit, message: String, onConnect: () -> Unit, onPreview: () -> Unit) {
+private fun LoginScreen(code: String, onCodeChange: (String) -> Unit, message: String, connecting: Boolean, onConnect: () -> Unit, onPreview: () -> Unit) {
     Column(
         Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.Center,
@@ -192,7 +252,7 @@ private fun LoginScreen(code: String, onCodeChange: (String) -> Unit, message: S
             singleLine = true
         )
         Spacer(Modifier.height(10.dp))
-        Button(onClick = onConnect, modifier = Modifier.fillMaxWidth()) { Text("تحقق وتسجيل الدخول") }
+        Button(onClick = onConnect, enabled = !connecting, modifier = Modifier.fillMaxWidth()) { Text(if (connecting) "جارٍ التحقق..." else "تحقق وتسجيل الدخول") }
         if (message.isNotBlank()) {
             Spacer(Modifier.height(8.dp))
             Text(message, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center, style = MaterialTheme.typography.bodySmall)
@@ -326,6 +386,9 @@ private fun SettingsScreen(
     notifications: Map<String, Boolean>,
     onNotificationChange: (String, Boolean) -> Unit,
     onTheme: () -> Unit,
+    onSaveNotifications: () -> Unit,
+    savingNotifications: Boolean,
+    notificationMessage: String,
     onLogin: () -> Unit
 ) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -339,7 +402,8 @@ private fun SettingsScreen(
                 }
             }
         }
-        item { Button(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) { Text("حفظ الإشعارات على الخادم — قريباً") } }
+        item { Button(onClick = onSaveNotifications, enabled = !savingNotifications, modifier = Modifier.fillMaxWidth()) { Text(if (savingNotifications) "جارٍ الحفظ..." else "حفظ تفضيلات الإشعارات") } }
+        if (notificationMessage.isNotBlank()) item { Text(notificationMessage, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall) }
         item { HorizontalDivider() }
         item { Text("المظهر", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
         item { OutlinedButton(onClick = onTheme, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Contrast, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("الوضع الليلي / النهاري / تلقائي") } }
