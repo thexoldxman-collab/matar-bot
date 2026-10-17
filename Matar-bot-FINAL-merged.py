@@ -23,6 +23,7 @@ import math
 import logging
 from logging.handlers import RotatingFileHandler
 from collections import defaultdict
+from urllib.parse import urlsplit
 
 # سطر التشخيص
 print("✅ تم تحميل البوت - نسخة تشخيص الأزرار")
@@ -57,6 +58,31 @@ api_connections = {}       # اتصالات API
 user_last_message = defaultdict(float)  # لمراقبة السبام
 user_mode = {}             # وضع المستخدم (عادي/إداري/تعديل أزرار)
 user_section = {}          # القسم الحالي للمستخدم
+
+def _same_database_target(first_url, second_url):
+    """مقارنة وجهة قاعدة البيانات مع تجاهل اختلاف خيارات الاتصال فقط."""
+    first_url = (first_url or '').strip()
+    second_url = (second_url or '').strip()
+    if not first_url or not second_url:
+        return False
+    try:
+        first = urlsplit(first_url)
+        second = urlsplit(second_url)
+        if first.scheme and second.scheme and first.hostname and second.hostname:
+            return (
+                first.scheme.lower(),
+                first.hostname.lower(),
+                first.port,
+                first.path.rstrip('/'),
+            ) == (
+                second.scheme.lower(),
+                second.hostname.lower(),
+                second.port,
+                second.path.rstrip('/'),
+            )
+    except ValueError:
+        pass
+    return first_url.rstrip('/') == second_url.rstrip('/')
 
 # إعدادات
 SPAM_DELAY = 1.5           # ثانية بين كل رسالة
@@ -1004,7 +1030,7 @@ if _saved_mode == 'real':
             'Bot was last saved in real mode, but REAL_DATABASE_URL is missing. '
             'Refusing to start against the demo database.'
         )
-    if DATABASE_URL and _real_database_url == DATABASE_URL:
+    if _same_database_target(_real_database_url, DATABASE_URL):
         raise RuntimeError('REAL_DATABASE_URL must point to a separate database from DATABASE_URL.')
     _real_conn, _real_cursor = setup_database(_real_database_url)
     if not is_postgres_connection(_real_conn):
@@ -1184,6 +1210,8 @@ def get_db_setting(key_name):
 
 def update_db_setting(key_name, value, admin_id=ADMIN_ID):
     """تحديث إعداد في قاعدة البيانات النشطة."""
+    if key_name == 'operation_mode':
+        raise ValueError("لا تغيّر وضع التشغيل مباشرة؛ استخدم switch_operation_mode لضمان تبديل قاعدة البيانات بأمان.")
     cursor.execute("""UPDATE settings SET value=?, updated_at=?, updated_by=?
                       WHERE key=?""", (value, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), admin_id, key_name))
     conn.commit()
@@ -1247,7 +1275,7 @@ def switch_operation_mode(target_mode, admin_id=ADMIN_ID):
                 "لم يتم إعداد قاعدة إنتاج مستقلة بعد. أضف REAL_DATABASE_URL في إعدادات Render؛ "
                 "لم يتغير وضع التشغيل."
             )
-        if demo_url and real_url == demo_url:
+        if _same_database_target(real_url, demo_url):
             raise ValueError("قاعدة الإنتاج يجب أن تكون مستقلة عن قاعدة الاختبار.")
         if 'real' not in MODE_DATABASES:
             active_snapshot = MODE_DATABASES[current_mode]
@@ -8952,7 +8980,12 @@ def process_connect_sham_api(message):
 
 @bot.message_handler(commands=['ai'])
 def handle_ai_command(message):
-    show_ai_menu(message.from_user.id, message.chat.id)
+    uid = message.from_user.id
+    if not check_bot_status() and uid != ADMIN_ID and not is_moderator(uid):
+        maintenance_message = get_db_setting('maintenance_message') or "🔧 البوت في حالة صيانة حالياً. سنعود قريباً!"
+        bot.send_message(message.chat.id, maintenance_message, parse_mode="Markdown")
+        return
+    show_ai_menu(uid, message.chat.id)
 
 
 @bot.message_handler(func=lambda m: True)
