@@ -5434,6 +5434,10 @@ def handle_all_callbacks(call):
     """معالج شامل لجميع الكول باكات - نسخة مصححة"""
     uid = call.from_user.id
     data = call.data
+    if not check_bot_status() and uid != ADMIN_ID and not is_moderator(uid):
+        maintenance_message = get_db_setting('maintenance_message') or "🔧 البوت في حالة صيانة حالياً. سنعود قريباً!"
+        safe_answer_callback(call.id, maintenance_message[:180], show_alert=True)
+        return
     owner_control_callbacks = {
         'admin_cat_control', 'admin_control_center', 'mode_info',
         'request_real_mode', 'request_demo_mode', 'confirm_real_mode',
@@ -6007,6 +6011,7 @@ def handle_all_callbacks(call):
         'admin_cat_content': '🧩 **الأزرار والرسائل**',
         'admin_cat_reports': '📊 **التقارير والسجلات**',
         'admin_cat_system': '⚙️ **النظام والنسخ الاحتياطي**',
+        'admin_cat_control': '🧰 **التشغيل والصيانة والخدمات**',
     }
     if data in admin_category_titles:
         if uid != ADMIN_ID and not check_permission(uid, 'can_access_full_admin'):
