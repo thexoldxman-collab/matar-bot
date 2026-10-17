@@ -9221,6 +9221,11 @@ def main_router(message):
     if not isinstance(text, str):
         return
 
+    # يجب التقاط /link قبل معالج الرسائل العام وقبل فحص الاشتراك.
+    if text.strip().split()[0].split("@")[0].lower() == "/link":
+        issue_admin_link_code(message)
+        return
+
     # التحقق من السبام
     if not check_spam(uid):
         return
@@ -10823,7 +10828,7 @@ PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://matar-bot.onrender.
 
 # ربط آمن لتطبيق الإدارة: رمز تيليغرام أحادي الاستخدام وصلاحيات يحددها الخادم.
 from matar_admin_auth import register_admin_auth
-register_admin_auth(app, bot, conn, db_lock, ADMIN_ID, is_moderator, check_permission)
+issue_admin_link_code = register_admin_auth(app, bot, conn, db_lock, ADMIN_ID, is_moderator, check_permission)
 
 @app.route('/telegram/webhook', methods=['POST'])
 def telegram_webhook():
