@@ -22,7 +22,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
 private enum class Page(val label: String) {
-    HOME("الرئيسية"), ROOM("غرفة العمليات"), USERS("المشرفون"), MESSAGES("الرسائل"), SETTINGS("الإعدادات")
+    HOME("الرئيسية"), ROOM("غرفة العمليات"), USERS("المشرفون"), MESSAGES("الرسائل"), SETTINGS("الإعدادات"), BUTTONS("أزرار البوت"), AUDIT("سجل التدقيق")
 }
 
 data class QueueItem(
@@ -62,6 +62,10 @@ private fun MatarAdminApp() {
     var moderatorMessage by remember { mutableStateOf("") }
     var sendingMessage by remember { mutableStateOf(false) }
     var sentMessage by remember { mutableStateOf("") }
+    var buttons by remember { mutableStateOf(emptyList<AdminButtonItem>()) }
+    var buttonMessage by remember { mutableStateOf("") }
+    var auditItems by remember { mutableStateOf(emptyList<AuditItem>()) }
+    var auditMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     var pairingCode by remember { mutableStateOf("") }
     var loginMessage by remember { mutableStateOf("") }
@@ -163,7 +167,7 @@ private fun MatarAdminApp() {
                     },
                     bottomBar = {
                         NavigationBar {
-                            Page.values().filter { !connected || accountRole == "owner" || it != Page.USERS }.forEach { item ->
+                            Page.values().filter { it != Page.BUTTONS && it != Page.AUDIT && (!connected || accountRole == "owner" || it != Page.USERS) }.forEach { item ->
                                 val icon = when (item) {
                                     Page.HOME -> Icons.Default.Dashboard
                                     Page.ROOM -> Icons.Default.Groups
@@ -326,10 +330,58 @@ private fun MatarAdminApp() {
                                     }
                                 }
                             )
+                            Page.BUTTONS -> ButtonsScreen(
+                                buttons = buttons,
+                                message = buttonMessage,
+                                onBack = { page = Page.SETTINGS },
+                                onRefresh = {
+                                    val token = accessToken
+                                    if (token != null) scope.launch {
+                                        buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(token) } ?: buttons
+                                    }
+                                },
+                                onSave = { id, text, messageText, active ->
+                                    val token = accessToken
+                                    if (token == null) buttonMessage = "سجّل الدخول أولاً."
+                                    else scope.launch {
+                                        val error = withContext(Dispatchers.IO) { AdminApi.updateButton(token, id, text, messageText, active) }
+                                        buttonMessage = error ?: "تم حفظ الزر."
+                                        if (error == null) buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(token) } ?: buttons
+                                    }
+                                }
+                            )
+                            Page.AUDIT -> AuditScreen(
+                                items = auditItems,
+                                message = auditMessage,
+                                onBack = { page = Page.SETTINGS },
+                                onRefresh = {
+                                    val token = accessToken
+                                    if (token != null) scope.launch {
+                                        auditItems = withContext(Dispatchers.IO) { AdminApi.loadAudit(token) } ?: auditItems
+                                        auditMessage = if (auditItems.isEmpty()) "لا يوجد سجل أو لا تملك صلاحية عرضه." else ""
+                                    }
+                                }
+                            )
                             Page.SETTINGS -> SettingsScreen(
                                 notifications = notifications,
                                 onNotificationChange = { key, value -> notifications = notifications + (key to value) },
                                 onTheme = { showAppearance = true },
+                                onGoButtons = {
+                                    val token = accessToken
+                                    if (token != null) scope.launch {
+                                        buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(token) } ?: emptyList()
+                                        buttonMessage = if (buttons.isEmpty()) "لا توجد أزرار محمّلة أو لا تملك صلاحية إدارتها." else ""
+                                        page = Page.BUTTONS
+                                    }
+                                },
+                                onGoAudit = {
+                                    val token = accessToken
+                                    if (token != null) scope.launch {
+                                        auditItems = withContext(Dispatchers.IO) { AdminApi.loadAudit(token) } ?: emptyList()
+                                        auditMessage = if (auditItems.isEmpty()) "لا يوجد سجل أو لا تملك صلاحية عرضه." else ""
+                                        page = Page.AUDIT
+                                    }
+                                },
                                 onSaveNotifications = {
                                     val token = accessToken
                                     if (token == null) {
@@ -657,11 +709,76 @@ private fun MessagesScreen(
     }
 }
 
+
+@Composable
+private fun ButtonsScreen(
+    buttons: List<AdminButtonItem>,
+    message: String,
+    onBack: () -> Unit,
+    onRefresh: () -> Unit,
+    onSave: (Int, String, String, Boolean) -> Unit
+) {
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Text("إدارة أزرار البوت", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+        item { Text("عدّل نص الزر والرسالة المرتبطة به أو أوقف ظهوره. التغيير يُحفظ على الخادم مباشرة.") }
+        item { OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) { Text("تحديث الأزرار") } }
+        item { OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("العودة للإعدادات") } }
+        if (message.isNotBlank()) item { Text(message, color = MaterialTheme.colorScheme.primary) }
+        if (buttons.isEmpty()) item { Text("لا توجد أزرار للعرض حالياً.") }
+        items(buttons, key = { it.id }) { item ->
+            BotButtonEditor(item, onSave)
+        }
+    }
+}
+
+@Composable
+private fun BotButtonEditor(item: AdminButtonItem, onSave: (Int, String, String, Boolean) -> Unit) {
+    var text by remember(item.id, item.text) { mutableStateOf(item.text) }
+    var message by remember(item.id, item.message) { mutableStateOf(item.message) }
+    var active by remember(item.id, item.active) { mutableStateOf(item.active) }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(item.name.ifBlank { "زر " + item.id }, fontWeight = FontWeight.Bold)
+            Text("المسار: " + item.parent, style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(value = text, onValueChange = { text = it.take(200) }, label = { Text("اسم الزر الظاهر") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = message, onValueChange = { message = it.take(4000) }, label = { Text("الرسالة عند الضغط") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("الزر فعال", modifier = Modifier.weight(1f))
+                Switch(checked = active, onCheckedChange = { active = it })
+            }
+            if (item.requiresSubscription) Text("هذا الزر يتطلب اشتراكاً بالقناة.", style = MaterialTheme.typography.bodySmall)
+            Button(onClick = { onSave(item.id, text, message, active) }, modifier = Modifier.fillMaxWidth()) { Text("حفظ التعديلات") }
+        }
+    }
+}
+
+@Composable
+private fun AuditScreen(items: List<AuditItem>, message: String, onBack: () -> Unit, onRefresh: () -> Unit) {
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { Text("سجل الإجراءات", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+        item { Text("يعرض الإجراءات المسجلة على الخادم مع اسم الحساب والتوقيت.") }
+        item { OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) { Text("تحديث السجل") } }
+        item { OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("العودة للإعدادات") } }
+        if (message.isNotBlank()) item { Text(message, color = MaterialTheme.colorScheme.primary) }
+        items(items, key = { it.id }) { item ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(item.action.ifBlank { "إجراء إداري" }, fontWeight = FontWeight.Bold)
+                    Text(item.adminName + " • " + item.createdAt, style = MaterialTheme.typography.bodySmall)
+                    if (item.details.isNotBlank()) Text(item.details)
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun SettingsScreen(
     notifications: Map<String, Boolean>,
     onNotificationChange: (String, Boolean) -> Unit,
     onTheme: () -> Unit,
+    onGoButtons: () -> Unit,
+    onGoAudit: () -> Unit,
     onSaveNotifications: () -> Unit,
     savingNotifications: Boolean,
     notificationMessage: String,
@@ -680,6 +797,10 @@ private fun SettingsScreen(
         }
         item { Button(onClick = onSaveNotifications, enabled = !savingNotifications, modifier = Modifier.fillMaxWidth()) { Text(if (savingNotifications) "جارٍ الحفظ..." else "حفظ تفضيلات الإشعارات") } }
         if (notificationMessage.isNotBlank()) item { Text(notificationMessage, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall) }
+        item { HorizontalDivider() }
+        item { Text("إدارة البوت", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+        item { OutlinedButton(onClick = onGoButtons, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.AccountTree, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("تعديل أزرار ورسائل البوت") } }
+        item { OutlinedButton(onClick = onGoAudit, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.History, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("سجل الإجراءات الإدارية") } }
         item { HorizontalDivider() }
         item { Text("المظهر", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
         item { OutlinedButton(onClick = onTheme, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Contrast, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("الوضع الليلي / النهاري / تلقائي") } }
