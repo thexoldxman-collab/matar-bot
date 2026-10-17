@@ -10817,6 +10817,10 @@ def process_change_user_password(message, target):
 # إعداد Flask للتشغيل على Render/Replit
 app = Flask(__name__)
 
+# ربط آمن لتطبيق الإدارة: رمز تيليغرام أحادي الاستخدام وصلاحيات يحددها الخادم.
+from matar_admin_auth import register_admin_auth
+register_admin_auth(app, bot, conn, db_lock, ADMIN_ID, is_moderator, check_permission)
+
 @app.route('/')
 def home():
     return "🚀 Matar Ultimate Bot is Running! - Enterprise Edition v5.0 (FIXED)"
