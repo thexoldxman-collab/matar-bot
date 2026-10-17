@@ -1244,18 +1244,23 @@ def _copy_mode_configuration(source_conn, target_conn):
         source_cursor.execute(f"SELECT * FROM {table}")
         source_columns = [column[0] for column in (source_cursor.description or ())]
         rows = source_cursor.fetchall()
-        columns = [column for column in source_columns if column != 'id']
+        columns = source_columns
         target_conn.execute(f"DELETE FROM {table}")
         if columns:
             placeholders = ','.join('?' for _ in columns)
             column_sql = ','.join(columns)
-            selected_indexes = [source_columns.index(column) for column in columns]
             for row in rows:
-                values = tuple(row[index] for index in selected_indexes)
                 target_conn.execute(
                     f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})",
-                    values,
+                    tuple(row),
                 )
+    if is_postgres_connection(target_conn):
+        for table in ('dynamic_buttons', 'operations_room', 'api_configs', 'api_connections', 'wheel_prizes'):
+            target_conn.execute(
+                f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), "
+                f"COALESCE((SELECT MAX(id) FROM {table}), 1), "
+                f"EXISTS (SELECT 1 FROM {table}))"
+            )
     target_conn.commit()
 
 def switch_operation_mode(target_mode, admin_id=ADMIN_ID):
