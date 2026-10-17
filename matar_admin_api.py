@@ -481,6 +481,9 @@ def register_admin_api(app, bot, conn, db_lock, owner_id, check_permission,\n   
         permissions = payload.get("permissions") or {}
         if not isinstance(permissions, dict) or any(k not in PERMISSION_COLUMNS or not isinstance(v, bool) for k, v in permissions.items()):
             return jsonify({"ok": False, "error": "invalid_permissions"}), 400
+        privileged_permissions = {"can_manage_moderators", "can_access_full_admin", "can_send_broadcast", "can_manage_users"}
+        if user.get("role") != "owner" and any(permissions.get(key) is True for key in privileged_permissions):
+            return jsonify({"ok": False, "error": "owner_required_for_privileged_permissions"}), 403
         fields = sorted(PERMISSION_COLUMNS)
         columns = ["user_id", "custom_name", "added_by", "added_at"] + fields
         values = [target, name, int(user["telegram_id"]), _now().strftime("%Y-%m-%d %H:%M:%S")]
@@ -511,6 +514,9 @@ def register_admin_api(app, bot, conn, db_lock, owner_id, check_permission,\n   
         if permissions is not None:
             if not isinstance(permissions, dict) or any(k not in PERMISSION_COLUMNS or not isinstance(v, bool) for k, v in permissions.items()):
                 return jsonify({"ok": False, "error": "invalid_permissions"}), 400
+            privileged_permissions = {"can_manage_moderators", "can_access_full_admin", "can_send_broadcast", "can_manage_users"}
+            if user.get("role") != "owner" and any(permissions.get(key) is True for key in privileged_permissions):
+                return jsonify({"ok": False, "error": "owner_required_for_privileged_permissions"}), 403
             for field, enabled in permissions.items():
                 updates.append(f"{field}=?")
                 values.append(1 if enabled else 0)
@@ -532,6 +538,8 @@ def register_admin_api(app, bot, conn, db_lock, owner_id, check_permission,\n   
             return denied()
         if not allowed(user, "can_manage_moderators"):
             return forbidden()
+        if target_id == int(owner_id) or (target_id == int(user["telegram_id"]) and user.get("role") != "owner"):
+            return jsonify({"ok": False, "error": "protected_moderator"}), 403
         with db_lock:
             cur = conn.execute("DELETE FROM moderators WHERE user_id=?", (target_id,))
             conn.commit()
