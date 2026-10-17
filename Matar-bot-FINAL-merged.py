@@ -877,11 +877,11 @@ def setup_database(database_url_override=None):
     
     # ===== الإعدادات الافتراضية =====
     default_settings = [
-        ('syriatel_numbers', '42483891,99706078', 'أرقام سيرياتل كاش', 'text'),
+        ('syriatel_numbers', '', 'أرقام سيرياتل كاش', 'text'),
         ('sham_address', '', 'عنوان شام كاش', 'text'),
         ('usdt_status', 'متوقف', 'حالة USDT', 'text'),
         ('binance_status', 'متوقف', 'حالة Binance', 'text'),
-        ('syriatel_status', 'active', 'حالة سيرياتل كاش', 'text'),
+        ('syriatel_status', 'متوقف', 'حالة سيرياتل كاش', 'text'),
         ('sham_status', 'متوقف', 'حالة شام كاش', 'text'),
         ('usdt_address', '', 'عنوان محفظة USDT', 'text'),
         ('usdt_network', 'TRC20', 'شبكة USDT', 'text'),
@@ -1233,30 +1233,60 @@ def _activate_database_mode(mode):
     conn, cursor, DATABASE_URL, DB_PATH, BACKUP_DIR = MODE_DATABASES[mode]
     CURRENT_OPERATION_MODE = mode
 
+MODE_SPECIFIC_SETTING_KEYS = {
+    # بيانات الدفع الحقيقية وحالاتها تبقى مستقلة بين الاختبار والإنتاج.
+    'syriatel_numbers', 'syriatel_status',
+    'sham_address', 'sham_status',
+    'usdt_address', 'usdt_network', 'usdt_status',
+    'binance_address', 'binance_pay_id', 'binance_status',
+    'syriatel_api_enabled', 'sham_api_enabled', 'auto_verify_charges',
+    'ichancy_api_mode',
+}
+
 def _copy_mode_configuration(source_conn, target_conn):
-    """مزامنة الإعدادات فقط بين وضعي الاختبار والإنتاج، دون نسخ المستخدمين أو الأرصدة."""
+    """مزامنة إعدادات الواجهة العامة فقط؛ لا تنسخ أرصدة أو بيانات دفع أو اتصالات API."""
     tables = (
-        'settings', 'dynamic_buttons', 'moderators', 'notification_settings',
-        'operations_room', 'api_configs', 'api_connections', 'wheel_prizes',
+        'dynamic_buttons', 'moderators', 'notification_settings',
+        'operations_room', 'wheel_prizes',
     )
     try:
+        # انسخ الإعدادات العامة مع الإبقاء على بيانات الدفع وحالة API الخاصة بكل وضع.
+        source_cursor = source_conn.cursor()
+        source_cursor.execute("SELECT * FROM settings")
+        setting_columns = [column[0] for column in (source_cursor.description or ())]
+        setting_rows = source_cursor.fetchall()
+        key_index = setting_columns.index('key')
+        placeholders = ','.join('?' for _ in MODE_SPECIFIC_SETTING_KEYS)
+        target_conn.execute(
+            f"DELETE FROM settings WHERE key NOT IN ({placeholders})",
+            tuple(MODE_SPECIFIC_SETTING_KEYS),
+        )
+        column_sql = ','.join(setting_columns)
+        row_placeholders = ','.join('?' for _ in setting_columns)
+        for row in setting_rows:
+            if str(row[key_index]) in MODE_SPECIFIC_SETTING_KEYS:
+                continue
+            target_conn.execute(
+                f"INSERT INTO settings ({column_sql}) VALUES ({row_placeholders})",
+                tuple(row),
+            )
+
         for table in tables:
             source_cursor = source_conn.cursor()
             source_cursor.execute(f"SELECT * FROM {table}")
-            source_columns = [column[0] for column in (source_cursor.description or ())]
+            columns = [column[0] for column in (source_cursor.description or ())]
             rows = source_cursor.fetchall()
-            columns = source_columns
             target_conn.execute(f"DELETE FROM {table}")
             if columns:
-                placeholders = ','.join('?' for _ in columns)
                 column_sql = ','.join(columns)
+                placeholders = ','.join('?' for _ in columns)
                 for row in rows:
                     target_conn.execute(
                         f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})",
                         tuple(row),
                     )
         if is_postgres_connection(target_conn):
-            for table in ('dynamic_buttons', 'operations_room', 'api_configs', 'api_connections', 'wheel_prizes'):
+            for table in ('dynamic_buttons', 'operations_room', 'wheel_prizes'):
                 target_conn.execute(
                     f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), "
                     f"COALESCE((SELECT MAX(id) FROM {table}), 1), "
