@@ -35,9 +35,11 @@ def _iso(value=None):
     return (value or _now()).isoformat().replace("+00:00", "Z")
 
 
-def register_admin_api(app, bot, conn, db_lock, owner_id, check_permission,
-                       get_operation_mode=None, complete_charge=None, complete_withdraw=None,
-                       cancel_charge=None, cancel_withdraw=None):
+def register_admin_api(
+    app, bot, conn, db_lock, owner_id, check_permission,
+    get_operation_mode=None, complete_charge=None, complete_withdraw=None,
+    cancel_charge=None, cancel_withdraw=None
+):
     """Register safe management endpoints. Call after register_admin_auth."""
     conn.execute("""CREATE TABLE IF NOT EXISTS admin_operation_claims (
         operation_type TEXT NOT NULL,
