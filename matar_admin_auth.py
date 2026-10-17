@@ -89,7 +89,8 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
                 "❌ ربط التطبيق متاح للمالك والمشرفين المضافين فقط.",
             )
             return
-        code = f"{secrets.randbelow(1_000_000):06d}"
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        code = "".join(secrets.choice(alphabet) for _ in range(8))
         now = _now()
         created_at = _iso(now)
         expires_at = _iso(now + timedelta(minutes=5))
