@@ -86,7 +86,7 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
         if role is None:
             bot.send_message(
                 chat_id,
-                "❌ ربط التطبيق متاح للمالك والمشرفين المضافين فقط.",
+                "❌ هذا الحساب غير مخوّل لربط التطبيق؛ الربط متاح للمالك والمشرفين المضافين فقط.",
             )
             return
         code = f"{secrets.randbelow(1_000_000):06d}"
