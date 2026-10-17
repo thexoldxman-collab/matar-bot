@@ -5560,7 +5560,7 @@ def handle_start(message):
     # التحقق من حالة البوت
     if not check_bot_status() and uid != ADMIN_ID and not is_moderator(uid):
         maintenance_msg = get_db_setting('maintenance_message')
-        bot.send_message(message.chat.id, maintenance_msg, parse_mode="Markdown")
+        bot.send_message(message.chat.id, maintenance_msg)
         return
     
     # التحقق من الاشتراك في القناة
@@ -5570,13 +5570,13 @@ def handle_start(message):
         markup.add(types.InlineKeyboardButton("✅ تحقق من الاشتراك", callback_data="check_sub_after_start"))
         
         subscription_text = get_db_setting('subscription_message') or "⚠️ **يجب الاشتراك في القناة أولاً**"
-        bot.send_message(message.chat.id, subscription_text, reply_markup=markup, parse_mode="Markdown")
+        bot.send_message(message.chat.id, subscription_text, reply_markup=markup)
         return
     
     # رسالة الترحيب (مرة واحدة فقط)
     if not has_completed_welcome(uid):
         welcome_msg = get_db_setting('welcome_message')
-        bot.send_message(message.chat.id, f"✅ **تم التحقق من اشتراكك!**\n\n{welcome_msg}", parse_mode="Markdown")
+        bot.send_message(message.chat.id, f"✅ **تم التحقق من اشتراكك!**\n\n{welcome_msg}")
         cursor.execute("UPDATE users SET welcome_shown=1 WHERE user_id=?", (uid,))
         conn.commit()
         
@@ -5584,7 +5584,7 @@ def handle_start(message):
         notifier.notify_new_user(uid, username)
     
     # عرض القائمة الرئيسية
-    bot.send_message(message.chat.id, "📋 **القائمة الرئيسية:**", reply_markup=get_main_keyboard(uid), parse_mode="Markdown")
+    bot.send_message(message.chat.id, "📋 **القائمة الرئيسية:**", reply_markup=get_main_keyboard(uid))
 
 # تم نقل معالجة check_sub_after_start إلى handle_all_callbacks
 def check_sub_after_start(call):
@@ -5593,16 +5593,16 @@ def check_sub_after_start(call):
     
     if check_subscription(uid):
         bot.edit_message_text("✅ **تم التحقق من اشتراكك! مرحباً بك في البوت**", 
-                            call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+                            call.message.chat.id, call.message.message_id)
         
         if not has_completed_welcome(uid):
             welcome_msg = get_db_setting('welcome_message')
-            bot.send_message(call.message.chat.id, welcome_msg, parse_mode="Markdown")
+            bot.send_message(call.message.chat.id, welcome_msg)
             cursor.execute("UPDATE users SET welcome_shown=1 WHERE user_id=?", (uid,))
             conn.commit()
         
         bot.send_message(call.message.chat.id, "📋 **القائمة الرئيسية:**", 
-                        reply_markup=get_main_keyboard(uid), parse_mode="Markdown")
+                        reply_markup=get_main_keyboard(uid))
     else:
         bot.answer_callback_query(call.id, "❌ لم تشترك بعد! اشترك ثم حاول مرة أخرى", show_alert=True)
 
