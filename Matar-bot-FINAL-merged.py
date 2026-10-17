@@ -203,35 +203,35 @@ class RetrySystem:
             return
         
         now = datetime.now()
-        for request in self.retry_queue:
-            if request['status'] != 'pending':
+        for retry_item in self.retry_queue:
+            if retry_item['status'] != 'pending':
                 continue
             
             # التحقق من وقت المحاولة التالية
-            if request['last_attempt']:
-                last = datetime.strptime(request['last_attempt'], "%Y-%m-%d %H:%M:%S")
+            if retry_item['last_attempt']:
+                last = datetime.strptime(retry_item['last_attempt'], "%Y-%m-%d %H:%M:%S")
                 if (now - last).total_seconds() < RETRY_DELAY * 60:
                     continue
             
             # تنفيذ المحاولة
-            request['attempts'] += 1
-            request['last_attempt'] = now.strftime("%Y-%m-%d %H:%M:%S")
+            retry_item['attempts'] += 1
+            retry_item['last_attempt'] = now.strftime("%Y-%m-%d %H:%M:%S")
             
             try:
-                success = self.execute_request(request)
+                success = self.execute_request(retry_item)
                 if success:
-                    request['status'] = 'success'
-                    retry_logger.info(f"✅ طلب {request['type']} للمستخدم {request['user_id']} نجح بعد {request['attempts']} محاولات")
+                    retry_item['status'] = 'success'
+                    retry_logger.info(f"✅ طلب {retry_item['type']} للمستخدم {retry_item['user_id']} نجح بعد {retry_item['attempts']} محاولات")
                     # إشعار للمستخدم بالنجاح
-                    bot.send_message(request['user_id'], "✅ تمت معالجة طلبك بنجاح بعد محاولة إعادة")
+                    bot.send_message(retry_item['user_id'], "✅ تمت معالجة طلبك بنجاح بعد محاولة إعادة")
                 else:
-                    if request['attempts'] >= request['max_attempts']:
-                        request['status'] = 'failed'
-                        retry_logger.error(f"❌ طلب {request['type']} للمستخدم {request['user_id']} فشل نهائياً بعد {request['attempts']} محاولات")
+                    if retry_item['attempts'] >= retry_item['max_attempts']:
+                        retry_item['status'] = 'failed'
+                        retry_logger.error(f"❌ طلب {retry_item['type']} للمستخدم {retry_item['user_id']} فشل نهائياً بعد {retry_item['attempts']} محاولات")
                         # إشعار للمالك
                         notifier.send_to_admin(
                             title="⚠️ فشل طلب بعد إعادة المحاولة",
-                            message=f"نوع الطلب: {request['type']}\nالمستخدم: {request['user_id']}\nالبيانات: {request['data']}"
+                            message=f"نوع الطلب: {retry_item['type']}\nالمستخدم: {retry_item['user_id']}\nالبيانات: {retry_item['data']}"
                         )
             except Exception as e:
                 error_logger.error(f"خطأ في إعادة المحاولة: {e}")
