@@ -11,6 +11,7 @@ class RegressionTests(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         os.environ.pop('DATABASE_URL', None)
+        os.environ.pop('REAL_DATABASE_URL', None)
         os.environ.pop('REQUIRE_PERSISTENT_DATABASE', None)
         os.environ.update({
             'TOKEN': '123456:TESTTOKEN',
@@ -1649,6 +1650,56 @@ class RegressionTests(unittest.TestCase):
         with patch.object(m.ActionSystem, 'show_full_admin_menu') as show_full:
             m.ActionSystem.show_admin_panel(m.ADMIN_ID, m.ADMIN_ID)
         show_full.assert_called_once_with(m.ADMIN_ID, m.ADMIN_ID)
+
+
+    def test_control_center_contains_mode_maintenance_and_all_service_controls(self):
+        m = self.m
+        keyboard = m.get_operations_control_keyboard()
+        callbacks = [button.callback_data for row in keyboard.keyboard for button in row]
+        self.assertIn('request_real_mode', callbacks)
+        self.assertIn('control_toggle_bot', callbacks)
+        self.assertIn('toggle_syriatel', callbacks)
+        self.assertIn('toggle_sham', callbacks)
+        self.assertIn('toggle_usdt', callbacks)
+        self.assertIn('toggle_binance', callbacks)
+        self.assertIn('control_toggle_wheel', callbacks)
+        self.assertIn('admin_api_connect', callbacks)
+        self.assertIn('admin_payment', callbacks)
+
+    def test_service_toggles_are_not_scattered_in_payment_limits_keyboard(self):
+        m = self.m
+        keyboard = m.get_payment_settings_keyboard()
+        callbacks = [button.callback_data for row in keyboard.keyboard for button in row]
+        self.assertIn('edit_limits', callbacks)
+        self.assertIn('edit_commission', callbacks)
+        self.assertNotIn('toggle_syriatel', callbacks)
+        self.assertNotIn('toggle_sham', callbacks)
+        self.assertNotIn('toggle_usdt', callbacks)
+        self.assertNotIn('toggle_binance', callbacks)
+        self.assertNotIn('toggle_bot', callbacks)
+
+    def test_real_mode_switch_requires_a_separate_real_database(self):
+        m = self.m
+        with patch.dict(m.os.environ, {'REAL_DATABASE_URL': '', 'DATABASE_URL': ''}, clear=False):
+            with self.assertRaisesRegex(ValueError, 'REAL_DATABASE_URL'):
+                m.switch_operation_mode('real', m.ADMIN_ID)
+        self.assertEqual(m.get_operation_mode(), 'demo')
+
+    def test_full_admin_keyboard_includes_dedicated_control_category(self):
+        m = self.m
+        keyboard = m.get_full_admin_keyboard()
+        callbacks = [button.callback_data for row in keyboard.keyboard for button in row]
+        self.assertIn('admin_cat_control', callbacks)
+
+    def test_non_owner_cannot_toggle_maintenance_from_control_center(self):
+        m = self.m
+        before = m.get_db_setting('bot_status')
+        call = self.fake_call('control_toggle_bot')
+        call.from_user.id = m.ADMIN_ID + 1
+        with patch.object(m, 'safe_answer_callback') as answer:
+            m.handle_all_callbacks(call)
+        answer.assert_called_once()
+        self.assertEqual(m.get_db_setting('bot_status'), before)
 
 
 if __name__ == '__main__':
