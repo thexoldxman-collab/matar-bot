@@ -1784,10 +1784,10 @@ class RegressionTests(unittest.TestCase):
             from_user=SimpleNamespace(id=m.ADMIN_ID + 11),
             chat=SimpleNamespace(id=m.ADMIN_ID + 11),
         )
-        with patch.object(m, 'check_bot_status', return_value=False), \\
-             patch.object(m.bot, 'send_message') as send, \\
-             patch.object(m, 'show_ai_menu') as show_ai:
-            m.handle_ai_command(message)
+        with patch.object(m, 'check_bot_status', return_value=False):
+            with patch.object(m.bot, 'send_message') as send:
+                with patch.object(m, 'show_ai_menu') as show_ai:
+                    m.handle_ai_command(message)
         send.assert_called_once()
         show_ai.assert_not_called()
 
