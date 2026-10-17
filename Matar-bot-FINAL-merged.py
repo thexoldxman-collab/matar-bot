@@ -6,7 +6,7 @@
 
 import telebot
 from telebot import types
-from flask import Flask
+from flask import Flask, request, jsonify
 from threading import Thread, RLock
 import os
 import sqlite3
@@ -17,6 +17,9 @@ import secrets
 import string
 import time
 import json
+import base64
+import hashlib
+import hmac
 import requests
 import re
 import math
@@ -841,6 +844,16 @@ def setup_database(database_url_override=None):
         restored_at TEXT,
         restored_by INTEGER,
         size INTEGER
+    )""")
+
+    # رموز ربط تطبيق الإدارة؛ يُخزّن تجزئة الرمز فقط وليس الرمز نفسه.
+    cursor.execute("""CREATE TABLE IF NOT EXISTS admin_app_pairings(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        code_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        created_at TEXT NOT NULL
     )""")
 
     # ===== عجلة الحظ والعروض المالية (إضافة آمنة لا تحذف أي بيانات قديمة) =====
@@ -10816,6 +10829,229 @@ def process_change_user_password(message, target):
 
 # إعداد Flask للتشغيل على Render/Replit
 app = Flask(__name__)
+
+# جلسات تطبيق الإدارة موقّعة على الخادم؛ لا يحتوي APK على مفتاح توقيع أو أسرار.
+ADMIN_APP_TOKEN_TTL = 12 * 60 * 60
+ADMIN_APP_PAIR_TTL = 5 * 60
+_admin_app_ai_last_request = {}
+
+
+def _admin_app_b64encode(raw):
+    return base64.urlsafe_b64encode(raw).decode('ascii').rstrip('=')
+
+
+def _admin_app_b64decode(value):
+    return base64.urlsafe_b64decode(value + '=' * (-len(value) % 4))
+
+
+def _admin_app_signing_key():
+    # مفتاح البوت يبقى على الخادم فقط، وتغيير التوكن يُبطل جلسات التطبيق السابقة.
+    return hashlib.sha256((TOKEN + ':matar-admin-app-v1').encode('utf-8')).digest()
+
+
+def _admin_app_create_session(user_id):
+    payload = {
+        'uid': int(user_id),
+        'aud': 'matar-admin-app',
+        'exp': int(time.time()) + ADMIN_APP_TOKEN_TTL,
+        'nonce': secrets.token_urlsafe(12),
+    }
+    body = _admin_app_b64encode(json.dumps(payload, separators=(',', ':')).encode('utf-8'))
+    signature = hmac.new(_admin_app_signing_key(), body.encode('ascii'), hashlib.sha256).digest()
+    return body + '.' + _admin_app_b64encode(signature)
+
+
+def _admin_app_get_user():
+    authorization = request.headers.get('Authorization', '')
+    if not authorization.startswith('Bearer '):
+        return None
+    token = authorization[7:].strip()
+    try:
+        body, signature = token.split('.', 1)
+        expected = hmac.new(_admin_app_signing_key(), body.encode('ascii'), hashlib.sha256).digest()
+        if not hmac.compare_digest(expected, _admin_app_b64decode(signature)):
+            return None
+        payload = json.loads(_admin_app_b64decode(body).decode('utf-8'))
+        if payload.get('aud') != 'matar-admin-app' or int(payload.get('exp', 0)) <= int(time.time()):
+            return None
+        user_id = int(payload.get('uid', 0))
+        # الإصدار الأول للمالك فقط؛ لا يكفي امتلاك رابط الخدمة للوصول للإدارة.
+        if user_id != ADMIN_ID:
+            return None
+        return user_id
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return None
+
+
+def _admin_app_unauthorized():
+    return jsonify({'ok': False, 'error': 'انتهت الجلسة أو بيانات الدخول غير صحيحة. اربط التطبيق من جديد.'}), 401
+
+
+@bot.message_handler(commands=['admin_app_pair'])
+def issue_admin_app_pair_code(message):
+    user_id = getattr(getattr(message, 'from_user', None), 'id', 0)
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, 'هذا الأمر متاح لمالك البوت فقط.')
+        return
+    code = secrets.token_urlsafe(18)
+    now = datetime.now()
+    created = now.strftime('%Y-%m-%d %H:%M:%S')
+    expires = (now + timedelta(seconds=ADMIN_APP_PAIR_TTL)).strftime('%Y-%m-%d %H:%M:%S')
+    with db_lock:
+        conn.execute('DELETE FROM admin_app_pairings WHERE expires_at < ? OR used_at IS NOT NULL', (created,))
+        conn.execute(
+            'INSERT INTO admin_app_pairings(user_id,code_hash,expires_at,created_at) VALUES (?,?,?,?)',
+            (ADMIN_ID, hashlib.sha256(code.encode('utf-8')).hexdigest(), expires, created),
+        )
+        conn.commit()
+    bot.reply_to(
+        message,
+        '🔐 رمز ربط تطبيق إدارة Matar Bot (صالح لخمس دقائق ولمرة واحدة):\\n\\n'
+        + code + '\\n\\nلا ترسله لأي شخص. بعد إدخاله في التطبيق يصبح غير صالح.',
+    )
+
+
+@app.route('/api/admin/v1/pair', methods=['POST'])
+def admin_app_pair():
+    body = request.get_json(silent=True) or {}
+    code = str(body.get('code', '')).strip()
+    if not code or len(code) > 128:
+        return jsonify({'ok': False, 'error': 'أدخل رمز الربط الذي أنشأته من تلغرام.'}), 400
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    code_hash = hashlib.sha256(code.encode('utf-8')).hexdigest()
+    with db_lock:
+        row = conn.execute(
+            'SELECT id,user_id,expires_at,used_at FROM admin_app_pairings WHERE code_hash=?',
+            (code_hash,),
+        ).fetchone()
+        if not row or row[3] or str(row[2]) < now or int(row[1]) != ADMIN_ID:
+            return jsonify({'ok': False, 'error': 'رمز الربط غير صالح أو منتهي الصلاحية. أنشئ رمزاً جديداً من تلغرام.'}), 401
+        updated = conn.execute(
+            'UPDATE admin_app_pairings SET used_at=? WHERE id=? AND used_at IS NULL',
+            (now, row[0]),
+        )
+        if getattr(updated, 'rowcount', 1) != 1:
+            conn.rollback()
+            return jsonify({'ok': False, 'error': 'تم استخدام الرمز مسبقاً. أنشئ رمزاً جديداً.'}), 409
+        conn.commit()
+    return jsonify({
+        'ok': True,
+        'token': _admin_app_create_session(ADMIN_ID),
+        'expires_in': ADMIN_APP_TOKEN_TTL,
+    })
+
+
+@app.route('/api/admin/v1/overview', methods=['GET'])
+def admin_app_overview():
+    user_id = _admin_app_get_user()
+    if user_id is None:
+        return _admin_app_unauthorized()
+    with db_lock:
+        def count_rows(sql):
+            try:
+                row = conn.execute(sql).fetchone()
+                return int(row[0] or 0) if row else 0
+            except Exception:
+                return 0
+        services = {}
+        for key, label in (
+            ('syriatel_status', 'سيرياتل كاش'),
+            ('sham_status', 'شام كاش'),
+            ('usdt_status', 'USDT'),
+            ('binance_status', 'Binance'),
+        ):
+            value = get_db_setting(key) or 'متوقف'
+            services[key] = {'label': label, 'active': str(value).lower() == 'active'}
+        bot_status = get_db_setting('bot_status') or 'active'
+        ai_ready = bool(GEMINI_API_KEY and ai_is_enabled())
+        return jsonify({
+            'ok': True,
+            'mode': get_operation_mode(),
+            'bot_status': 'maintenance' if bot_status != 'active' else 'active',
+            'ai_enabled': ai_is_enabled(),
+            'ai_ready': ai_ready,
+            'counts': {
+                'users': count_rows('SELECT COUNT(*) FROM users WHERE deleted=0'),
+                'moderators': count_rows('SELECT COUNT(*) FROM moderators'),
+                'active_buttons': count_rows('SELECT COUNT(*) FROM dynamic_buttons WHERE is_active=1'),
+            },
+            'services': services,
+            'capabilities': {
+                'read_only_dashboard': True,
+                'ai_chat': ai_ready,
+                'real_mode_switch': False,
+                'financial_actions': False,
+            },
+        })
+
+
+@app.route('/api/admin/v1/ai', methods=['POST'])
+def admin_app_ai():
+    user_id = _admin_app_get_user()
+    if user_id is None:
+        return _admin_app_unauthorized()
+    body = request.get_json(silent=True) or {}
+    prompt = str(body.get('message', '')).strip()
+    if not prompt or len(prompt) > 4000:
+        return jsonify({'ok': False, 'error': 'اكتب رسالة من حرف واحد حتى 4000 حرف.'}), 400
+    if not GEMINI_API_KEY or not ai_is_enabled():
+        return jsonify({'ok': False, 'error': 'المساعد غير مفعّل. فعّله من تلغرام وتأكد من إعداد مفتاح Gemini المجاني.'}), 503
+    now = time.time()
+    if now - _admin_app_ai_last_request.get(user_id, 0) < 2:
+        return jsonify({'ok': False, 'error': 'تمهّل ثانيتين بين الرسائل حتى نحافظ على الحصة المجانية.'}), 429
+    _admin_app_ai_last_request[user_id] = now
+    try:
+        ai_store(user_id, 'user', prompt)
+        answer, error = call_gemini(user_id)
+        if error:
+            return jsonify({'ok': False, 'error': error}), 503
+        ai_store(user_id, 'assistant', answer)
+        return jsonify({'ok': True, 'answer': answer})
+    except Exception:
+        logger.exception('Admin app AI request failed')
+        return jsonify({'ok': False, 'error': 'حدث خطأ أثناء معالجة الرسالة. البوت الأساسي ما زال مستقلاً عن المساعد.'}), 500
+
+
+@app.route('/api/admin/v1/maintenance', methods=['POST'])
+def admin_app_set_maintenance():
+    user_id = _admin_app_get_user()
+    if user_id is None:
+        return _admin_app_unauthorized()
+    body = request.get_json(silent=True) or {}
+    enabled = body.get('enabled')
+    if not isinstance(enabled, bool):
+        return jsonify({'ok': False, 'error': 'قيمة الصيانة يجب أن تكون تشغيل أو إيقاف.'}), 400
+    try:
+        update_db_setting('bot_status', 'maintenance' if enabled else 'active', user_id)
+        log_admin_action(user_id, 'app_maintenance', 'تفعيل الصيانة' if enabled else 'إنهاء الصيانة')
+        return jsonify({'ok': True, 'bot_status': 'maintenance' if enabled else 'active'})
+    except Exception:
+        logger.exception('Admin app maintenance update failed')
+        return jsonify({'ok': False, 'error': 'تعذر تحديث حالة الصيانة.'}), 500
+
+
+@app.route('/api/admin/v1/mode', methods=['POST'])
+def admin_app_set_mode():
+    user_id = _admin_app_get_user()
+    if user_id is None:
+        return _admin_app_unauthorized()
+    body = request.get_json(silent=True) or {}
+    target = str(body.get('mode', '')).strip().lower()
+    if target not in ('demo', 'real'):
+        return jsonify({'ok': False, 'error': 'الوضع المطلوب غير معروف.'}), 400
+    if target == 'real':
+        # لا نسمح للتطبيق بتشغيل الإنتاج حتى تكتمل قائمة الجاهزية واختبارات المال.
+        return jsonify({
+            'ok': False,
+            'error': 'الانتقال للوضع الحقيقي مقفول في الإصدار الأول إلى أن تكتمل فحوصات الجاهزية وتأكيد المالك.',
+        }), 409
+    try:
+        switch_operation_mode('demo', user_id)
+        return jsonify({'ok': True, 'mode': get_operation_mode()})
+    except Exception:
+        logger.exception('Admin app mode switch failed')
+        return jsonify({'ok': False, 'error': 'تعذر الرجوع للوضع التجريبي بأمان.'}), 500
+
 
 @app.route('/')
 def home():
