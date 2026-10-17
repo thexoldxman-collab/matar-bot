@@ -580,7 +580,7 @@ private fun LoginScreen(code: String, onCodeChange: (String) -> Unit, message: S
         Text("مركز التحكم ببوت مطر", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(24.dp))
         Text("تسجيل الدخول الآمن", style = MaterialTheme.typography.titleLarge)
-        Text("أرسل /link إلى بوت مطر، ثم أدخل الرمز الرقمي. سيحدد الخادم تلقائياً إن كنت مديراً أم مشرفاً.", textAlign = TextAlign.Center)
+        Text("أرسل /adminapp إلى بوت مطر، ثم أدخل رمز الربط المؤلف من 8 أحرف وأرقام. سيحدد الخادم تلقائياً إن كنت مديراً أم مشرفاً.", textAlign = TextAlign.Center)
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(
             value = code, onValueChange = onCodeChange,
