@@ -6182,8 +6182,7 @@ def handle_all_callbacks(call):
         update_db_setting('syriatel_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
         safe_answer_callback(call.id, f"سيرياتل كاش: {status}", show_alert=True)
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
-                                      reply_markup=get_payment_settings_keyboard())
+        render_operations_control(call.message.chat.id, call.message.message_id)
         return
 
     if data == 'toggle_sham':
@@ -6197,8 +6196,7 @@ def handle_all_callbacks(call):
         update_db_setting('sham_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
         safe_answer_callback(call.id, f"شام كاش: {status}", show_alert=True)
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
-                                      reply_markup=get_payment_settings_keyboard())
+        render_operations_control(call.message.chat.id, call.message.message_id)
         return
 
     if data == 'toggle_usdt':
@@ -6212,8 +6210,7 @@ def handle_all_callbacks(call):
         update_db_setting('usdt_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
         safe_answer_callback(call.id, f"USDT: {status}", show_alert=True)
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
-                                      reply_markup=get_payment_settings_keyboard())
+        render_operations_control(call.message.chat.id, call.message.message_id)
         return
 
     if data == 'toggle_binance':
@@ -6228,8 +6225,7 @@ def handle_all_callbacks(call):
         update_db_setting('binance_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
         safe_answer_callback(call.id, f"Binance: {status}", show_alert=True)
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
-                                      reply_markup=get_payment_settings_keyboard())
+        render_operations_control(call.message.chat.id, call.message.message_id)
         return
 
     if data == 'setup_usdt':
@@ -6237,7 +6233,7 @@ def handle_all_callbacks(call):
         keyboard.add(
             types.InlineKeyboardButton("📬 تعديل عنوان USDT", callback_data="edit_usdt_address"),
             types.InlineKeyboardButton("🌐 تعديل شبكة USDT", callback_data="edit_usdt_network"),
-            types.InlineKeyboardButton("🔙 رجوع", callback_data="admin_payment")
+            types.InlineKeyboardButton("🔙 رجوع إلى مركز التحكم", callback_data="admin_control_center")
         )
         usdt_address = get_db_setting('usdt_address') or 'غير محدد'
         usdt_network = get_db_setting('usdt_network') or 'TRC20'
@@ -6662,12 +6658,12 @@ def handle_all_callbacks(call):
         bot.send_message(call.message.chat.id, wheel_status_text(), reply_markup=wheel_admin_keyboard(), parse_mode='Markdown')
         return
     if data == 'wheel_toggle':
-        if not check_permission(uid, 'can_manage_wheel'):
-            safe_answer_callback(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, '❌ حالة الخدمات من مركز التحكم للمالك فقط.', show_alert=True); return
         new_value = '0' if wheel_is_enabled() else '1'
         update_db_setting('wheel_enabled', new_value, uid)
         safe_answer_callback(call.id, '✅ تم تحديث حالة العجلة')
-        bot.send_message(call.message.chat.id, wheel_status_text(), reply_markup=wheel_admin_keyboard(), parse_mode='Markdown')
+        render_operations_control(call.message.chat.id)
         return
     if data == 'wheel_prizes':
         if not check_permission(uid, 'can_manage_wheel'):
