@@ -446,4 +446,5 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
             conn.commit()
         return jsonify({"ok": True, "preferences": prefs, "delivery": "not_configured"}), 200
 
+    app.config["MATAR_ADMIN_AUTH_SESSION"] = authenticated_session
     return issue_link_code_for_user
