@@ -2078,10 +2078,10 @@ def wheel_keyboard(uid):
 
 def wheel_admin_keyboard():
     kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(types.InlineKeyboardButton('🟢/🔴 تشغيل أو إيقاف', callback_data='wheel_toggle'))
     kb.add(types.InlineKeyboardButton('➕ إضافة جائزة', callback_data='wheel_add'))
     kb.add(types.InlineKeyboardButton('📋 إدارة الجوائز', callback_data='wheel_prizes'))
     kb.add(types.InlineKeyboardButton('💰 تعديل شرط الشحن', callback_data='wheel_threshold'))
+    kb.add(types.InlineKeyboardButton('🧰 التحكم بحالة العجلة من مركز التحكم', callback_data='admin_control_center'))
     kb.add(types.InlineKeyboardButton('🔙 رجوع', callback_data='back_to_full_admin'))
     return kb
 
@@ -3702,28 +3702,112 @@ def get_full_admin_keyboard():
         types.InlineKeyboardButton("🧩 الأزرار والرسائل", callback_data="admin_cat_content"),
         types.InlineKeyboardButton("📊 التقارير والسجلات", callback_data="admin_cat_reports"),
         types.InlineKeyboardButton("⚙️ النظام والنسخ الاحتياطي", callback_data="admin_cat_system"),
+        types.InlineKeyboardButton("🧰 التشغيل والصيانة والخدمات", callback_data="admin_cat_control"),
         types.InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back_to_admin")
     )
     return keyboard
 
 
+def get_operations_control_keyboard():
+    """مركز واحد للوضع والصيانة وتشغيل/إيقاف الخدمات وتعديل إعداداتها."""
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    mode = get_operation_mode()
+    bot_status = get_db_setting('bot_status') or 'active'
+    maintenance = bot_status != 'active'
+    keyboard.add(types.InlineKeyboardButton(
+        "🧪 الوضع الحالي: تجريبي" if mode == 'demo' else "🚀 الوضع الحالي: حقيقي",
+        callback_data="mode_info",
+    ))
+    keyboard.add(types.InlineKeyboardButton(
+        "🚀 طلب الانتقال للوضع الحقيقي" if mode == 'demo' else "🧪 طلب العودة للوضع التجريبي",
+        callback_data="request_real_mode" if mode == 'demo' else "request_demo_mode",
+    ))
+    keyboard.add(types.InlineKeyboardButton(
+        "🛑 إيقاف الخدمة (صيانة)" if not maintenance else "🟢 إنهاء الصيانة وتشغيل البوت",
+        callback_data="control_toggle_bot",
+    ))
+    service_rows = (
+        ("سيرياتل كاش", "syriatel_status", "toggle_syriatel", "edit_syriatel"),
+        ("شام كاش", "sham_status", "toggle_sham", "edit_sham"),
+        ("USDT", "usdt_status", "toggle_usdt", "setup_usdt"),
+        ("Binance", "binance_status", "toggle_binance", "setup_binance"),
+    )
+    for label, setting_key, callback, edit_callback in service_rows:
+        current = get_db_setting(setting_key) or ('active' if setting_key == 'syriatel_status' else 'متوقف')
+        active = current == 'active'
+        keyboard.add(
+            types.InlineKeyboardButton(
+                f"{'🟢' if active else '🔴'} {label}: {'إيقاف' if active else 'تشغيل'}",
+                callback_data=callback,
+            ),
+            types.InlineKeyboardButton(f"✏️ تعديل {label}", callback_data=edit_callback),
+        )
+    wheel_active = wheel_is_enabled()
+    keyboard.add(types.InlineKeyboardButton(
+        f"{'🟢' if wheel_active else '🔴'} عجلة الحظ: {'إيقاف' if wheel_active else 'تشغيل'}",
+        callback_data="control_toggle_wheel",
+    ))
+    keyboard.add(
+        types.InlineKeyboardButton("🔌 إدارة اتصالات API", callback_data="admin_api_connect"),
+        types.InlineKeyboardButton("💳 حدود وعمولات الدفع", callback_data="admin_payment"),
+    )
+    keyboard.add(types.InlineKeyboardButton("↩️ رجوع إلى لوحة الإدارة", callback_data="back_to_full_admin"))
+    return keyboard
+
+def get_operations_control_text():
+    mode = get_operation_mode()
+    bot_status = get_db_setting('bot_status') or 'active'
+    lines = [
+        "🧰 **مركز التشغيل والصيانة والخدمات**",
+        "",
+        f"وضع التشغيل: {'🧪 تجريبي — قاعدة بيانات اختبار منفصلة' if mode == 'demo' else '🚀 حقيقي — قاعدة بيانات الإنتاج'}",
+        f"حالة البوت: {'🛑 صيانة' if bot_status != 'active' else '🟢 يعمل'}",
+        "",
+        "**حالة الخدمات:**",
+    ]
+    for label, key in (
+        ('سيرياتل كاش', 'syriatel_status'),
+        ('شام كاش', 'sham_status'),
+        ('USDT', 'usdt_status'),
+        ('Binance', 'binance_status'),
+    ):
+        value = get_db_setting(key) or ('active' if key == 'syriatel_status' else 'متوقف')
+        lines.append(f"• {label}: {'🟢 تعمل' if value == 'active' else '🔴 متوقفة'}")
+    lines.append(f"• عجلة الحظ: {'🟢 تعمل' if wheel_is_enabled() else '🔴 متوقفة'}")
+    lines.extend([
+        "",
+        "ملاحظة: إعدادات API لا تُفعّل تكاملاً حقيقياً وحدها. أي API يبقى معطلاً حتى يكتمل موصله واختباره.",
+    ])
+    return "\n".join(lines)
+
+def render_operations_control(chat_id, message_id=None):
+    text = get_operations_control_text()
+    keyboard = get_operations_control_keyboard()
+    if message_id is not None:
+        try:
+            bot.edit_message_text(text, chat_id, message_id, reply_markup=keyboard, parse_mode="Markdown")
+            return
+        except Exception:
+            logger.debug("Could not edit control panel message; sending a fresh panel.")
+    bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="Markdown")
+
 def get_admin_category_keyboard(category):
     """إنشاء قوائم فرعية قصيرة ومصنفة دون تكرار لوحة الإدارة داخلها."""
+    if category == 'control':
+        return get_operations_control_keyboard()
     categories = {
         "users": [
             ("👥 إدارة المستخدمين", "admin_users"),
             ("🛡️ المشرفون والصلاحيات", "admin_moderators"),
         ],
         "finance": [
-            ("💳 إعدادات الدفع والحدود", "admin_payment"),
             ("🏢 غرفة العمليات", "admin_operations_room"),
             ("👥 نظام الإحالات", "admin_referrals"),
             ("🎁 نظام الهدايا", "admin_gifts"),
         ],
         "services": [
             ("🔌 اتصالات API", "admin_api_connect"),
-            ("🎡 عجلة الحظ", "wheel_admin"),
-            ("💳 إعدادات وسائل الدفع", "admin_payment"),
+            ("🎡 إدارة جوائز عجلة الحظ", "wheel_admin"),
         ],
         "content": [
             ("📝 إدارة الأزرار", "admin_buttons"),
@@ -3816,34 +3900,13 @@ def get_available_actions_keyboard(button_text):
     return keyboard
 
 def get_payment_settings_keyboard():
-    """لوحة إعدادات الدفع"""
+    """لوحة الحدود والعمولات فقط؛ تشغيل الخدمات وتعديل بياناتها في مركز التحكم."""
     keyboard = types.InlineKeyboardMarkup(row_width=2)
-    
-    # حالة الخدمات
-    syriatel_status = get_db_setting('syriatel_status') or 'active'
-    sham_status = get_db_setting('sham_status') or 'متوقف'
-    usdt_status = get_db_setting('usdt_status') or 'متوقف'
-    binance_status = get_db_setting('binance_status') or 'متوقف'
-    
-    sy_icon = "🟢" if syriatel_status == 'active' else "🔴"
-    sh_icon = "🟢" if sham_status == 'active' else "🔴"
-    usdt_icon = "🟢" if usdt_status == 'active' else "🔴"
-    bin_icon = "🟢" if binance_status == 'active' else "🔴"
-    
     keyboard.add(
-        types.InlineKeyboardButton(f"{sy_icon} تعديل سيرياتل", callback_data="edit_syriatel"),
-        types.InlineKeyboardButton(f"{sh_icon} تعديل شام", callback_data="edit_sham"),
-        types.InlineKeyboardButton(f"{sy_icon} فتح/إغلاق سيرياتل", callback_data="toggle_syriatel"),
-        types.InlineKeyboardButton(f"{sh_icon} فتح/إغلاق شام", callback_data="toggle_sham"),
-        types.InlineKeyboardButton(f"{usdt_icon} إعداد USDT", callback_data="setup_usdt"),
-        types.InlineKeyboardButton(f"{bin_icon} إعداد Binance", callback_data="setup_binance"),
-        types.InlineKeyboardButton(f"{usdt_icon} فتح/إغلاق USDT", callback_data="toggle_usdt"),
-        types.InlineKeyboardButton(f"{bin_icon} فتح/إغلاق Binance", callback_data="toggle_binance"),
-        types.InlineKeyboardButton("💰 تعديل الحدود", callback_data="edit_limits"),
+        types.InlineKeyboardButton("💰 تعديل حدود الشحن والسحب", callback_data="edit_limits"),
         types.InlineKeyboardButton("💸 تعديل العمولة", callback_data="edit_commission"),
-        types.InlineKeyboardButton("🔌 تفعيل API", callback_data="toggle_api"),
-        types.InlineKeyboardButton("📊 حالة الخدمات", callback_data="payment_status"),
-        types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_full_admin")
+        types.InlineKeyboardButton("📊 عرض حالة الخدمات", callback_data="payment_status"),
+        types.InlineKeyboardButton("🔙 رجوع إلى مركز التحكم", callback_data="admin_control_center"),
     )
     return keyboard
 
@@ -3881,7 +3944,6 @@ def get_bot_settings_keyboard():
     """لوحة إعدادات البوت"""
     keyboard = types.InlineKeyboardMarkup(row_width=2)
     keyboard.add(
-        types.InlineKeyboardButton("🟢 تفعيل/تعطيل", callback_data="toggle_bot"),
         types.InlineKeyboardButton("📝 تعديل رسالة الترحيب", callback_data="edit_welcome"),
         types.InlineKeyboardButton("📜 تعديل الشروط", callback_data="edit_terms"),
         types.InlineKeyboardButton("👥 تعديل نسبة الإحالات", callback_data="edit_referral"),
@@ -5937,13 +5999,16 @@ def handle_all_callbacks(call):
             safe_answer_callback(call.id, "❌ لا تملك صلاحية الوصول إلى لوحة الإدارة الكاملة.", show_alert=True)
             return
         category = data.removeprefix('admin_cat_')
-        bot.edit_message_text(
-            admin_category_titles[data] + "\n\nاختر الوظيفة المطلوبة:",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=get_admin_category_keyboard(category),
-            parse_mode="Markdown",
-        )
+        if category == 'control':
+            render_operations_control(call.message.chat.id, call.message.message_id)
+        else:
+            bot.edit_message_text(
+                admin_category_titles[data] + "\n\nاختر الوظيفة المطلوبة:",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=get_admin_category_keyboard(category),
+                parse_mode="Markdown",
+            )
         return
 
     # ===== إدارة الأزرار (admin_buttons) =====
