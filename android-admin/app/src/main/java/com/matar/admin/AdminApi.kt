@@ -128,6 +128,21 @@ object AdminApi {
         }
     }
 
+    fun loadNotifications(token: String): Map<String, Boolean>? {
+        val (status, body) = request("GET", "/api/admin/notifications", token, null)
+        if (status !in 200..299) return null
+        return try {
+            val prefs = JSONObject(body).optJSONObject("preferences") ?: return null
+            buildMap {
+                for (key in listOf("charge_new", "withdraw_new", "financial_error", "moderator_actions", "referrals", "bot_offline", "ai_decisions")) {
+                    put(key, prefs.optBoolean(key, false))
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     fun saveNotifications(token: String, preferences: Map<String, Boolean>): Boolean {
         val prefs = JSONObject()
         preferences.forEach { (key, value) -> prefs.put(key, value) }
