@@ -13,7 +13,7 @@ data class ModeratorItem(
     val permissions: Map<String, Boolean>
 )
 
-data class BotButtonItem(val id: Int, val key: String, val text: String, val message: String, val parent: String, val active: Boolean, val requiresSubscription: Boolean)
+data class BotButtonItem(val id: Int, val key: String, val text: String, val message: String, val parent: String, val action: String, val active: Boolean, val requiresSubscription: Boolean)
 data class AuditItem(val id: Long, val admin: String, val action: String, val details: String, val createdAt: String)
 
 data class AdminLoginResult(
@@ -177,7 +177,8 @@ object AdminApi {
                     val item = items.optJSONObject(i) ?: continue
                     add(BotButtonItem(item.optInt("id"), item.optString("button_name"),
                         item.optString("button_text"), item.optString("message_text"),
-                        item.optString("parent_button"), item.optInt("is_active", 1) == 1 || item.optBoolean("is_active"),
+                        item.optString("parent_button"), item.optString("action"),
+                        item.optInt("is_active", 1) == 1 || item.optBoolean("is_active"),
                         item.optInt("requires_subscription", 0) == 1 || item.optBoolean("requires_subscription")))
                 }
             }
@@ -185,8 +186,9 @@ object AdminApi {
     }
 
     fun updateButton(token: String, buttonId: Int, buttonText: String, messageText: String,
-                     requiresSubscription: Boolean, active: Boolean): String? {
+                     parentButton: String, action: String, requiresSubscription: Boolean, active: Boolean): String? {
         val payload = JSONObject().put("button_text", buttonText).put("message_text", messageText)
+            .put("parent_button", parentButton).put("action", action)
             .put("requires_subscription", requiresSubscription).put("is_active", active)
         val (status, body) = request("PUT", "/api/admin/buttons/$buttonId", token, payload)
         return if (status in 200..299) null else apiError(body, "تعذر حفظ الزر.")

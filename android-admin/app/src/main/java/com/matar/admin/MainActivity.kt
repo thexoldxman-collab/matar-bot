@@ -381,11 +381,11 @@ private fun MatarAdminApp() {
                             Page.BUTTONS -> ButtonsScreen(
                                 items = buttons,
                                 status = buttonMessage,
-                                onSave = { id, text, message, subscription, active ->
+                                onSave = { id, text, message, parent, action, subscription, active ->
                                     val token = accessToken
                                     if (token == null) buttonMessage = "سجّل الدخول أولاً."
                                     else scope.launch {
-                                        val error = withContext(Dispatchers.IO) { AdminApi.updateButton(token, id, text, message, subscription, active) }
+                                        val error = withContext(Dispatchers.IO) { AdminApi.updateButton(token, id, text, message, parent, action, subscription, active) }
                                         buttonMessage = error ?: "تم حفظ التعديلات."
                                         buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(token) } ?: buttons
                                     }
@@ -804,7 +804,7 @@ private fun SettingsScreen(
 private fun ButtonsScreen(
     items: List<BotButtonItem>,
     status: String,
-    onSave: (Int, String, String, Boolean, Boolean) -> Unit
+    onSave: (Int, String, String, String, String, Boolean, Boolean) -> Unit
 ) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("إدارة أزرار البوت", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
@@ -816,9 +816,11 @@ private fun ButtonsScreen(
 }
 
 @Composable
-private fun ButtonEditorCard(item: BotButtonItem, onSave: (Int, String, String, Boolean, Boolean) -> Unit) {
+private fun ButtonEditorCard(item: BotButtonItem, onSave: (Int, String, String, String, String, Boolean, Boolean) -> Unit) {
     var buttonText by remember(item.id, item.text) { mutableStateOf(item.text) }
     var messageText by remember(item.id, item.message) { mutableStateOf(item.message) }
+    var parentButton by remember(item.id, item.parent) { mutableStateOf(item.parent) }
+    var action by remember(item.id, item.action) { mutableStateOf(item.action) }
     var active by remember(item.id, item.active) { mutableStateOf(item.active) }
     var requiresSubscription by remember(item.id, item.requiresSubscription) { mutableStateOf(item.requiresSubscription) }
     Card(Modifier.fillMaxWidth()) {
@@ -826,6 +828,8 @@ private fun ButtonEditorCard(item: BotButtonItem, onSave: (Int, String, String, 
             Text(item.key, style = MaterialTheme.typography.labelMedium)
             OutlinedTextField(value = buttonText, onValueChange = { buttonText = it.take(150) }, label = { Text("نص الزر") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             OutlinedTextField(value = messageText, onValueChange = { messageText = it.take(4000) }, label = { Text("نص الرسالة / النافذة") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+            OutlinedTextField(value = parentButton, onValueChange = { parentButton = it.take(150) }, label = { Text("الفرع الأب / القائمة") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(value = action, onValueChange = { action = it.take(150) }, label = { Text("الإجراء المرتبط بالزر") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("الزر مفعّل", modifier = Modifier.weight(1f))
                 Switch(checked = active, onCheckedChange = { active = it })
@@ -834,7 +838,7 @@ private fun ButtonEditorCard(item: BotButtonItem, onSave: (Int, String, String, 
                 Text("اشتراك إجباري", modifier = Modifier.weight(1f))
                 Switch(checked = requiresSubscription, onCheckedChange = { requiresSubscription = it })
             }
-            Button(onClick = { onSave(item.id, buttonText, messageText, requiresSubscription, active) }, modifier = Modifier.fillMaxWidth()) { Text("حفظ تعديلات الزر") }
+            Button(onClick = { onSave(item.id, buttonText, messageText, parentButton, action, requiresSubscription, active) }, modifier = Modifier.fillMaxWidth()) { Text("حفظ تعديلات الزر") }
         }
     }
 }
