@@ -58,4 +58,4 @@ jobs:
           REQUIRE_PERSISTENT_DATABASE: "1"
         run: python postgres_startup_smoke.py
       - name: Run pyflakes
-        run: python -m pyflakes Matar-bot-FINAL-merged.py matar_db.py tests
+        run: python -m pyflakes Matar-bot-FINAL-merged.py matar_db.py matar_admin_auth.py matar_admin_api.py tests
