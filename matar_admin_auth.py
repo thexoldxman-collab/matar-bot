@@ -80,13 +80,12 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
                 result[key] = False
         return result
 
-    @bot.message_handler(commands=["link"])
-    def issue_link_code(message):
-        user_id = int(message.from_user.id)
+    def issue_link_code_for_user(user_id, chat_id):
+        user_id = int(user_id)
         role = current_role(user_id)
         if role is None:
             bot.send_message(
-                message.chat.id,
+                chat_id,
                 "❌ ربط التطبيق متاح للمالك والمشرفين المضافين فقط.",
             )
             return
@@ -104,11 +103,15 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
             )
             conn.commit()
         bot.send_message(
-            message.chat.id,
+            chat_id,
             "🔐 رمز ربط تطبيق إدارة ماتر\n\n"
             f"الرمز: {code}\n"
             "صالح لمدة 5 دقائق ولمرة واحدة فقط. لا تشاركه مع أي شخص.",
         )
+
+    @bot.message_handler(commands=["link"])
+    def issue_link_code(message):
+        issue_link_code_for_user(message.from_user.id, message.chat.id)
 
     @app.post("/api/admin/auth/verify")
     def verify_link_code():
