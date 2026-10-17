@@ -176,13 +176,13 @@ class RetrySystem:
         self.retry_queue = []
         self.running = False
     
-    def add_to_queue(self, queued_request_type, user_id, data):
+    def add_to_queue(self, request_type, user_id, data):
         """
         إضافة طلب إلى قائمة الانتظار
         """
         queued_request = {
             'id': len(self.retry_queue) + 1,
-            'type': queued_request_type,
+            'type': request_type,
             'user_id': user_id,
             'data': data,
             'attempts': 0,
@@ -192,7 +192,7 @@ class RetrySystem:
             'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         self.retry_queue.append(queued_request)
-        retry_logger.info(f"📥 طلب {queued_request_type} للمستخدم {user_id} أضيف لقائمة الانتظار")
+        retry_logger.info(f"📥 طلب {request_type} للمستخدم {user_id} أضيف لقائمة الانتظار")
         return queued_request['id']
     
     def process_queue(self):
@@ -218,7 +218,7 @@ class RetrySystem:
             queued_request['last_attempt'] = now.strftime("%Y-%m-%d %H:%M:%S")
             
             try:
-                success = self.execute_queued_request(queued_request)
+                success = self.execute_request(queued_request)
                 if success:
                     queued_request['status'] = 'success'
                     retry_logger.info(f"✅ طلب {queued_request['type']} للمستخدم {queued_request['user_id']} نجح بعد {queued_request['attempts']} محاولات")
@@ -236,12 +236,12 @@ class RetrySystem:
             except Exception as e:
                 error_logger.error(f"خطأ في إعادة المحاولة: {e}")
     
-    def execute_queued_request(self, queued_request):
+    def execute_request(self, queued_request):
         """
         تنفيذ الطلب (يتم تخصيصها حسب النوع)
         """
         # لا يوجد تنفيذ موثوق لأنواع الطلبات في هذه النسخة؛ لا نعيد محاولة مالية وهمية.
-        retry_logger.warning('RetrySystem disabled: execute_queued_request has no registered handlers')
+        retry_logger.warning('RetrySystem disabled: execute_request has no registered handlers')
         return False
 
 # تهيئة نظام إعادة المحاولة
