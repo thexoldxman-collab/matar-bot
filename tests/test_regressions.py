@@ -1754,13 +1754,12 @@ class RegressionTests(unittest.TestCase):
         m = self.m
         call = self.fake_call('ai_chat')
         call.from_user.id = m.ADMIN_ID + 10
-        with patch.object(m, 'check_bot_status', return_value=False), \\
-             patch.object(m, 'safe_answer_callback') as answer, \\
-             patch.object(m, 'start_ai_chat') as start_ai:
-            m.handle_all_callbacks(call)
+        with patch.object(m, 'check_bot_status', return_value=False):
+            with patch.object(m, 'safe_answer_callback') as answer:
+                with patch.object(m, 'start_ai_chat') as start_ai:
+                    m.handle_all_callbacks(call)
         answer.assert_called_once()
         start_ai.assert_not_called()
-
 
     def test_database_target_comparison_ignores_connection_query_parameters(self):
         m = self.m
