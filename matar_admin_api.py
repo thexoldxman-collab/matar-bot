@@ -38,7 +38,7 @@ def _iso(value=None):
 def register_admin_api(
     app, bot, conn, db_lock, owner_id, check_permission,
     get_operation_mode=None, complete_charge=None, complete_withdraw=None,
-    cancel_charge=None, cancel_withdraw=None
+    cancel_charge=None, cancel_withdraw=None, get_conn=None
 ):
     """Register safe management endpoints. Call after register_admin_auth."""
     conn.execute("""CREATE TABLE IF NOT EXISTS admin_operation_claims (
@@ -55,6 +55,27 @@ def register_admin_api(
         updated_at TEXT NOT NULL
     )""")
     conn.commit()
+    initialized_connections = {id(conn)}
+
+    def db():
+        active = get_conn() if callable(get_conn) else conn
+        if id(active) not in initialized_connections:
+            active.execute("""CREATE TABLE IF NOT EXISTS admin_operation_claims (
+                operation_type TEXT NOT NULL,
+                operation_id INTEGER NOT NULL,
+                claimed_by BIGINT NOT NULL,
+                claimed_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                PRIMARY KEY (operation_type, operation_id)
+            )""")
+            active.execute("""CREATE TABLE IF NOT EXISTS admin_app_preferences (
+                user_id BIGINT PRIMARY KEY,
+                preferences TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )""")
+            active.commit()
+            initialized_connections.add(id(active))
+        return active
 
     def session():
         getter = app.config.get("MATAR_ADMIN_AUTH_SESSION")
@@ -90,7 +111,7 @@ def register_admin_api(
 
     def audit(user, action, details, target_user=None, amount=None):
         try:
-            conn.execute(
+            db().execute(
                 """INSERT INTO admin_logs
                    (admin_id, display_name, action_type, details, target_user, amount, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -98,7 +119,7 @@ def register_admin_api(
                  str(action)[:120], str(details)[:1000], target_user, amount,
                  _now().strftime("%Y-%m-%d %H:%M:%S")),
             )
-            conn.commit()
+            db().commit()
         except Exception:
             app.logger.exception("Could not write admin app audit log")
 
@@ -108,20 +129,20 @@ def register_admin_api(
     def ensure_claims_table():
         # Reopen the underlying request when the ten-minute lease expires.
         now_text = _iso()
-        expired = conn.execute(
+        expired = db().execute(
             "SELECT operation_type,operation_id,claimed_by FROM admin_operation_claims WHERE expires_at<=?",
             (now_text,),
         ).fetchall()
         for claim in expired:
             operation_type, operation_id, claimed_by = claim
             table = "pending_charges" if operation_type == "charge" else "pending_withdraws"
-            conn.execute(
+            db().execute(
                 f"""UPDATE {table} SET status='pending', processed_by=NULL, processed_at=NULL
                     WHERE id=? AND status='processing' AND processed_by=?""",
                 (int(operation_id), int(claimed_by)),
             )
-        conn.execute("DELETE FROM admin_operation_claims WHERE expires_at<=?", (now_text,))
-        conn.commit()
+        db().execute("DELETE FROM admin_operation_claims WHERE expires_at<=?", (now_text,))
+        db().commit()
 
     @app.get("/api/admin/dashboard")
     def admin_dashboard():
@@ -132,7 +153,7 @@ def register_admin_api(
             return forbidden()
         with db_lock:
             def count(sql, args=()):
-                row = conn.execute(sql, args).fetchone()
+                row = db().execute(sql, args).fetchone()
                 return int(row[0] or 0) if row else 0
             try:
                 payload = {
@@ -160,7 +181,7 @@ def register_admin_api(
             try:
                 ensure_claims_table()
                 if allowed(user, "can_handle_charges"):
-                    rows = conn.execute(
+                    rows = db().execute(
                         """SELECT id,user_id,amount,method,status,created_at,receipt_number
                            FROM pending_charges WHERE status IN ('pending','processing')
                            ORDER BY created_at ASC LIMIT 100"""
@@ -171,7 +192,7 @@ def register_admin_api(
                                       "status": row[4] or "pending", "created_at": row[5] or "",
                                       "reference": row[6] or ""})
                 if allowed(user, "can_handle_withdraws"):
-                    rows = conn.execute(
+                    rows = db().execute(
                         """SELECT id,user_id,amount,net_amount,method,status,created_at,account
                            FROM pending_withdraws WHERE status IN ('pending','processing')
                            ORDER BY created_at ASC LIMIT 100"""
@@ -182,7 +203,7 @@ def register_admin_api(
                                       "method": row[4] or "", "status": row[5] or "pending",
                                       "created_at": row[6] or "", "reference": row[7] or ""})
                 for item in items:
-                    claim = conn.execute(
+                    claim = db().execute(
                         """SELECT claimed_by,claimed_at,expires_at FROM admin_operation_claims
                            WHERE operation_type=? AND operation_id=? AND expires_at>?""",
                         (item["type"], item["id"], _iso()),
@@ -211,54 +232,54 @@ def register_admin_api(
         with db_lock:
             try:
                 ensure_claims_table()
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
+                db().execute("BEGIN IMMEDIATE")
+                row = db().execute(
                     f"SELECT status,processed_by FROM {table} WHERE id=?", (operation_id,)
                 ).fetchone()
                 if not row:
-                    conn.rollback()
+                    db().rollback()
                     return jsonify({"ok": False, "error": "operation_not_found"}), 404
                 if row[0] not in ("pending", "processing"):
-                    conn.rollback()
+                    db().rollback()
                     return jsonify({"ok": False, "error": "operation_not_open"}), 409
-                existing = conn.execute(
+                existing = db().execute(
                     """SELECT claimed_by,expires_at FROM admin_operation_claims
                        WHERE operation_type=? AND operation_id=?""",
                     (operation_type, operation_id),
                 ).fetchone()
                 uid = int(user["telegram_id"])
                 if existing and str(existing[1]) > now_text and int(existing[0]) != uid:
-                    conn.rollback()
+                    db().rollback()
                     return jsonify({"ok": False, "error": "already_claimed"}), 409
                 processed_by = row[1]
                 if row[0] == "processing" and processed_by not in (None, uid):
-                    conn.rollback()
+                    db().rollback()
                     return jsonify({"ok": False, "error": "already_claimed"}), 409
-                updated = conn.execute(
+                updated = db().execute(
                     f"""UPDATE {table} SET status='processing',processed_by=?
                         WHERE id=? AND status IN ('pending','processing')""",
                     (uid, operation_id),
                 )
                 if updated.rowcount != 1:
-                    conn.rollback()
+                    db().rollback()
                     return jsonify({"ok": False, "error": "already_claimed"}), 409
                 if existing:
-                    conn.execute(
+                    db().execute(
                         """UPDATE admin_operation_claims SET claimed_by=?,claimed_at=?,expires_at=?
                            WHERE operation_type=? AND operation_id=?""",
                         (uid, now_text, expiry, operation_type, operation_id),
                     )
                 else:
-                    conn.execute(
+                    db().execute(
                         """INSERT INTO admin_operation_claims
                            (operation_type,operation_id,claimed_by,claimed_at,expires_at)
                            VALUES (?,?,?,?,?)""",
                         (operation_type, operation_id, uid, now_text, expiry),
                     )
-                conn.commit()
+                db().commit()
                 audit(user, "استلام طلب", f"{operation_type}:{operation_id} لمدة 10 دقائق")
             except Exception:
-                conn.rollback()
+                db().rollback()
                 app.logger.exception("Claim operation failed")
                 return jsonify({"ok": False, "error": "claim_unavailable"}), 503
         return jsonify({"ok": True, "claimed_by": int(user["telegram_id"]),
@@ -274,7 +295,7 @@ def register_admin_api(
         if not allowed(user, permission_for_type(operation_type)):
             return forbidden()
         with db_lock:
-            row = conn.execute(
+            row = db().execute(
                 """SELECT claimed_by FROM admin_operation_claims
                    WHERE operation_type=? AND operation_id=?""",
                 (operation_type, operation_id),
@@ -285,16 +306,16 @@ def register_admin_api(
             if claimed_by != int(user["telegram_id"]) and user.get("role") != "owner":
                 return forbidden()
             table = "pending_charges" if operation_type == "charge" else "pending_withdraws"
-            conn.execute(
+            db().execute(
                 f"""UPDATE {table} SET status='pending',processed_by=NULL,processed_at=NULL
                     WHERE id=? AND status='processing' AND processed_by=?""",
                 (operation_id, claimed_by),
             )
-            conn.execute(
+            db().execute(
                 "DELETE FROM admin_operation_claims WHERE operation_type=? AND operation_id=?",
                 (operation_type, operation_id),
             )
-            conn.commit()
+            db().commit()
             audit(user, "تحرير طلب", f"{operation_type}:{operation_id}")
         return jsonify({"ok": True, "message": "تم تحرير الطلب."}), 200
 
@@ -322,7 +343,7 @@ def register_admin_api(
                             "message": "معالج العملية غير متاح؛ لم تتغير الأرصدة."}), 503
         uid = int(user["telegram_id"])
         with db_lock:
-            claim = conn.execute(
+            claim = db().execute(
                 """SELECT claimed_by,expires_at FROM admin_operation_claims
                    WHERE operation_type=? AND operation_id=?""",
                 (operation_type, operation_id),
@@ -339,12 +360,12 @@ def register_admin_api(
                 return jsonify({"ok": False, "error": status,
                                 "message": "لم يتم اعتماد العملية. راجع حالة الطلب؛ لم نعلن نجاحاً."}), 409
             with db_lock:
-                conn.execute("DELETE FROM admin_operation_claims WHERE operation_type=? AND operation_id=?",
+                db().execute("DELETE FROM admin_operation_claims WHERE operation_type=? AND operation_id=?",
                              (operation_type, operation_id))
-                conn.commit()
+                db().commit()
             # Notify the customer only after the atomic helper confirms success.
             table = "pending_charges" if operation_type == "charge" else "pending_withdraws"
-            row = conn.execute(f"SELECT user_id,amount FROM {table} WHERE id=?", (operation_id,)).fetchone()
+            row = db().execute(f"SELECT user_id,amount FROM {table} WHERE id=?", (operation_id,)).fetchone()
             if row:
                 try:
                     bot.send_message(int(row[0]), "✅ تم تحديث حالة طلبك واعتماد معالجته من إدارة مطر.")
@@ -385,9 +406,9 @@ def register_admin_api(
                 return jsonify({"ok": False, "error": status,
                                 "message": "تعذر إلغاء الطلب؛ لم يتم تأكيد الإلغاء."}), 409
             with db_lock:
-                conn.execute("DELETE FROM admin_operation_claims WHERE operation_type=? AND operation_id=?",
+                db().execute("DELETE FROM admin_operation_claims WHERE operation_type=? AND operation_id=?",
                              (operation_type, operation_id))
-                conn.commit()
+                db().commit()
             target_id = int(result["user_id"])
             try:
                 bot.send_message(target_id, "❌ تم إلغاء طلبك من إدارة مطر. السبب: " + reason)
@@ -406,7 +427,7 @@ def register_admin_api(
         if not user:
             return denied()
         with db_lock:
-            row = conn.execute(
+            row = db().execute(
                 "SELECT preferences FROM admin_app_preferences WHERE user_id=?",
                 (int(user["telegram_id"]),),
             ).fetchone()
@@ -429,13 +450,13 @@ def register_admin_api(
         if not isinstance(prefs, dict) or any(k not in PREFERENCE_KEYS or not isinstance(v, bool) for k, v in prefs.items()):
             return jsonify({"ok": False, "error": "invalid_preferences"}), 400
         with db_lock:
-            conn.execute(
+            db().execute(
                 """INSERT INTO admin_app_preferences(user_id,preferences,updated_at)
                    VALUES (?,?,?)
                    ON CONFLICT(user_id) DO UPDATE SET preferences=excluded.preferences,updated_at=excluded.updated_at""",
                 (int(user["telegram_id"]), json.dumps(prefs, ensure_ascii=False), _iso()),
             )
-            conn.commit()
+            db().commit()
             audit(user, "تحديث تفضيلات الإدارة", "تحديث تفضيلات إشعارات التطبيق")
         return jsonify({"ok": True}), 200
 
@@ -447,7 +468,7 @@ def register_admin_api(
         if not allowed(user, "can_manage_moderators"):
             return forbidden()
         with db_lock:
-            rows = conn.execute(
+            rows = db().execute(
                 """SELECT user_id,custom_name,added_by,added_at,can_reply_tickets,can_handle_charges,
                           can_handle_withdraws,can_send_broadcast,can_manage_users,can_charge_withdraw_users,
                           can_view_stats,can_manage_buttons,can_access_full_admin,can_manage_moderators,can_use_ai
@@ -494,11 +515,11 @@ def register_admin_api(
         values.extend(1 if permissions.get(field, False) else 0 for field in fields)
         placeholders = ",".join("?" for _ in columns)
         with db_lock:
-            exists = conn.execute("SELECT 1 FROM moderators WHERE user_id=?", (target,)).fetchone()
+            exists = db().execute("SELECT 1 FROM moderators WHERE user_id=?", (target,)).fetchone()
             if exists:
                 return jsonify({"ok": False, "error": "moderator_exists"}), 409
-            conn.execute(f"INSERT INTO moderators ({','.join(columns)}) VALUES ({placeholders})", tuple(values))
-            conn.commit()
+            db().execute(f"INSERT INTO moderators ({','.join(columns)}) VALUES ({placeholders})", tuple(values))
+            db().commit()
             audit(user, "إضافة مشرف", f"إضافة المشرف {target}", target_user=target)
         return jsonify({"ok": True}), 201
 
@@ -528,8 +549,8 @@ def register_admin_api(
             return jsonify({"ok": False, "error": "nothing_to_update"}), 400
         values.append(target_id)
         with db_lock:
-            cur = conn.execute(f"UPDATE moderators SET {','.join(updates)} WHERE user_id=?", tuple(values))
-            conn.commit()
+            cur = db().execute(f"UPDATE moderators SET {','.join(updates)} WHERE user_id=?", tuple(values))
+            db().commit()
             if cur.rowcount != 1:
                 return jsonify({"ok": False, "error": "moderator_not_found"}), 404
             audit(user, "تعديل صلاحيات مشرف", f"تعديل المشرف {target_id}", target_user=target_id)
@@ -545,8 +566,8 @@ def register_admin_api(
         if target_id == int(owner_id) or (target_id == int(user["telegram_id"]) and user.get("role") != "owner"):
             return jsonify({"ok": False, "error": "protected_moderator"}), 403
         with db_lock:
-            cur = conn.execute("DELETE FROM moderators WHERE user_id=?", (target_id,))
-            conn.commit()
+            cur = db().execute("DELETE FROM moderators WHERE user_id=?", (target_id,))
+            db().commit()
             if cur.rowcount != 1:
                 return jsonify({"ok": False, "error": "moderator_not_found"}), 404
             audit(user, "حذف مشرف", f"حذف المشرف {target_id}", target_user=target_id)
@@ -560,7 +581,7 @@ def register_admin_api(
         if not allowed(user, "can_manage_buttons"):
             return forbidden()
         with db_lock:
-            rows = conn.execute(
+            rows = db().execute(
                 """SELECT id,button_name,button_text,parent_button,button_type,action,message_text,
                           level,sort_order,is_active,requires_subscription,requires_admin,
                           requires_moderator,path
@@ -601,8 +622,8 @@ def register_admin_api(
         values.append(_now().strftime("%Y-%m-%d %H:%M:%S"))
         values.append(button_id)
         with db_lock:
-            cur = conn.execute(f"UPDATE dynamic_buttons SET {','.join(updates)} WHERE id=?", tuple(values))
-            conn.commit()
+            cur = db().execute(f"UPDATE dynamic_buttons SET {','.join(updates)} WHERE id=?", tuple(values))
+            db().commit()
             if cur.rowcount != 1:
                 return jsonify({"ok": False, "error": "button_not_found"}), 404
             audit(user, "تعديل زر", f"تعديل الزر رقم {button_id}")
@@ -616,7 +637,7 @@ def register_admin_api(
         if not allowed(user, "can_view_stats"):
             return forbidden()
         with db_lock:
-            rows = conn.execute(
+            rows = db().execute(
                 """SELECT id,admin_id,display_name,action_type,details,target_user,amount,created_at
                    FROM admin_logs ORDER BY id DESC LIMIT 100"""
             ).fetchall()
@@ -636,10 +657,10 @@ def register_admin_api(
         if not message or len(message) > 4000 or audience not in ("all", "moderators"):
             return jsonify({"ok": False, "error": "invalid_message"}), 400
         if audience == "all":
-            rows = conn.execute("SELECT user_id FROM users WHERE COALESCE(deleted,0)=0 AND COALESCE(status,'active')='active' ORDER BY user_id LIMIT 5000").fetchall()
+            rows = db().execute("SELECT user_id FROM users WHERE COALESCE(deleted,0)=0 AND COALESCE(status,'active')='active' ORDER BY user_id LIMIT 5000").fetchall()
             ids = [int(row[0]) for row in rows]
         else:
-            rows = conn.execute("SELECT user_id FROM moderators ORDER BY user_id").fetchall()
+            rows = db().execute("SELECT user_id FROM moderators ORDER BY user_id").fetchall()
             ids = [int(row[0]) for row in rows]
             if int(owner_id) not in ids:
                 ids.append(int(owner_id))
