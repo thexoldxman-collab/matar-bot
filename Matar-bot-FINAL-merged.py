@@ -3533,7 +3533,7 @@ def get_full_admin_keyboard():
     keyboard.add(
         types.InlineKeyboardButton("👥 المستخدمون والمشرفون", callback_data="admin_cat_users"),
         types.InlineKeyboardButton("💰 المال والعمليات", callback_data="admin_cat_finance"),
-        types.InlineKeyboardButton("💳 الخدمات ووسائل الدفع", callback_data="admin_cat_services"),
+        types.InlineKeyboardButton("🔌 التكاملات والميزات", callback_data="admin_cat_services"),
         types.InlineKeyboardButton("🧩 الأزرار والرسائل", callback_data="admin_cat_content"),
         types.InlineKeyboardButton("📊 التقارير والسجلات", callback_data="admin_cat_reports"),
         types.InlineKeyboardButton("⚙️ النظام والنسخ الاحتياطي", callback_data="admin_cat_system"),
@@ -3579,7 +3579,7 @@ def get_admin_category_keyboard(category):
     titles = {
         "users": "👥 المستخدمون والمشرفون",
         "finance": "💰 المال والعمليات",
-        "services": "💳 الخدمات ووسائل الدفع",
+        "services": "🔌 التكاملات والميزات",
         "content": "🧩 الأزرار والرسائل",
         "reports": "📊 التقارير والسجلات",
         "system": "⚙️ النظام والنسخ الاحتياطي",
@@ -5772,7 +5772,7 @@ def handle_all_callbacks(call):
     admin_category_titles = {
         'admin_cat_users': '👥 **المستخدمون والمشرفون**',
         'admin_cat_finance': '💰 **المال والعمليات**',
-        'admin_cat_services': '💳 **الخدمات ووسائل الدفع**',
+        'admin_cat_services': '🔌 **التكاملات والميزات**',
         'admin_cat_content': '🧩 **الأزرار والرسائل**',
         'admin_cat_reports': '📊 **التقارير والسجلات**',
         'admin_cat_system': '⚙️ **النظام والنسخ الاحتياطي**',
@@ -6572,7 +6572,10 @@ def handle_all_callbacks(call):
         return
 
     if data == 'back_to_admin':
-        bot.send_message(call.message.chat.id, "🔐 **لوحة التحكم:**", reply_markup=get_admin_main_keyboard(is_owner=(uid == ADMIN_ID), uid=uid))
+        if uid == ADMIN_ID:
+            bot.send_message(call.message.chat.id, "📋 **القائمة الرئيسية:**", reply_markup=get_main_keyboard(uid), parse_mode="Markdown")
+        else:
+            bot.send_message(call.message.chat.id, "🔐 **لوحة تحكم المشرف:**", reply_markup=get_admin_main_keyboard(is_owner=False, uid=uid), parse_mode="Markdown")
         bot.delete_message(call.message.chat.id, call.message.message_id)
         return
 
