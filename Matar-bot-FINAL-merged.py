@@ -8671,7 +8671,7 @@ def main_router(message):
         '📜 الشروط والاحكام', '📞 التواصل مع الدعم', '🔐 إدارة البوت',
         '🔙 العودة للقائمة الرئيسية', '🔙 رجوع',
         '📝 إنشاء حساب جديد', '➕ تعبئة في حسابي', '➖ سحب من حسابي',
-        '🗑 حذف الحساب',
+        '🗑 حذف الحساب', '🛠️ إدارة البوت بالكامل', '⚙️ إعدادات متقدمة',
         '📝 إدارة الأزرار', '📊 نظام الإحالات', '📋 سجل الإجراءات',
         '🔔 إعدادات الإشعارات', '📨 رسالة جماعية', '🤖 المساعد الذكي',
     }
@@ -8867,6 +8867,19 @@ def main_router(message):
             ActionSystem.manage_buttons(uid, message.chat.id)
         else:
             bot.send_message(message.chat.id, "❌ ليس لديك صلاحية للدخول إلى هذه القائمة.")
+
+    # توافق خلفي للأزرار المخصصة القديمة؛ لا تظهر هذه الأزرار في لوحة الإدارة الجديدة.
+    elif text == '🛠️ إدارة البوت بالكامل':
+        if uid == ADMIN_ID:
+            ActionSystem.show_full_admin_menu(uid, message.chat.id)
+        else:
+            bot.send_message(message.chat.id, "❌ هذه القائمة للمالك فقط.")
+
+    elif text == '⚙️ إعدادات متقدمة':
+        if uid == ADMIN_ID:
+            ActionSystem.bot_settings(uid, message.chat.id)
+        else:
+            bot.send_message(message.chat.id, "❌ هذه القائمة للمالك فقط.")
 
     elif text == '📊 نظام الإحالات':
         if uid == ADMIN_ID or check_permission(uid, 'can_view_stats'):
