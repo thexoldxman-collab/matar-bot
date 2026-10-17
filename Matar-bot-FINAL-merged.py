@@ -9222,7 +9222,7 @@ def main_router(message):
         return
 
     # يجب التقاط /link قبل معالج الرسائل العام وقبل فحص الاشتراك.
-    if text.strip().split()[0].split("@")[0].lower() == "/link":
+    if text.strip() and text.strip().split()[0].split("@")[0].lower() == "/link":
         issue_admin_link_code(message)
         return
 
