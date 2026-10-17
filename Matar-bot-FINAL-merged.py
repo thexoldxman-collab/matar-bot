@@ -2847,7 +2847,7 @@ class ActionSystem:
     def show_admin_panel(uid, chat_id):
         """عرض لوحة الإدارة الرئيسية"""
         if uid == ADMIN_ID:
-            bot.send_message(chat_id, "🔐 **لوحة تحكم المالك**", reply_markup=get_admin_main_keyboard(is_owner=True, uid=uid), parse_mode="Markdown")
+            ActionSystem.show_full_admin_menu(uid, chat_id)
         elif is_moderator(uid):
             bot.send_message(chat_id, "🔐 **لوحة تحكم المشرف**", reply_markup=get_admin_main_keyboard(is_owner=False, uid=uid), parse_mode="Markdown")
         else:
@@ -3501,15 +3501,8 @@ def get_admin_main_keyboard(is_owner=False, uid=None):
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
 
     if is_owner:
-        markup.add('🎫 إنشاء كود هدية', '👥 إدارة المستخدمين')
-        markup.add('💰 تغيير أكواد الدفع', '📊 سجل المعاملات')
-        markup.add('📨 رسالة جماعية', '📧 رسالة فردية')
-        markup.add('🔄 استرجاع حساب', '🔧 حالة البوت')
-        markup.add('📋 قاعدة البيانات', '💬 تذاكر الدعم')
-        markup.add('👥 المشرفين', '📊 نظام الإحالات')
-        markup.add('📝 إدارة الأزرار', '🔔 إعدادات الإشعارات')
-        markup.add('🤖 المساعد الذكي', '📋 سجل الإجراءات')
-        markup.add('⚙️ إعدادات متقدمة')
+        # المالك يدخل مباشرة إلى لوحة الإدارة المصنفة عبر زر «إدارة البوت».
+        # لا نعرض لوحة ثانية مليئة بأزرار مكررة داخل لوحة الإدارة.
         markup.add('🔙 العودة للقائمة الرئيسية')
     else:
         # عرض الأزرار حسب صلاحيات المشرف
@@ -3535,27 +3528,66 @@ def get_admin_main_keyboard(is_owner=False, uid=None):
     return markup
 
 def get_full_admin_keyboard():
-    """لوحة التحكم الكامل (للمالك فقط)"""
+    """لوحة الإدارة الرئيسية المصنفة؛ كل وظيفة ضمن قسم واضح."""
     keyboard = types.InlineKeyboardMarkup(row_width=2)
-    
     keyboard.add(
-        types.InlineKeyboardButton("📝 إدارة الأزرار", callback_data="admin_buttons"),
-        types.InlineKeyboardButton("💳 إعدادات الدفع", callback_data="admin_payment"),
-        types.InlineKeyboardButton("👥 إدارة المستخدمين", callback_data="admin_users"),
-        types.InlineKeyboardButton("📊 الإحصائيات", callback_data="admin_stats"),
-        types.InlineKeyboardButton("⚙️ الإعدادات العامة", callback_data="admin_settings"),
-        types.InlineKeyboardButton("📨 رسائل جماعية", callback_data="admin_broadcast"),
-        types.InlineKeyboardButton("🔗 ربط API", callback_data="admin_api_connect"),
-        types.InlineKeyboardButton("👥 صلاحيات المشرفين", callback_data="admin_moderators"),
-        types.InlineKeyboardButton("💾 النسخ الاحتياطي", callback_data="admin_backup"),
-        types.InlineKeyboardButton("🔔 إعدادات الإشعارات", callback_data="admin_notifications"),
-        types.InlineKeyboardButton("📋 سجل الإجراءات", callback_data="admin_logs"),
-        types.InlineKeyboardButton("🎁 نظام الهدايا", callback_data="admin_gifts"),
-        types.InlineKeyboardButton("🎡 عجلة الحظ", callback_data="wheel_admin"),
-        types.InlineKeyboardButton("📊 ادارة الإحالات", callback_data="admin_referrals"),
-        types.InlineKeyboardButton("🏢 غرفة العمليات", callback_data="admin_operations_room"),
-        types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_admin")
+        types.InlineKeyboardButton("👥 المستخدمون والمشرفون", callback_data="admin_cat_users"),
+        types.InlineKeyboardButton("💰 المال والعمليات", callback_data="admin_cat_finance"),
+        types.InlineKeyboardButton("💳 الخدمات ووسائل الدفع", callback_data="admin_cat_services"),
+        types.InlineKeyboardButton("🧩 الأزرار والرسائل", callback_data="admin_cat_content"),
+        types.InlineKeyboardButton("📊 التقارير والسجلات", callback_data="admin_cat_reports"),
+        types.InlineKeyboardButton("⚙️ النظام والنسخ الاحتياطي", callback_data="admin_cat_system"),
+        types.InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back_to_admin")
     )
+    return keyboard
+
+
+def get_admin_category_keyboard(category):
+    """إنشاء قوائم فرعية قصيرة ومصنفة دون تكرار لوحة الإدارة داخلها."""
+    categories = {
+        "users": [
+            ("👥 إدارة المستخدمين", "admin_users"),
+            ("🛡️ المشرفون والصلاحيات", "admin_moderators"),
+        ],
+        "finance": [
+            ("💳 إعدادات الدفع والحدود", "admin_payment"),
+            ("🏢 غرفة العمليات", "admin_operations_room"),
+            ("👥 نظام الإحالات", "admin_referrals"),
+            ("🎁 نظام الهدايا", "admin_gifts"),
+        ],
+        "services": [
+            ("🔌 اتصالات API", "admin_api_connect"),
+            ("🎡 عجلة الحظ", "wheel_admin"),
+            ("💳 إعدادات وسائل الدفع", "admin_payment"),
+        ],
+        "content": [
+            ("📝 إدارة الأزرار", "admin_buttons"),
+            ("⚙️ الترحيب والشروط وإعدادات البوت", "admin_settings"),
+            ("📨 الرسائل الجماعية", "admin_broadcast"),
+            ("🔔 إعدادات الإشعارات", "admin_notifications"),
+        ],
+        "reports": [
+            ("📊 الإحصائيات", "admin_stats"),
+            ("📋 سجل الإجراءات", "admin_logs"),
+        ],
+        "system": [
+            ("💾 النسخ الاحتياطي وقاعدة البيانات", "admin_backup"),
+            ("⚙️ إعدادات البوت العامة", "admin_settings"),
+            ("📋 سجل الإجراءات", "admin_logs"),
+        ],
+    }
+    titles = {
+        "users": "👥 المستخدمون والمشرفون",
+        "finance": "💰 المال والعمليات",
+        "services": "💳 الخدمات ووسائل الدفع",
+        "content": "🧩 الأزرار والرسائل",
+        "reports": "📊 التقارير والسجلات",
+        "system": "⚙️ النظام والنسخ الاحتياطي",
+    }
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    for label, callback_data in categories.get(category, []):
+        keyboard.add(types.InlineKeyboardButton(label, callback_data=callback_data))
+    keyboard.add(types.InlineKeyboardButton("↩️ رجوع إلى لوحة الإدارة", callback_data="back_to_full_admin"))
     return keyboard
 
 def get_buttons_management_keyboard():
@@ -5262,7 +5294,10 @@ def handle_all_callbacks(call):
         safe_answer_callback(call.id)
         user_mode.pop(uid, None)
         if ai_allowed(uid):
-            bot.send_message(call.message.chat.id, '🔙 تم الرجوع.', reply_markup=get_admin_main_keyboard(uid == ADMIN_ID, uid))
+            if uid == ADMIN_ID:
+                ActionSystem.show_full_admin_menu(uid, call.message.chat.id)
+            else:
+                bot.send_message(call.message.chat.id, '🔙 تم الرجوع.', reply_markup=get_admin_main_keyboard(False, uid))
         return
 
     # ===== 1. معالج النسخ (يجب أن يكون الأول) =====
@@ -5731,6 +5766,29 @@ def handle_all_callbacks(call):
                          f"➕ **أدخل اسم الزر الجديد ({parent_display}):**",
                          parse_mode="Markdown")
         bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_btn_add_new, parent)
+        return
+
+    # ===== أقسام لوحة الإدارة المصنفة =====
+    admin_category_titles = {
+        'admin_cat_users': '👥 **المستخدمون والمشرفون**',
+        'admin_cat_finance': '💰 **المال والعمليات**',
+        'admin_cat_services': '💳 **الخدمات ووسائل الدفع**',
+        'admin_cat_content': '🧩 **الأزرار والرسائل**',
+        'admin_cat_reports': '📊 **التقارير والسجلات**',
+        'admin_cat_system': '⚙️ **النظام والنسخ الاحتياطي**',
+    }
+    if data in admin_category_titles:
+        if uid != ADMIN_ID and not check_permission(uid, 'can_access_full_admin'):
+            safe_answer_callback(call.id, "❌ لا تملك صلاحية الوصول إلى لوحة الإدارة الكاملة.", show_alert=True)
+            return
+        category = data.removeprefix('admin_cat_')
+        bot.edit_message_text(
+            admin_category_titles[data] + "\\n\\nاختر الوظيفة المطلوبة:",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=get_admin_category_keyboard(category),
+            parse_mode="Markdown",
+        )
         return
 
     # ===== إدارة الأزرار (admin_buttons) =====
