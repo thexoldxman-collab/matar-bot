@@ -1862,7 +1862,7 @@ class RegressionTests(unittest.TestCase):
         with patch.object(m.bot, 'reply_to', side_effect=lambda message, text: sent.append(text)):
             m.issue_admin_app_pair_code(owner_message)
         self.assertEqual(len(sent), 1)
-        code = sent[0].split('\\n\\n')[1].split('\\n')[0]
+        code = sent[0].split('\n\n')[1].split('\n')[0]
         client = m.app.test_client()
         paired = client.post('/api/admin/v1/pair', json={'code': code})
         self.assertEqual(paired.status_code, 200)
