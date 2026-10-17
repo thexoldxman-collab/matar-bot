@@ -10984,6 +10984,9 @@ if __name__ == "__main__":
         ):
             raise RuntimeError("Telegram rejected the webhook configuration")
         logger.info("Telegram webhook configured; polling is disabled to prevent getUpdates conflicts")
+        # Flask and background workers run in daemon threads; keep the main process alive.
+        while True:
+            time.sleep(3600)
     else:
         # Polling is retained for local development; Render should use webhook mode.
         while True:
