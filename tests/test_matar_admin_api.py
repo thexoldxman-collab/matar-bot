@@ -89,7 +89,7 @@ class AdminApiTests(unittest.TestCase):
 
     def test_financial_completion_is_never_faked(self):
         response = self.client.post("/api/admin/operations/charge/1/complete")
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.status_code, 423)
         self.assertEqual(response.get_json()["error"], "financial_execution_disabled")
         status = self.conn.execute("SELECT status FROM pending_charges WHERE id=1").fetchone()[0]
         self.assertEqual(status, "pending")
@@ -117,7 +117,7 @@ class AdminApiTests(unittest.TestCase):
         row = self.conn.execute("SELECT can_handle_charges,can_handle_withdraws FROM moderators WHERE user_id=301").fetchone()
         self.assertEqual(tuple(row), (1, 0))
 
-    def test_referral_settings_and_atomic_payout(self):
+    def test_referral_settings_and_payout_remain_safe(self):
         summary = self.client.get("/api/admin/referrals")
         self.assertEqual(summary.status_code, 200)
         self.assertEqual(summary.get_json()["data"]["total_referrals"], 2)
@@ -129,25 +129,21 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.conn.execute("SELECT value FROM settings WHERE key='referral_percentage'").fetchone()[0], "12.5")
 
+        # Even if an environment variable is mistakenly set, the mobile API
+        # cannot pay referral earnings until a reviewed atomic handler is wired.
         from unittest.mock import patch
+        before_user = self.conn.execute("SELECT balance FROM users WHERE user_id=200").fetchone()[0]
+        before_cashier = self.conn.execute("SELECT balance FROM cashier_balance WHERE admin_id=100").fetchone()[0]
         with patch.dict("os.environ", {"ADMIN_APP_FINANCIAL_EXECUTION_ENABLED": "1"}):
             response = self.client.post("/api/admin/referrals/payout", json={"user_id": 200, "amount": 1000})
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.conn.execute("SELECT balance FROM users WHERE user_id=200").fetchone()[0], 1100)
-        self.assertEqual(self.conn.execute("SELECT balance FROM cashier_balance WHERE admin_id=100").fetchone()[0], 4000)
-        self.assertEqual(self.conn.execute("SELECT paid_amount FROM referral_earnings WHERE referrer_id=200").fetchone()[0], 1500)
-        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM transactions WHERE type='referral_pay'").fetchone()[0], 1)
-        self.assertEqual(self.bot.sent[-1][0], 200)
-
-        before = self.conn.execute("SELECT balance FROM users WHERE user_id=200").fetchone()[0]
-        with patch.dict("os.environ", {"ADMIN_APP_FINANCIAL_EXECUTION_ENABLED": "1"}):
-            response = self.client.post("/api/admin/referrals/payout", json={"user_id": 200, "amount": 2000})
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(self.conn.execute("SELECT balance FROM users WHERE user_id=200").fetchone()[0], before)
+        self.assertEqual(response.status_code, 423)
+        self.assertEqual(self.conn.execute("SELECT balance FROM users WHERE user_id=200").fetchone()[0], before_user)
+        self.assertEqual(self.conn.execute("SELECT balance FROM cashier_balance WHERE admin_id=100").fetchone()[0], before_cashier)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM transactions WHERE type='referral_pay'").fetchone()[0], 0)
 
     def test_referral_payout_is_blocked_without_live_switch(self):
         response = self.client.post("/api/admin/referrals/payout", json={"user_id": 200, "amount": 100})
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.status_code, 423)
         self.assertEqual(self.conn.execute("SELECT balance FROM users WHERE user_id=200").fetchone()[0], 100)
 
     def test_content_settings_update_welcome_and_subscription_gate(self):
