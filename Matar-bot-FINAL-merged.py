@@ -6422,7 +6422,7 @@ def handle_all_callbacks(call):
 
     if data == 'toggle_syriatel':
         current = get_db_setting('syriatel_status') or 'active'
-        if current != 'active' and not (get_db_setting('syriatel_numbers') or '').strip():
+        if current != 'active' and get_operation_mode() != 'demo' and not (get_db_setting('syriatel_numbers') or '').strip():
             safe_answer_callback(call.id, "أدخل رقم/أرقام سيرياتل أولاً؛ لم يتم فتح الخدمة.", show_alert=True)
             return
         new_val = 'stopped' if current == 'active' else 'active'
