@@ -42,7 +42,9 @@ data class QueueItem(
     val method: String = "",
     val reference: String = "",
     val claimExpiresAt: String? = null
-)
+) {
+    val operationKey: String get() = "$typeKey:$id"
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -103,7 +105,7 @@ private fun MatarAdminApp() {
             QueueItem(1040, "طلب شحن", "مستخدم تجريبي", "50,000 ل.س")
         ))
     }
-    var selectedRequest by remember { mutableStateOf<Int?>(null) }
+    var selectedRequest by remember { mutableStateOf<String?>(null) }
     var actionNote by remember { mutableStateOf("") }
     var showAppearance by remember { mutableStateOf(false) }
 
@@ -327,76 +329,64 @@ private fun MatarAdminApp() {
                                 message = operationMessage,
                                 liveMode = connected && liveOperations,
                                 onNoteChange = { actionNote = it },
-                                onSelect = { id ->
+                                onSelect = { key ->
                                     val token = accessToken
-                                    val item = queue.firstOrNull { it.id == id }
+                                    val item = queue.firstOrNull { it.operationKey == key }
                                     if (connected && liveOperations && token != null && item != null) {
                                         scope.launch {
-                                            val error = withContext(Dispatchers.IO) { AdminApi.claimOperation(token, item.typeKey, id) }
+                                            val error = withContext(Dispatchers.IO) { AdminApi.claimOperation(token, item.typeKey, item.id) }
                                             if (error == null) {
-                                                selectedRequest = id
+                                                selectedRequest = key
                                                 queue = withContext(Dispatchers.IO) { AdminApi.loadOperations(token) } ?: queue
-                                                operationMessage = "تم استلام الطلب باسم حسابك لمدة 10 دقائق."
-                                            } else {
-                                                operationMessage = error
-                                            }
+                                                operationMessage = "تم استلام الطلب لمدة 10 دقائق."
+                                            } else operationMessage = error
                                         }
-                                    } else {
-                                        selectedRequest = id
-                                    }
+                                    } else selectedRequest = key
                                 },
-                                onRelease = { id ->
+                                onRelease = { key ->
                                     val token = accessToken
-                                    val item = queue.firstOrNull { it.id == id }
-                                    if (connected && liveOperations && token != null && item != null) {
-                                        scope.launch {
-                                            val error = withContext(Dispatchers.IO) { AdminApi.releaseOperation(token, item.typeKey, id) }
-                                            operationMessage = error ?: "تم تحرير الطلب وإعادته إلى قائمة الانتظار."
-                                            if (error == null) {
-                                                queue = withContext(Dispatchers.IO) { AdminApi.loadOperations(token) } ?: queue
-                                                selectedRequest = null
-                                                actionNote = ""
-                                            }
+                                    val item = queue.firstOrNull { it.operationKey == key }
+                                    if (connected && liveOperations && token != null && item != null) scope.launch {
+                                        val error = withContext(Dispatchers.IO) { AdminApi.releaseOperation(token, item.typeKey, item.id) }
+                                        operationMessage = error ?: "تم تحرير الطلب وإعادته إلى قائمة الانتظار."
+                                        if (error == null) {
+                                            queue = withContext(Dispatchers.IO) { AdminApi.loadOperations(token) } ?: queue
+                                            selectedRequest = null
+                                            actionNote = ""
                                         }
                                     } else {
                                         selectedRequest = null
                                         operationMessage = "تم إلغاء الاستلام التجريبي."
                                     }
                                 },
-                                onCancel = { id, reason ->
+                                onCancel = { key, reason ->
                                     val token = accessToken
-                                    val item = queue.firstOrNull { it.id == id }
-                                    if (connected && liveOperations && token != null && item != null) {
-                                        scope.launch {
-                                            val error = withContext(Dispatchers.IO) { AdminApi.cancelOperation(token, item.typeKey, id, reason) }
-                                            operationMessage = error ?: "تم إلغاء الطلب وإشعار المستخدم."
-                                            if (error == null) {
-                                                queue = withContext(Dispatchers.IO) { AdminApi.loadOperations(token) } ?: queue
+                                    val item = queue.firstOrNull { it.operationKey == key }
+                                    if (connected && liveOperations && token != null && item != null) scope.launch {
+                                        val error = withContext(Dispatchers.IO) { AdminApi.cancelOperation(token, item.typeKey, item.id, reason) }
+                                        operationMessage = error ?: "تم إلغاء الطلب وإشعار المستخدم."
+                                        if (error == null) {
+                                            queue = withContext(Dispatchers.IO) { AdminApi.loadOperations(token) } ?: queue
+                                            selectedRequest = null
+                                            actionNote = ""
+                                        }
+                                    } else operationMessage = "الإلغاء التجريبي لا يغيّر أي بيانات مالية."
+                                },
+                                onComplete = { key ->
+                                    val token = accessToken
+                                    val item = queue.firstOrNull { it.operationKey == key }
+                                    if (connected && liveOperations && token != null && item != null) scope.launch {
+                                        operationMessage = withContext(Dispatchers.IO) { AdminApi.completeOperation(token, item.typeKey, item.id) }
+                                        val refreshed = withContext(Dispatchers.IO) { AdminApi.loadOperations(token) }
+                                        if (refreshed != null) {
+                                            queue = refreshed
+                                            if (refreshed.none { it.operationKey == key }) {
                                                 selectedRequest = null
                                                 actionNote = ""
                                             }
                                         }
                                     } else {
-                                        operationMessage = "الإلغاء التجريبي لا يغيّر أي بيانات مالية."
-                                    }
-                                },
-                                onComplete = { id ->
-                                    val token = accessToken
-                                    val item = queue.firstOrNull { it.id == id }
-                                    if (connected && liveOperations && token != null && item != null) {
-                                        scope.launch {
-                                            operationMessage = withContext(Dispatchers.IO) { AdminApi.completeOperation(token, item.typeKey, id) }
-                                            val refreshed = withContext(Dispatchers.IO) { AdminApi.loadOperations(token) }
-                                            if (refreshed != null) {
-                                                queue = refreshed
-                                                if (refreshed.none { it.id == id && it.typeKey == item.typeKey }) {
-                                                    selectedRequest = null
-                                                    actionNote = ""
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        queue = queue.map { if (it.id == id) it.copy(status = "منجز تجريبياً") else it }
+                                        queue = queue.map { if (it.operationKey == key) it.copy(status = "منجز تجريبياً") else it }
                                         selectedRequest = null
                                         actionNote = ""
                                     }
@@ -666,21 +656,20 @@ private fun MetricCard(title: String, value: String, icon: androidx.compose.ui.g
 
 @Composable
 private fun OperationsRoom(
-    queue: List<QueueItem>, selected: Int?, note: String,
+    queue: List<QueueItem>, selected: String?, note: String,
     message: String, liveMode: Boolean,
-    onNoteChange: (String) -> Unit, onSelect: (Int) -> Unit,
-    onRelease: (Int) -> Unit, onCancel: (Int, String) -> Unit, onComplete: (Int) -> Unit
+    onNoteChange: (String) -> Unit, onSelect: (String) -> Unit,
+    onRelease: (String) -> Unit, onCancel: (String, String) -> Unit, onComplete: (String) -> Unit
 ) {
     var confirmCancel by remember { mutableStateOf(false) }
-    var cancelTarget by remember { mutableStateOf<Int?>(null) }
+    var cancelTarget by remember { mutableStateOf<String?>(null) }
+    var confirmComplete by remember { mutableStateOf<String?>(null) }
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("غرفة العمليات المشتركة", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
-        item { Text(if (liveMode) "قائمة الطلبات متصلة بالخادم. الاستلام يقفل الطلب 10 دقائق؛ إتمام المعاملة المالية محظور حتى ربط المعالجة الذرية." else "آلية الاستلام والتنفيذ معروضة تجريبياً. لن تُنفّذ أي معاملة حقيقية.") }
-        if (message.isNotBlank()) item {
-            Card(Modifier.fillMaxWidth()) { Text(message, modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.primary) }
-        }
+        item { Text(if (liveMode) "قائمة الطلبات متصلة بالخادم. الاستلام يقفل الطلب 10 دقائق؛ التنفيذ الحقيقي يخضع لإعداد الخادم." else "آلية الاستلام والتنفيذ معروضة تجريبياً. لن تُنفّذ أي معاملة حقيقية.") }
+        if (message.isNotBlank()) item { Card(Modifier.fillMaxWidth()) { Text(message, modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.primary) } }
         if (queue.isEmpty()) item { Text(if (liveMode) "لا توجد طلبات مفتوحة مسموح لك بعرضها حالياً." else "هذه طلبات توضيحية للمعاينة فقط.") }
-        items(queue, key = { it.id }) { item ->
+        items(queue, key = { it.operationKey }) { item ->
             Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -688,46 +677,48 @@ private fun OperationsRoom(
                         AssistChip(onClick = {}, label = { Text(item.status) })
                     }
                     Text("صاحب الطلب: ${item.user}")
-                    if (item.claimOwner != null) Text("تم استلام الطلب بواسطة حساب تيليغرام: ${item.claimOwner}", style = MaterialTheme.typography.bodySmall)
+                    if (item.method.isNotBlank()) Text("طريقة الدفع: ${item.method}")
+                    if (item.reference.isNotBlank()) Text("المرجع: ${item.reference}")
+                    if (item.claimOwner != null) {
+                        Text("تم الاستلام بواسطة حساب تيليغرام: ${item.claimOwner}", style = MaterialTheme.typography.bodySmall)
+                        if (item.claimExpiresAt != null) Text("تنتهي المهلة: ${item.claimExpiresAt}", style = MaterialTheme.typography.bodySmall)
+                    }
                     Text("المبلغ: ${item.amount}")
-                    if (selected == item.id) {
-                        OutlinedTextField(value = note, onValueChange = onNoteChange, label = { Text("ملاحظات / تفاصيل الإجراء") }, modifier = Modifier.fillMaxWidth())
+                    if (selected == item.operationKey) {
+                        OutlinedTextField(value = note, onValueChange = onNoteChange, label = { Text("ملاحظات / سبب الإلغاء") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = { onRelease(item.id) }, modifier = Modifier.weight(1f)) { Text("تحرير الاستلام") }
-                            Button(onClick = { onComplete(item.id) }, modifier = Modifier.weight(1f)) { Text("تم التنفيذ") }
+                            OutlinedButton(onClick = { onRelease(item.operationKey) }, modifier = Modifier.weight(1f)) { Text("تحرير الاستلام") }
+                            Button(onClick = { confirmComplete = item.operationKey }, modifier = Modifier.weight(1f)) { Text("تم التنفيذ") }
                         }
-                        OutlinedButton(
-                            onClick = { cancelTarget = item.id; confirmCancel = true },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                        ) { Text("إلغاء الطلب") }
+                        OutlinedButton(onClick = { cancelTarget = item.operationKey; confirmCancel = true }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("إلغاء الطلب") }
                     } else {
-                        Button(onClick = { onSelect(item.id) }, modifier = Modifier.fillMaxWidth()) { Text("تنفيذ الطلب") }
+                        Button(onClick = { onSelect(item.operationKey) }, modifier = Modifier.fillMaxWidth()) { Text("فتح الطلب واستلامه") }
                     }
                 }
             }
         }
     }
+    if (confirmComplete != null) {
+        AlertDialog(
+            onDismissRequest = { confirmComplete = null },
+            title = { Text("تأكيد إتمام الطلب") },
+            text = { Text("تأكد من تنفيذ الإجراء فعلياً. إذا كان التنفيذ المالي الحقيقي مغلقاً، سيرفض الخادم الطلب ولن يعلن نجاحاً وهمياً.") },
+            confirmButton = { TextButton(onClick = { val key = confirmComplete; confirmComplete = null; if (key != null) onComplete(key) }) { Text("تأكيد") } },
+            dismissButton = { TextButton(onClick = { confirmComplete = null }) { Text("رجوع") } }
+        )
+    }
     if (confirmCancel && cancelTarget != null) {
         AlertDialog(
             onDismissRequest = { confirmCancel = false; cancelTarget = null },
             title = { Text("تأكيد إلغاء الطلب") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("لن يتم الإلغاء إلا إذا أكد الخادم نجاح الإجراء. اكتب سبب الإلغاء في خانة الملاحظات أولاً.")
-                    Text("السبب الحالي: " + note.ifBlank { "لم يُكتب سبب بعد" })
-                }
-            },
+            text = { Text("لن يتم الإلغاء إلا إذا أكد الخادم نجاح الإجراء. السبب: " + note.ifBlank { "لم يُكتب سبب بعد" }) },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        val id = cancelTarget
-                        if (id != null && note.isNotBlank()) onCancel(id, note.trim())
-                        confirmCancel = false
-                        cancelTarget = null
-                    },
-                    enabled = note.isNotBlank()
-                ) { Text("تأكيد الإلغاء") }
+                TextButton(onClick = {
+                    val key = cancelTarget
+                    if (key != null && note.isNotBlank()) onCancel(key, note.trim())
+                    confirmCancel = false
+                    cancelTarget = null
+                }, enabled = note.isNotBlank()) { Text("تأكيد الإلغاء") }
             },
             dismissButton = { TextButton(onClick = { confirmCancel = false; cancelTarget = null }) { Text("رجوع") } }
         )
