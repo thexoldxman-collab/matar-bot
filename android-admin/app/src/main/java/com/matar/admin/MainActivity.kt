@@ -27,7 +27,7 @@ import androidx.compose.ui.unit.dp
 
 private enum class Page(val label: String) {
     HOME("الرئيسية"), ROOM("غرفة العمليات"), USERS("المشرفون"),
-    MESSAGES("الرسائل"), BUTTONS("أزرار البوت"), SETTINGS("الإعدادات")
+    MESSAGES("الرسائل"), BUTTONS("أزرار البوت"), REFERRALS("الإحالات"), SETTINGS("الإعدادات")
 }
 
 data class QueueItem(
@@ -66,6 +66,8 @@ private fun MatarAdminApp() {
     var buttonMessage by remember { mutableStateOf("") }
     var dashboardStats by remember { mutableStateOf<Map<String, Int>?>(null) }
     var auditItems by remember { mutableStateOf<List<AuditItem>>(emptyList()) }
+    var referralSummary by remember { mutableStateOf<ReferralSummary?>(null) }
+    var referralMessage by remember { mutableStateOf("") }
     var connecting by remember { mutableStateOf(false) }
     var savingNotifications by remember { mutableStateOf(false) }
     var liveOperations by remember { mutableStateOf(false) }
@@ -112,6 +114,7 @@ private fun MatarAdminApp() {
                 accountRole = restored.role
                 accountPermissions = restored.permissions
                 dashboardStats = withContext(Dispatchers.IO) { AdminApi.loadDashboard(savedToken) }
+                if (restored.role == "owner") referralSummary = withContext(Dispatchers.IO) { AdminApi.loadReferrals(savedToken) }
                 buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(savedToken) } ?: emptyList()
                 auditItems = withContext(Dispatchers.IO) { AdminApi.loadAudit(savedToken) } ?: emptyList()
                 if (restored.role == "owner" || restored.permissions["can_manage_moderators"] == true) {
@@ -190,6 +193,7 @@ private fun MatarAdminApp() {
                                     accountRole = result.role
                                     accountPermissions = result.permissions
                                     dashboardStats = withContext(Dispatchers.IO) { AdminApi.loadDashboard(result.token) }
+                                    if (result.role == "owner") referralSummary = withContext(Dispatchers.IO) { AdminApi.loadReferrals(result.token) }
                                     buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(result.token) } ?: emptyList()
                                     auditItems = withContext(Dispatchers.IO) { AdminApi.loadAudit(result.token) } ?: emptyList()
                                     if (result.role == "owner" || result.permissions["can_manage_moderators"] == true) {
@@ -254,6 +258,7 @@ private fun MatarAdminApp() {
                                 Page.USERS -> accountPermissions["can_manage_moderators"] == true
                                 Page.MESSAGES -> accountPermissions["can_send_broadcast"] == true
                                 Page.BUTTONS -> accountPermissions["can_manage_buttons"] == true
+                                Page.REFERRALS -> accountRole == "owner"
                                 Page.SETTINGS -> true
                             } }.forEach { item ->
                                 val icon = when (item) {
@@ -262,6 +267,7 @@ private fun MatarAdminApp() {
                                     Page.USERS -> Icons.Default.AdminPanelSettings
                                     Page.MESSAGES -> Icons.Default.MarkChatUnread
                                     Page.BUTTONS -> Icons.Default.EditNote
+                                    Page.REFERRALS -> Icons.Default.AccountBalanceWallet
                                     Page.SETTINGS -> Icons.Default.Settings
                                 }
                                 NavigationBarItem(
@@ -274,6 +280,9 @@ private fun MatarAdminApp() {
                                         }
                                         if (item == Page.BUTTONS && token != null) {
                                             scope.launch { buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(token) } ?: buttons }
+                                        }
+                                        if (item == Page.REFERRALS && token != null && accountRole == "owner") {
+                                            scope.launch { referralSummary = withContext(Dispatchers.IO) { AdminApi.loadReferrals(token) } }
                                         }
                                         if (item == Page.HOME && token != null) {
                                             scope.launch { dashboardStats = withContext(Dispatchers.IO) { AdminApi.loadDashboard(token) } }
@@ -447,6 +456,32 @@ private fun MatarAdminApp() {
                                         val error = withContext(Dispatchers.IO) { AdminApi.updateButton(token, id, text, message, parent, action, subscription, active) }
                                         buttonMessage = error ?: "تم حفظ التعديلات."
                                         buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(token) } ?: buttons
+                                    }
+                                }
+                            )
+                            Page.REFERRALS -> ReferralsScreen(
+                                summary = referralSummary,
+                                message = referralMessage,
+                                onRefresh = {
+                                    val token = accessToken
+                                    if (token != null) scope.launch { referralSummary = withContext(Dispatchers.IO) { AdminApi.loadReferrals(token) } }
+                                },
+                                onSaveSettings = { percentage, cycleDays, nextPayout ->
+                                    val token = accessToken
+                                    if (token == null) referralMessage = "سجّل الدخول أولاً."
+                                    else scope.launch {
+                                        val error = withContext(Dispatchers.IO) { AdminApi.saveReferralSettings(token, percentage, cycleDays, nextPayout) }
+                                        referralMessage = error ?: "تم حفظ إعدادات الإحالات."
+                                        if (error == null) referralSummary = withContext(Dispatchers.IO) { AdminApi.loadReferrals(token) } ?: referralSummary
+                                    }
+                                },
+                                onPayout = { userId, amount ->
+                                    val token = accessToken
+                                    if (token == null) referralMessage = "سجّل الدخول أولاً."
+                                    else scope.launch {
+                                        val error = withContext(Dispatchers.IO) { AdminApi.payReferral(token, userId, amount) }
+                                        referralMessage = error ?: "تم صرف الأرباح وتحديث سجل المستحقات."
+                                        if (error == null) referralSummary = withContext(Dispatchers.IO) { AdminApi.loadReferrals(token) } ?: referralSummary
                                     }
                                 }
                             )
@@ -900,5 +935,75 @@ private fun ButtonEditorCard(item: BotButtonItem, onSave: (Int, String, String, 
             }
             Button(onClick = { onSave(item.id, buttonText, messageText, parentButton, action, requiresSubscription, active) }, modifier = Modifier.fillMaxWidth()) { Text("حفظ تعديلات الزر") }
         }
+    }
+}
+
+@Composable
+private fun ReferralsScreen(
+    summary: ReferralSummary?,
+    message: String,
+    onRefresh: () -> Unit,
+    onSaveSettings: (Double, Int, String) -> Unit,
+    onPayout: (Long, Double) -> Unit
+) {
+    var percentage by remember(summary?.referralPercentage) { mutableStateOf(summary?.referralPercentage?.toString() ?: "10") }
+    var cycleDays by remember(summary?.cycleDays) { mutableStateOf(summary?.cycleDays?.toString() ?: "10") }
+    var nextPayout by remember(summary?.nextPayout) { mutableStateOf(summary?.nextPayout ?: "") }
+    var targetUser by remember { mutableStateOf("") }
+    var amount by remember { mutableStateOf("") }
+    var confirmPayout by remember { mutableStateOf(false) }
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Text("نظام الإحالات", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+        item { Text("صرف يدوي من الكاشيرة إلى رصيد المُحيل، مع تحديث سجل المستحقات ذرياً. الوضع الحقيقي يظل مقفلاً ما لم يُفعّل صراحةً على الخادم.") }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                MetricCard("إجمالي الإحالات", summary?.totalReferrals?.toString() ?: "—", Icons.Default.Groups, Modifier.weight(1f))
+                MetricCard("مستحق غير مدفوع", summary?.unpaidTotal?.let { String.format("%.2f", it) } ?: "—", Icons.Default.Payments, Modifier.weight(1f))
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                MetricCard("رصيد الكاشيرة", summary?.cashierBalance?.let { String.format("%.2f", it) } ?: "—", Icons.Default.AccountBalanceWallet, Modifier.weight(1f))
+                MetricCard("النسبة الحالية", summary?.referralPercentage?.let { "${it}%" } ?: "—", Icons.Default.Percent, Modifier.weight(1f))
+            }
+        }
+        item { OutlinedTextField(value = percentage, onValueChange = { percentage = it.take(6) }, label = { Text("نسبة الإحالات % (0–100)") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+        item { OutlinedTextField(value = cycleDays, onValueChange = { cycleDays = it.filter(Char::isDigit).take(2) }, label = { Text("مدة الدورة بالأيام (1–60)") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+        item { OutlinedTextField(value = nextPayout, onValueChange = { nextPayout = it.take(10) }, label = { Text("موعد الدفعة القادمة YYYY-MM-DD") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+        item {
+            Button(onClick = {
+                val pct = percentage.toDoubleOrNull()
+                val days = cycleDays.toIntOrNull()
+                if (pct != null && days != null) onSaveSettings(pct, days, nextPayout.trim())
+            }, enabled = percentage.toDoubleOrNull()?.let { it in 0.0..100.0 } == true && cycleDays.toIntOrNull()?.let { it in 1..60 } == true, modifier = Modifier.fillMaxWidth()) { Text("حفظ إعدادات الإحالات") }
+        }
+        item { HorizontalDivider() }
+        item { Text("صرف أرباح لمُحيل", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+        item { OutlinedTextField(value = targetUser, onValueChange = { targetUser = it.filter(Char::isDigit).take(18) }, label = { Text("معرف تيليغرام للمُحيل") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+        item { OutlinedTextField(value = amount, onValueChange = { amount = it.filter { ch -> ch.isDigit() || ch == '.' }.take(14) }, label = { Text("مبلغ الصرف") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+        item { Button(onClick = { confirmPayout = true }, enabled = targetUser.toLongOrNull()?.let { it > 0 } == true && amount.toDoubleOrNull()?.let { it > 0 } == true, modifier = Modifier.fillMaxWidth()) { Text("مراجعة صرف الأرباح") } }
+        item { OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) { Text("تحديث بيانات الإحالات") } }
+        if (message.isNotBlank()) item { Text(message, color = MaterialTheme.colorScheme.primary) }
+        item { Text("المُحيلون", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+        if (summary?.items.isNullOrEmpty()) item { Text("لا توجد إحالات مسجلة حالياً.") }
+        items(summary?.items ?: emptyList(), key = { it.userId }) { referrer ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("المُحيل: ${referrer.userId}", fontWeight = FontWeight.Bold)
+                    Text("عدد الإحالات: ${referrer.referrals}")
+                    Text("المستحق غير المدفوع: ${String.format("%.2f", referrer.unpaidAmount)}")
+                    Text("إجمالي المستحق: ${String.format("%.2f", referrer.theoreticalAmount)} • المدفوع: ${String.format("%.2f", referrer.paidAmount)}")
+                }
+            }
+        }
+    }
+    if (confirmPayout) {
+        AlertDialog(
+            onDismissRequest = { confirmPayout = false },
+            title = { Text("تأكيد صرف أرباح الإحالة") },
+            text = { Text("سيتم صرف ${amount} للمُحيل ${targetUser}، وخصم المبلغ من الكاشيرة وتحديث سجل المستحقات. إذا كان التنفيذ الحقيقي مقفلاً فلن تتغير الأرصدة.") },
+            confirmButton = { TextButton(onClick = { confirmPayout = false; val uid = targetUser.toLongOrNull(); val value = amount.toDoubleOrNull(); if (uid != null && value != null) onPayout(uid, value) }) { Text("تأكيد الصرف") } },
+            dismissButton = { TextButton(onClick = { confirmPayout = false }) { Text("رجوع") } }
+        )
     }
 }

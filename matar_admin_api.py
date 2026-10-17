@@ -6,6 +6,9 @@ Financial requests are never marked completed by this module.
 from __future__ import annotations
 
 import json
+import math
+import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from flask import jsonify, request
 
@@ -97,7 +100,207 @@ def register_admin_api(
         if not user:
             return False
         if user.get("role") == "owner" or int(user.get("telegram_id", 0)) == int(owner_id):
-            return True
+            @app.get("/api/admin/referrals")
+    def get_referrals():
+        user = current()
+        if not user:
+            return denied()
+        if not allowed(user, "can_view_stats"):
+            return forbidden()
+        with db_lock:
+            try:
+                def setting(key, default=""):
+                    row = db().execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+                    return str(row[0]) if row and row[0] is not None else default
+
+                total_refs_row = db().execute("SELECT COUNT(*) FROM referrals_log").fetchone()
+                total_refs = int(total_refs_row[0] or 0) if total_refs_row else 0
+                earnings_rows = db().execute(
+                    """SELECT referrer_id,
+                              SUM(CASE WHEN theoretical_amount>COALESCE(paid_amount,0)
+                                       THEN theoretical_amount-COALESCE(paid_amount,0) ELSE 0 END),
+                              SUM(COALESCE(theoretical_amount,0)), SUM(COALESCE(paid_amount,0))
+                       FROM referral_earnings GROUP BY referrer_id"""
+                ).fetchall()
+                earnings = {int(row[0]): {
+                    "unpaid_amount": float(row[1] or 0),
+                    "theoretical_amount": float(row[2] or 0),
+                    "paid_amount": float(row[3] or 0)
+                } for row in earnings_rows if row[0] is not None}
+                ref_rows = db().execute(
+                    """SELECT referrer_id,COUNT(*) FROM referrals_log
+                       GROUP BY referrer_id ORDER BY COUNT(*) DESC LIMIT 100"""
+                ).fetchall()
+                items = []
+                for row in ref_rows:
+                    uid = int(row[0])
+                    amounts = earnings.get(uid, {})
+                    items.append({
+                        "user_id": uid, "referrals": int(row[1] or 0),
+                        "unpaid_amount": amounts.get("unpaid_amount", 0.0),
+                        "theoretical_amount": amounts.get("theoretical_amount", 0.0),
+                        "paid_amount": amounts.get("paid_amount", 0.0)
+                    })
+                cashier_row = db().execute(
+                    "SELECT balance FROM cashier_balance WHERE admin_id=?", (int(owner_id),)
+                ).fetchone()
+                active_cycle = db().execute(
+                    "SELECT start_date,end_date,status,total_theoretical,total_paid FROM referral_cycles WHERE status='active' ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                payload = {
+                    "total_referrals": total_refs,
+                    "referral_percentage": float(setting("referral_percentage", "10") or 10),
+                    "next_payout": setting("next_referral_payout", ""),
+                    "cycle_days": int(float(setting("referral_cycle_days", "10") or 10)),
+                    "cashier_balance": float(cashier_row[0] or 0) if cashier_row else 0.0,
+                    "unpaid_total": sum(x.get("unpaid_amount", 0.0) for x in earnings.values()),
+                    "active_cycle": ({
+                        "start_date": active_cycle[0], "end_date": active_cycle[1],
+                        "status": active_cycle[2], "theoretical": float(active_cycle[3] or 0),
+                        "paid": float(active_cycle[4] or 0)
+                    } if active_cycle else None),
+                    "items": items
+                }
+            except Exception:
+                app.logger.exception("Referral dashboard query failed")
+                return jsonify({"ok": False, "error": "referrals_unavailable"}), 503
+        return jsonify({"ok": True, "data": payload}), 200
+
+    @app.put("/api/admin/referrals/settings")
+    def update_referral_settings():
+        user = current()
+        if not user:
+            return denied()
+        if user.get("role") != "owner" and int(user.get("telegram_id", 0)) != int(owner_id):
+            return forbidden()
+        payload = request.get_json(silent=True) or {}
+        try:
+            percentage = float(payload.get("percentage"))
+            cycle_days = int(payload.get("cycle_days"))
+            payout_date = str(payload.get("next_payout", "")).strip()
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "invalid_settings"}), 400
+        if not math.isfinite(percentage) or not 0 <= percentage <= 100 or not 1 <= cycle_days <= 60:
+            return jsonify({"ok": False, "error": "invalid_settings"}), 400
+        if payout_date:
+            try:
+                datetime.strptime(payout_date, "%Y-%m-%d")
+            except ValueError:
+                return jsonify({"ok": False, "error": "invalid_payout_date",
+                                "message": "اكتب التاريخ بصيغة YYYY-MM-DD."}), 400
+        now_text = _now().strftime("%Y-%m-%d %H:%M:%S")
+        values = [
+            ("referral_percentage", str(percentage), "نسبة الإحالات", "number"),
+            ("referral_cycle_days", str(cycle_days), "عدد أيام دورة الإحالات", "number"),
+            ("next_referral_payout", payout_date, "موعد الدفعة القادمة", "text"),
+        ]
+        with db_lock:
+            for key, value, description, kind in values:
+                db().execute(
+                    """INSERT INTO settings(key,value,description,type,updated_at,updated_by)
+                       VALUES(?,?,?,?,?,?)
+                       ON CONFLICT(key) DO UPDATE SET value=excluded.value,
+                           description=excluded.description,type=excluded.type,
+                           updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
+                    (key, value, description, kind, now_text, int(user["telegram_id"])),
+                )
+            if payout_date:
+                db().execute(
+                    "UPDATE referral_cycles SET end_date=? WHERE status='active'",
+                    (payout_date,),
+                )
+            db().commit()
+            audit(user, "تعديل إعدادات الإحالات",
+                  f"النسبة={percentage:g}%؛ الدورة={cycle_days} يوم؛ موعد الدفعة={payout_date or 'غير محدد'}")
+        return jsonify({"ok": True, "message": "تم حفظ إعدادات الإحالات."}), 200
+
+    @app.post("/api/admin/referrals/payout")
+    def pay_referral_earnings():
+        user = current()
+        if not user:
+            return denied()
+        if user.get("role") != "owner" and int(user.get("telegram_id", 0)) != int(owner_id):
+            return forbidden()
+        payload = request.get_json(silent=True) or {}
+        try:
+            target_id = int(payload.get("user_id"))
+            amount = float(payload.get("amount"))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "invalid_payout"}), 400
+        if target_id <= 0 or not math.isfinite(amount) or amount <= 0:
+            return jsonify({"ok": False, "error": "invalid_payout"}), 400
+        mode = get_operation_mode() if callable(get_operation_mode) else "unknown"
+        if mode != "demo" and os.environ.get("ADMIN_APP_FINANCIAL_EXECUTION_ENABLED", "0") != "1":
+            return jsonify({"ok": False, "error": "financial_execution_disabled",
+                            "message": "صرف الأرباح الحقيقي مغلق؛ لم تتغير الأرصدة."}), 409
+        now = _now().strftime("%Y-%m-%d %H:%M:%S")
+        receipt = "REF" + _now().strftime("%Y%m%d%H%M%S") + secrets.token_hex(2).upper()
+        with db_lock:
+            try:
+                db().execute("BEGIN IMMEDIATE")
+                earnings_rows = db().execute(
+                    """SELECT id,theoretical_amount,paid_amount FROM referral_earnings
+                       WHERE referrer_id=? AND theoretical_amount>COALESCE(paid_amount,0)
+                       ORDER BY COALESCE(cycle_end,''),COALESCE(earned_at,''),id""",
+                    (target_id,),
+                ).fetchall()
+                remaining_due = sum(max(0.0, float(row[1] or 0) - float(row[2] or 0)) for row in earnings_rows)
+                if amount > remaining_due + 0.000001:
+                    db().rollback()
+                    return jsonify({"ok": False, "error": "amount_exceeds_unpaid",
+                                    "message": f"المستحق غير المدفوع لهذا المستخدم هو {remaining_due:,.2f} فقط."}), 400
+                cashier_update = db().execute(
+                    "UPDATE cashier_balance SET balance=balance-?,last_updated=? WHERE admin_id=? AND balance>=?",
+                    (amount, now, int(owner_id), amount),
+                )
+                if cashier_update.rowcount != 1:
+                    db().rollback()
+                    return jsonify({"ok": False, "error": "cashier_balance_insufficient",
+                                    "message": "رصيد الكاشيرة لا يكفي؛ لم يتم الصرف."}), 409
+                user_update = db().execute(
+                    "UPDATE users SET balance=balance+?,last_active=? WHERE user_id=? AND deleted=0",
+                    (amount, now, target_id),
+                )
+                if user_update.rowcount != 1:
+                    db().rollback()
+                    return jsonify({"ok": False, "error": "target_user_inactive",
+                                    "message": "المستخدم غير موجود أو غير نشط؛ لم يتم الصرف."}), 404
+                remaining = amount
+                for earning in earnings_rows:
+                    due = max(0.0, float(earning[1] or 0) - float(earning[2] or 0))
+                    if due <= 0 or remaining <= 0:
+                        continue
+                    allocation = min(due, remaining)
+                    db().execute(
+                        """UPDATE referral_earnings
+                           SET paid_amount=COALESCE(paid_amount,0)+?,paid_at=?,paid_by=?
+                           WHERE id=?""",
+                        (allocation, now, int(user["telegram_id"]), int(earning[0])),
+                    )
+                    remaining -= allocation
+                db().execute(
+                    """INSERT INTO transactions
+                       (user_id,type,amount,commission,net_amount,method,status,transaction_date,
+                        admin_id,details,receipt_number,external_ref)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (target_id, "referral_pay", amount, 0, amount, "cashier", "success",
+                     now, int(user["telegram_id"]), "صرف أرباح الإحالة من تطبيق الإدارة", receipt, ""),
+                )
+                db().commit()
+            except Exception:
+                db().rollback()
+                app.logger.exception("Referral payout failed")
+                return jsonify({"ok": False, "error": "payout_failed",
+                                "message": "فشل الصرف؛ تم التراجع عن المعاملة."}), 503
+        try:
+            bot.send_message(target_id, f"💰 تم صرف أرباح الإحالة لك بمبلغ {amount:,.2f}. رقم العملية: {receipt}")
+        except Exception:
+            app.logger.warning("Referral payout committed but Telegram notification failed")
+        audit(user, "صرف أرباح إحالة", f"المستخدم={target_id}؛ المبلغ={amount}; الإيصال={receipt}",
+              target_user=target_id, amount=amount)
+        return jsonify({"ok": True, "message": "تم صرف الأرباح وخصم الكاشيرة وتحديث سجل المستحقات.", "receipt": receipt}), 200
+
+    return True
         try:
             return bool(check_permission(int(user["telegram_id"]), permission))
         except Exception:

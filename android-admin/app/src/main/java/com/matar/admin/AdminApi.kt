@@ -15,6 +15,16 @@ data class ModeratorItem(
 
 data class BotButtonItem(val id: Int, val key: String, val text: String, val message: String, val parent: String, val action: String, val active: Boolean, val requiresSubscription: Boolean)
 data class AuditItem(val id: Long, val admin: String, val action: String, val details: String, val createdAt: String)
+data class ReferralItem(val userId: Long, val referrals: Int, val unpaidAmount: Double, val theoreticalAmount: Double, val paidAmount: Double)
+data class ReferralSummary(
+    val totalReferrals: Int,
+    val referralPercentage: Double,
+    val nextPayout: String,
+    val cycleDays: Int,
+    val cashierBalance: Double,
+    val unpaidTotal: Double,
+    val items: List<ReferralItem>
+)
 
 data class AdminLoginResult(
     val token: String? = null,
@@ -227,6 +237,39 @@ object AdminApi {
             listOf("users", "pending_charges", "pending_withdraws", "moderators", "open_tickets")
                 .associateWith { stats.optInt(it, 0) }
         } catch (_: Exception) { null }
+    }
+
+    fun loadReferrals(token: String): ReferralSummary? {
+        val (status, body) = request("GET", "/api/admin/referrals", token, null)
+        if (status !in 200..299) return null
+        return try {
+            val data = JSONObject(body).optJSONObject("data") ?: return null
+            val rawItems = data.optJSONArray("items") ?: org.json.JSONArray()
+            val items = buildList {
+                for (i in 0 until rawItems.length()) {
+                    val item = rawItems.optJSONObject(i) ?: continue
+                    add(ReferralItem(item.optLong("user_id"), item.optInt("referrals"),
+                        item.optDouble("unpaid_amount"), item.optDouble("theoretical_amount"),
+                        item.optDouble("paid_amount")))
+                }
+            }
+            ReferralSummary(data.optInt("total_referrals"), data.optDouble("referral_percentage", 10.0),
+                data.optString("next_payout"), data.optInt("cycle_days", 10),
+                data.optDouble("cashier_balance"), data.optDouble("unpaid_total"), items)
+        } catch (_: Exception) { null }
+    }
+
+    fun saveReferralSettings(token: String, percentage: Double, cycleDays: Int, nextPayout: String): String? {
+        val payload = JSONObject().put("percentage", percentage).put("cycle_days", cycleDays)
+            .put("next_payout", nextPayout)
+        val (status, body) = request("PUT", "/api/admin/referrals/settings", token, payload)
+        return if (status in 200..299) null else apiError(body, "تعذر حفظ إعدادات الإحالات.")
+    }
+
+    fun payReferral(token: String, userId: Long, amount: Double): String? {
+        val payload = JSONObject().put("user_id", userId).put("amount", amount)
+        val (status, body) = request("POST", "/api/admin/referrals/payout", token, payload)
+        return if (status in 200..299) null else apiError(body, "تعذر صرف أرباح الإحالة.")
     }
 
     fun loadAudit(token: String): List<AuditItem>? {
