@@ -1,6 +1,9 @@
 package com.matar.admin
 
 import android.os.Bundle
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -15,6 +18,7 @@ import androidx.compose.runtime.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -72,6 +76,7 @@ private fun MatarAdminApp() {
     var sendingMessage by remember { mutableStateOf(false) }
     var sentMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+    val appContext = LocalContext.current
     var pairingCode by remember { mutableStateOf("") }
     var loginMessage by remember { mutableStateOf("") }
     var showLogin by remember { mutableStateOf(true) }
@@ -116,6 +121,14 @@ private fun MatarAdminApp() {
                                 connecting = false
                                 if (result.token != null) {
                                     accessToken = result.token
+                                    AdminSessionStore.saveToken(appContext, result.token)
+                                    if (result.role == "owner" || result.permissions["can_handle_charges"] == true || result.permissions["can_handle_withdraws"] == true) {
+                                        AdminNotificationScheduler.schedule(appContext)
+                                    }
+                                    if (Build.VERSION.SDK_INT >= 33 && appContext is ComponentActivity &&
+                                        appContext.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                                        appContext.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
+                                    }
                                     accountRole = result.role
                                     accountPermissions = result.permissions
                                     dashboardStats = withContext(Dispatchers.IO) { AdminApi.loadDashboard(result.token) }
@@ -412,6 +425,8 @@ private fun MatarAdminApp() {
                                     val oldToken = accessToken
                                     if (oldToken != null) scope.launch { withContext(Dispatchers.IO) { AdminApi.logout(oldToken) } }
                                     accessToken = null
+                                    AdminSessionStore.clear(appContext)
+                                    AdminNotificationScheduler.cancel(appContext)
                                     accountRole = null
                                     accountPermissions = emptyMap()
                                     buttons = emptyList()
