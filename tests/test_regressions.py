@@ -1796,9 +1796,9 @@ class RegressionTests(unittest.TestCase):
     def test_demo_charge_callback_never_displays_real_payment_address(self):
         m = self.m
         call = self.fake_call('charge_syria')
-        with patch.object(m.bot, 'send_message') as send, \\
-             patch.object(m.bot, 'register_next_step_handler') as register:
-            m.handle_all_callbacks(call)
+        with patch.object(m.bot, 'send_message') as send:
+            with patch.object(m.bot, 'register_next_step_handler') as register:
+                m.handle_all_callbacks(call)
         register.assert_called_once_with(
             send.return_value,
             m.process_demo_charge_amount,
