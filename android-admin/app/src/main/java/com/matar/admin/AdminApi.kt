@@ -1,0 +1,184 @@
+package com.matar.admin
+
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
+import java.net.HttpURLConnection
+import java.net.URL
+
+data class AdminLoginResult(
+    val token: String? = null,
+    val displayName: String? = null,
+    val role: String? = null,
+    val error: String? = null
+)
+
+object AdminApi {
+    private fun baseUrl(): String = BuildConfig.ADMIN_API_BASE_URL.trimEnd('/')
+
+    fun exchangePairingCode(code: String): AdminLoginResult {
+        if (baseUrl().contains("SET-ADMIN-API-URL")) {
+            return AdminLoginResult(error = "عنوان خادم الإدارة غير مضبوط بعد.")
+        }
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = (URL("${baseUrl()}/api/admin/auth/verify").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 8000
+                readTimeout = 8000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                setRequestProperty("Accept", "application/json")
+            }
+            OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use {
+                it.write(JSONObject().put("code", code.trim()).toString())
+            }
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            val body = stream?.let { input ->
+                BufferedReader(InputStreamReader(input, Charsets.UTF_8)).use { it.readText() }
+            }.orEmpty()
+            val json = if (body.isNotBlank()) JSONObject(body) else JSONObject()
+            if (status in 200..299) {
+                val user = json.optJSONObject("user") ?: JSONObject()
+                AdminLoginResult(
+                    token = json.optString("access_token").takeIf { it.isNotBlank() && user.optString("role") in setOf("owner", "moderator") },
+                    displayName = if (user.optString("role") == "owner") "مدير البوت" else "مشرف",
+                    role = user.optString("role").takeIf { it == "owner" || it == "moderator" },
+                    error = if (user.optString("role") in setOf("owner", "moderator")) null else "الخادم لم يحدد دور الحساب بشكل صحيح؛ تم رفض الدخول."
+                )
+            } else {
+                val error = when (json.optString("error")) {
+                    "invalid_or_expired_code" -> "الرمز غير صحيح أو انتهت صلاحيته. اطلب رمزاً جديداً من البوت."
+                    "access_revoked" -> "هذا الحساب لم يعد مخوّلاً للدخول."
+                    else -> "تعذر تسجيل الدخول. تأكد من الرمز وصلاحية الحساب."
+                }
+                AdminLoginResult(error = error)
+            }
+        } catch (_: Exception) {
+            AdminLoginResult(error = "تعذر الاتصال بخادم البوت. قد يحتاج تحديث الخدمة قبل تسجيل الدخول.")
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    fun logout(token: String) {
+        request("POST", "/api/admin/auth/logout", token, null)
+    }
+
+    fun loadOperations(token: String): List<QueueItem>? {
+        val (status, body) = request("GET", "/api/admin/operations", token, null)
+        if (status !in 200..299) return null
+        return try {
+            val items = JSONObject(body).optJSONArray("items") ?: return emptyList()
+            buildList {
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    val typeKey = item.optString("type", "charge")
+                    val claim = item.optJSONObject("claim")
+                    val claimOwner = if (claim != null && !claim.isNull("claimed_by")) claim.optLong("claimed_by") else null
+                    val baseStatus = item.optString("status", "pending")
+                    val visibleStatus = if (claimOwner != null) "مستلم بواسطة $claimOwner" else when (baseStatus) {
+                        "pending" -> "بانتظار التنفيذ"
+                        "processing" -> "قيد المعالجة"
+                        else -> baseStatus
+                    }
+                    val amount = item.optDouble("amount", 0.0)
+                    add(QueueItem(
+                        id = item.optInt("id"),
+                        type = if (typeKey == "withdraw") "طلب سحب" else "طلب شحن",
+                        user = item.optString("user_id", "غير معروف"),
+                        amount = String.format(java.util.Locale.ROOT, "%,.0f", amount) + " ل.س",
+                        status = visibleStatus,
+                        typeKey = typeKey,
+                        userId = if (item.isNull("user_id")) null else item.optLong("user_id"),
+                        claimOwner = claimOwner
+                    ))
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun claimOperation(token: String, type: String, id: Int): String? {
+        val (status, body) = request("POST", "/api/admin/operations/$type/$id/claim", token, JSONObject())
+        if (status in 200..299) return null
+        return try {
+            when (JSONObject(body).optString("error")) {
+                "already_claimed" -> "استلم مشرف آخر هذا الطلب. حدّث القائمة وحاول بطلب آخر."
+                "permission_denied" -> "ما عندك صلاحية لتنفيذ هذا النوع من الطلبات."
+                "operation_not_found" -> "الطلب لم يعد موجوداً."
+                "operation_not_open" -> "الطلب لم يعد متاحاً للاستلام."
+                else -> "تعذر استلام الطلب؛ تحقق من اتصال الخادم."
+            }
+        } catch (_: Exception) {
+            "تعذر استلام الطلب؛ تحقق من اتصال الخادم."
+        }
+    }
+
+    fun completeOperation(token: String, type: String, id: Int): String {
+        val (status, body) = request("POST", "/api/admin/operations/$type/$id/complete", token, JSONObject())
+        return try {
+            val json = JSONObject(body)
+            json.optString("message").takeIf { it.isNotBlank() }
+                ?: if (status in 200..299) "تمت العملية." else "لم يتم تنفيذ العملية؛ لم تتغير الأرصدة."
+        } catch (_: Exception) {
+            "تعذر الاتصال بالخادم؛ لم يتم تأكيد التنفيذ."
+        }
+    }
+
+    fun loadNotifications(token: String): Map<String, Boolean>? {
+        val (status, body) = request("GET", "/api/admin/notifications", token, null)
+        if (status !in 200..299) return null
+        return try {
+            val prefs = JSONObject(body).optJSONObject("preferences") ?: return null
+            buildMap {
+                for (key in listOf("charge_new", "withdraw_new", "financial_error", "moderator_actions", "referrals", "bot_offline", "ai_decisions")) {
+                    put(key, prefs.optBoolean(key, false))
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun saveNotifications(token: String, preferences: Map<String, Boolean>): Boolean {
+        val prefs = JSONObject()
+        preferences.forEach { (key, value) -> prefs.put(key, value) }
+        val payload = JSONObject().put("preferences", prefs)
+        val result = request("PUT", "/api/admin/notifications", token, payload)
+        return result.first in 200..299
+    }
+
+    private fun request(method: String, path: String, token: String, payload: JSONObject?): Pair<Int, String> {
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = (URL("${baseUrl()}$path").openConnection() as HttpURLConnection).apply {
+                requestMethod = method
+                connectTimeout = 8000
+                readTimeout = 8000
+                setRequestProperty("Authorization", "Bearer $token")
+                setRequestProperty("Accept", "application/json")
+                if (payload != null) {
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                }
+            }
+            if (payload != null) {
+                OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(payload.toString()) }
+            }
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            val body = stream?.let { input ->
+                BufferedReader(InputStreamReader(input, Charsets.UTF_8)).use { it.readText() }
+            }.orEmpty()
+            status to body
+        } catch (_: Exception) {
+            -1 to ""
+        } finally {
+            connection?.disconnect()
+        }
+    }
+}
