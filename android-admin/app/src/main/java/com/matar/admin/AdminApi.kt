@@ -7,6 +7,12 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 
+data class ModeratorItem(
+    val userId: Long,
+    val customName: String,
+    val permissions: Map<String, Boolean>
+)
+
 data class AdminLoginResult(
     val token: String? = null,
     val displayName: String? = null,
@@ -150,6 +156,78 @@ object AdminApi {
         val payload = JSONObject().put("preferences", prefs)
         val result = request("PUT", "/api/admin/notifications", token, payload)
         return result.first in 200..299
+    }
+
+
+    fun loadModerators(token: String): List<ModeratorItem>? {
+        val (status, body) = request("GET", "/api/admin/moderators", token, null)
+        if (status !in 200..299) return null
+        return try {
+            val items = JSONObject(body).optJSONArray("items") ?: return emptyList()
+            buildList {
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    val source = item.optJSONObject("permissions") ?: JSONObject()
+                    val permissions = buildMap {
+                        for (key in listOf(
+                            "can_handle_charges", "can_handle_withdraws", "can_send_broadcast",
+                            "can_manage_users", "can_view_stats", "can_manage_buttons",
+                            "can_manage_moderators", "can_use_ai"
+                        )) put(key, source.optBoolean(key, false))
+                    }
+                    add(ModeratorItem(
+                        userId = item.optLong("user_id"),
+                        customName = item.optString("custom_name", ""),
+                        permissions = permissions
+                    ))
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun addModerator(token: String, userId: Long, name: String, permissions: Map<String, Boolean>): String? {
+        val permissionJson = JSONObject()
+        permissions.forEach { (key, enabled) -> permissionJson.put(key, enabled) }
+        val payload = JSONObject()
+            .put("user_id", userId)
+            .put("custom_name", name)
+            .put("permissions", permissionJson)
+        val (status, body) = request("POST", "/api/admin/moderators", token, payload)
+        return if (status in 200..299) null else apiError(body, "تعذر إضافة المشرف؛ تحقق من المعرف والصلاحيات.")
+    }
+
+    fun deleteModerator(token: String, userId: Long): String? {
+        val (status, body) = request("DELETE", "/api/admin/moderators/$userId", token, null)
+        return if (status in 200..299) null else apiError(body, "تعذر حذف المشرف.")
+    }
+
+    fun broadcastMessage(token: String, message: String, audience: String): String? {
+        val payload = JSONObject().put("message", message).put("audience", audience)
+        val (status, body) = request("POST", "/api/admin/messages/broadcast", token, payload)
+        if (status !in 200..299) return apiError(body, "تعذر إرسال الرسالة.")
+        return try {
+            val json = JSONObject(body)
+            "تم الإرسال إلى ${json.optInt("sent")} حساب، وفشل ${json.optInt("failed")}."
+        } catch (_: Exception) {
+            "تم إرسال الطلب إلى الخادم."
+        }
+    }
+
+    private fun apiError(body: String, fallback: String): String {
+        return try {
+            when (JSONObject(body).optString("error")) {
+                "permission_denied" -> "حسابك لا يملك صلاحية تنفيذ هذا الإجراء."
+                "moderator_exists" -> "هذا المستخدم مضاف كمشرف من قبل."
+                "invalid_user_id" -> "معرف تيليغرام غير صالح."
+                "owner_required_for_privileged_permissions" -> "منح هذه الصلاحية الحساسة متاح للمدير فقط."
+                "protected_moderator" -> "لا يمكن حذف حساب المدير أو إزالة صلاحيتك كمشرف مفوّض."
+                else -> JSONObject(body).optString("message").takeIf { it.isNotBlank() } ?: fallback
+            }
+        } catch (_: Exception) {
+            fallback
+        }
     }
 
     private fun request(method: String, path: String, token: String, payload: JSONObject?): Pair<Int, String> {
