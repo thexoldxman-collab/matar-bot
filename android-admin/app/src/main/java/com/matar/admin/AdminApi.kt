@@ -7,43 +7,20 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 
-data class DashboardStats(
-    val users: Int,
-    val pendingCharges: Int,
-    val pendingWithdraws: Int,
-    val moderators: Int,
-    val openTickets: Int,
-    val operationMode: String
-)
-
-data class AdminButtonItem(
-    val id: Int,
-    val name: String,
-    val text: String,
-    val message: String,
-    val parent: String,
-    val active: Boolean,
-    val requiresSubscription: Boolean
-)
-
-data class AuditItem(
-    val id: Long,
-    val adminName: String,
-    val action: String,
-    val details: String,
-    val createdAt: String
-)
-
 data class ModeratorItem(
     val userId: Long,
     val customName: String,
     val permissions: Map<String, Boolean>
 )
 
+data class BotButtonItem(val id: Int, val key: String, val text: String, val message: String, val parent: String, val active: Boolean, val requiresSubscription: Boolean)
+data class AuditItem(val id: Long, val admin: String, val action: String, val details: String, val createdAt: String)
+
 data class AdminLoginResult(
     val token: String? = null,
     val displayName: String? = null,
     val role: String? = null,
+    val permissions: Map<String, Boolean> = emptyMap(),
     val error: String? = null
 )
 
@@ -79,6 +56,12 @@ object AdminApi {
                     token = json.optString("access_token").takeIf { it.isNotBlank() && user.optString("role") in setOf("owner", "moderator") },
                     displayName = if (user.optString("role") == "owner") "مدير البوت" else "مشرف",
                     role = user.optString("role").takeIf { it == "owner" || it == "moderator" },
+                    permissions = user.optJSONObject("permissions")?.let { p ->
+                        listOf("can_handle_charges", "can_handle_withdraws", "can_send_broadcast",
+                            "can_manage_users", "can_view_stats", "can_manage_buttons",
+                            "can_manage_moderators", "can_use_ai")
+                            .associateWith { p.optBoolean(it, false) }
+                    } ?: emptyMap(),
                     error = if (user.optString("role") in setOf("owner", "moderator")) null else "الخادم لم يحدد دور الحساب بشكل صحيح؛ تم رفض الدخول."
                 )
             } else {
@@ -126,7 +109,10 @@ object AdminApi {
                         status = visibleStatus,
                         typeKey = typeKey,
                         userId = if (item.isNull("user_id")) null else item.optLong("user_id"),
-                        claimOwner = claimOwner
+                        claimOwner = claimOwner,
+                        method = item.optString("method", ""),
+                        reference = item.optString("reference", ""),
+                        claimExpiresAt = claim?.optString("expires_at")
                     ))
                 }
             }
@@ -174,6 +160,73 @@ object AdminApi {
         }
     }
 
+    fun releaseOperation(token: String, type: String, id: Int): String? {
+        val (status, body) = request("POST", "/api/admin/operations/$type/$id/release", token, JSONObject())
+        return if (status in 200..299) null else apiError(body, "تعذر تحرير الطلب.")
+    }
+
+    fun cancelOperation(token: String, type: String, id: Int, reason: String): String? {
+        val (status, body) = request("POST", "/api/admin/operations/$type/$id/cancel", token, JSONObject().put("reason", reason))
+        return if (status in 200..299) null else apiError(body, "تعذر إلغاء الطلب.")
+    }
+
+    fun updateModeratorPermissions(token: String, userId: Long, permissions: Map<String, Boolean>): String? {
+        val permissionJson = JSONObject()
+        permissions.forEach { (key, enabled) -> permissionJson.put(key, enabled) }
+        val (status, body) = request("PUT", "/api/admin/moderators/$userId", token, JSONObject().put("permissions", permissionJson))
+        return if (status in 200..299) null else apiError(body, "تعذر تعديل صلاحيات المشرف.")
+    }
+
+    fun loadButtons(token: String): List<BotButtonItem>? {
+        val (status, body) = request("GET", "/api/admin/buttons", token, null)
+        if (status !in 200..299) return null
+        return try {
+            val items = JSONObject(body).optJSONArray("items") ?: return emptyList()
+            buildList {
+                for (i in 0 until items.length()) {
+                    val item = items.optJSONObject(i) ?: continue
+                    add(BotButtonItem(item.optInt("id"), item.optString("button_name"),
+                        item.optString("button_text"), item.optString("message_text"),
+                        item.optString("parent_button"), item.optInt("is_active", 1) == 1 || item.optBoolean("is_active"),
+                        item.optInt("requires_subscription", 0) == 1 || item.optBoolean("requires_subscription")))
+                }
+            }
+        } catch (_: Exception) { null }
+    }
+
+    fun updateButton(token: String, buttonId: Int, buttonText: String, messageText: String,
+                     requiresSubscription: Boolean, active: Boolean): String? {
+        val payload = JSONObject().put("button_text", buttonText).put("message_text", messageText)
+            .put("requires_subscription", requiresSubscription).put("is_active", active)
+        val (status, body) = request("PUT", "/api/admin/buttons/$buttonId", token, payload)
+        return if (status in 200..299) null else apiError(body, "تعذر حفظ الزر.")
+    }
+
+    fun loadDashboard(token: String): Map<String, Int>? {
+        val (status, body) = request("GET", "/api/admin/dashboard", token, null)
+        if (status !in 200..299) return null
+        return try {
+            val stats = JSONObject(body).optJSONObject("stats") ?: return null
+            listOf("users", "pending_charges", "pending_withdraws", "moderators", "open_tickets")
+                .associateWith { stats.optInt(it, 0) }
+        } catch (_: Exception) { null }
+    }
+
+    fun loadAudit(token: String): List<AuditItem>? {
+        val (status, body) = request("GET", "/api/admin/audit", token, null)
+        if (status !in 200..299) return null
+        return try {
+            val items = JSONObject(body).optJSONArray("items") ?: return emptyList()
+            buildList {
+                for (i in 0 until items.length()) {
+                    val item = items.optJSONObject(i) ?: continue
+                    add(AuditItem(item.optLong("id"), item.optString("display_name"),
+                        item.optString("action_type"), item.optString("details"), item.optString("created_at")))
+                }
+            }
+        } catch (_: Exception) { null }
+    }
+
     fun loadNotifications(token: String): Map<String, Boolean>? {
         val (status, body) = request("GET", "/api/admin/notifications", token, null)
         if (status !in 200..299) return null
@@ -197,75 +250,6 @@ object AdminApi {
         return result.first in 200..299
     }
 
-
-
-
-    fun loadDashboard(token: String): DashboardStats? {
-        val (status, body) = request("GET", "/api/admin/dashboard", token, null)
-        if (status !in 200..299) return null
-        return try {
-            val stats = JSONObject(body).optJSONObject("stats") ?: return null
-            DashboardStats(
-                users = stats.optInt("users"),
-                pendingCharges = stats.optInt("pending_charges"),
-                pendingWithdraws = stats.optInt("pending_withdraws"),
-                moderators = stats.optInt("moderators"),
-                openTickets = stats.optInt("open_tickets"),
-                operationMode = stats.optString("operation_mode", "demo")
-            )
-        } catch (_: Exception) { null }
-    }
-
-    fun loadButtons(token: String): List<AdminButtonItem>? {
-        val (status, body) = request("GET", "/api/admin/buttons", token, null)
-        if (status !in 200..299) return null
-        return try {
-            val items = JSONObject(body).optJSONArray("items") ?: return emptyList()
-            buildList {
-                for (index in 0 until items.length()) {
-                    val item = items.optJSONObject(index) ?: continue
-                    add(AdminButtonItem(
-                        id = item.optInt("id"),
-                        name = item.optString("button_name", ""),
-                        text = item.optString("button_text", ""),
-                        message = item.optString("message_text", ""),
-                        parent = item.optString("parent_button", "main"),
-                        active = item.optInt("is_active", 1) == 1,
-                        requiresSubscription = item.optInt("requires_subscription", 0) == 1
-                    ))
-                }
-            }
-        } catch (_: Exception) { null }
-    }
-
-    fun updateButton(token: String, id: Int, text: String, message: String, active: Boolean): String? {
-        val payload = JSONObject()
-            .put("button_text", text)
-            .put("message_text", message)
-            .put("is_active", active)
-        val (status, body) = request("PUT", "/api/admin/buttons/$id", token, payload)
-        return if (status in 200..299) null else apiError(body, "تعذر حفظ الزر.")
-    }
-
-    fun loadAudit(token: String): List<AuditItem>? {
-        val (status, body) = request("GET", "/api/admin/audit", token, null)
-        if (status !in 200..299) return null
-        return try {
-            val items = JSONObject(body).optJSONArray("items") ?: return emptyList()
-            buildList {
-                for (index in 0 until items.length()) {
-                    val item = items.optJSONObject(index) ?: continue
-                    add(AuditItem(
-                        id = item.optLong("id"),
-                        adminName = item.optString("display_name", "إدارة"),
-                        action = item.optString("action_type", ""),
-                        details = item.optString("details", ""),
-                        createdAt = item.optString("created_at", "")
-                    ))
-                }
-            }
-        } catch (_: Exception) { null }
-    }
 
     fun loadModerators(token: String): List<ModeratorItem>? {
         val (status, body) = request("GET", "/api/admin/moderators", token, null)

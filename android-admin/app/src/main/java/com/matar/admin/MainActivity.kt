@@ -22,7 +22,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
 private enum class Page(val label: String) {
-    HOME("الرئيسية"), ROOM("غرفة العمليات"), USERS("المشرفون"), MESSAGES("الرسائل"), SETTINGS("الإعدادات"), BUTTONS("أزرار البوت"), AUDIT("سجل التدقيق")
+    HOME("الرئيسية"), ROOM("غرفة العمليات"), USERS("المشرفون"),
+    MESSAGES("الرسائل"), BUTTONS("أزرار البوت"), SETTINGS("الإعدادات")
 }
 
 data class QueueItem(
@@ -33,7 +34,10 @@ data class QueueItem(
     val status: String = "بانتظار التنفيذ",
     val typeKey: String = "charge",
     val userId: Long? = null,
-    val claimOwner: Long? = null
+    val claimOwner: Long? = null,
+    val method: String = "",
+    val reference: String = "",
+    val claimExpiresAt: String? = null
 )
 
 class MainActivity : ComponentActivity() {
@@ -53,6 +57,11 @@ private fun MatarAdminApp() {
     var connected by remember { mutableStateOf(false) }
     var accessToken by remember { mutableStateOf<String?>(null) }
     var accountRole by remember { mutableStateOf<String?>(null) }
+    var accountPermissions by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    var buttons by remember { mutableStateOf<List<BotButtonItem>>(emptyList()) }
+    var buttonMessage by remember { mutableStateOf("") }
+    var dashboardStats by remember { mutableStateOf<Map<String, Int>?>(null) }
+    var auditItems by remember { mutableStateOf<List<AuditItem>>(emptyList()) }
     var connecting by remember { mutableStateOf(false) }
     var savingNotifications by remember { mutableStateOf(false) }
     var liveOperations by remember { mutableStateOf(false) }
@@ -62,10 +71,6 @@ private fun MatarAdminApp() {
     var moderatorMessage by remember { mutableStateOf("") }
     var sendingMessage by remember { mutableStateOf(false) }
     var sentMessage by remember { mutableStateOf("") }
-    var buttons by remember { mutableStateOf(emptyList<AdminButtonItem>()) }
-    var buttonMessage by remember { mutableStateOf("") }
-    var auditItems by remember { mutableStateOf(emptyList<AuditItem>()) }
-    var auditMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     var pairingCode by remember { mutableStateOf("") }
     var loginMessage by remember { mutableStateOf("") }
@@ -112,7 +117,11 @@ private fun MatarAdminApp() {
                                 if (result.token != null) {
                                     accessToken = result.token
                                     accountRole = result.role
-                                    if (result.role == "owner") {
+                                    accountPermissions = result.permissions
+                                    dashboardStats = withContext(Dispatchers.IO) { AdminApi.loadDashboard(result.token) }
+                                    buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(result.token) } ?: emptyList()
+                                    auditItems = withContext(Dispatchers.IO) { AdminApi.loadAudit(result.token) } ?: emptyList()
+                                    if (result.role == "owner" || result.permissions["can_manage_moderators"] == true) {
                                         moderators = withContext(Dispatchers.IO) { AdminApi.loadModerators(result.token) } ?: emptyList()
                                     }
                                     val operations = withContext(Dispatchers.IO) { AdminApi.loadOperations(result.token) }
@@ -167,24 +176,35 @@ private fun MatarAdminApp() {
                     },
                     bottomBar = {
                         NavigationBar {
-                            Page.values().filter { it != Page.BUTTONS && it != Page.AUDIT && (!connected || accountRole == "owner" || it != Page.USERS) }.forEach { item ->
+                            Page.values().filter { !connected || accountRole == "owner" || when (it) {
+                                Page.HOME -> accountPermissions["can_view_stats"] == true
+                                Page.ROOM -> accountPermissions["can_handle_charges"] == true || accountPermissions["can_handle_withdraws"] == true
+                                Page.USERS -> accountPermissions["can_manage_moderators"] == true
+                                Page.MESSAGES -> accountPermissions["can_send_broadcast"] == true
+                                Page.BUTTONS -> accountPermissions["can_manage_buttons"] == true
+                                Page.SETTINGS -> true
+                            } }.forEach { item ->
                                 val icon = when (item) {
                                     Page.HOME -> Icons.Default.Dashboard
                                     Page.ROOM -> Icons.Default.Groups
                                     Page.USERS -> Icons.Default.AdminPanelSettings
                                     Page.MESSAGES -> Icons.Default.MarkChatUnread
+                                    Page.BUTTONS -> Icons.Default.EditNote
                                     Page.SETTINGS -> Icons.Default.Settings
-                                    Page.BUTTONS -> Icons.Default.AccountTree
-                                    Page.AUDIT -> Icons.Default.History
                                 }
                                 NavigationBarItem(
                                     selected = page == item,
                                     onClick = {
                                         page = item
-                                        if (item == Page.USERS && accessToken != null) {
-                                            scope.launch {
-                                                moderators = withContext(Dispatchers.IO) { AdminApi.loadModerators(accessToken!!) } ?: moderators
-                                            }
+                                        val token = accessToken
+                                        if (item == Page.USERS && token != null) {
+                                            scope.launch { moderators = withContext(Dispatchers.IO) { AdminApi.loadModerators(token) } ?: moderators }
+                                        }
+                                        if (item == Page.BUTTONS && token != null) {
+                                            scope.launch { buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(token) } ?: buttons }
+                                        }
+                                        if (item == Page.HOME && token != null) {
+                                            scope.launch { dashboardStats = withContext(Dispatchers.IO) { AdminApi.loadDashboard(token) } }
                                         }
                                     },
                                     icon = { Icon(icon, contentDescription = item.label) },
@@ -206,7 +226,10 @@ private fun MatarAdminApp() {
                             }
                         }
                         when (page) {
-                            Page.HOME -> HomeScreen(onGoRoom = { page = Page.ROOM }, onGoSettings = { page = Page.SETTINGS })
+                            Page.HOME -> HomeScreen(stats = dashboardStats, connected = connected, onRefresh = {
+                                val token = accessToken
+                                if (token != null) scope.launch { dashboardStats = withContext(Dispatchers.IO) { AdminApi.loadDashboard(token) } }
+                            }, onGoRoom = { page = Page.ROOM }, onGoSettings = { page = Page.SETTINGS })
                             Page.ROOM -> OperationsRoom(
                                 queue = queue,
                                 selected = selectedRequest,
@@ -307,6 +330,15 @@ private fun MatarAdminApp() {
                                         if (error == null) moderators = withContext(Dispatchers.IO) { AdminApi.loadModerators(token) } ?: moderators
                                     }
                                 },
+                                onUpdate = { userId, permissions ->
+                                    val token = accessToken
+                                    if (token == null) moderatorMessage = "سجّل الدخول أولاً."
+                                    else scope.launch {
+                                        val error = withContext(Dispatchers.IO) { AdminApi.updateModeratorPermissions(token, userId, permissions) }
+                                        moderatorMessage = error ?: "تم حفظ صلاحيات المشرف."
+                                        if (error == null) moderators = withContext(Dispatchers.IO) { AdminApi.loadModerators(token) } ?: moderators
+                                    }
+                                },
                                 onDelete = { userId ->
                                     val token = accessToken
                                     if (token == null) moderatorMessage = "سجّل الدخول أولاً."
@@ -319,6 +351,7 @@ private fun MatarAdminApp() {
                             )
                             Page.MESSAGES -> MessagesScreen(
                                 connected = connected,
+                                canSend = accountRole == "owner" || accountPermissions["can_send_broadcast"] == true,
                                 sending = sendingMessage,
                                 status = sentMessage,
                                 onSend = { audience, message ->
@@ -333,34 +366,15 @@ private fun MatarAdminApp() {
                                 }
                             )
                             Page.BUTTONS -> ButtonsScreen(
-                                buttons = buttons,
-                                message = buttonMessage,
-                                onBack = { page = Page.SETTINGS },
-                                onRefresh = {
-                                    val token = accessToken
-                                    if (token != null) scope.launch {
-                                        buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(token) } ?: buttons
-                                    }
-                                },
-                                onSave = { id, text, messageText, active ->
+                                items = buttons,
+                                status = buttonMessage,
+                                onSave = { id, text, message, subscription, active ->
                                     val token = accessToken
                                     if (token == null) buttonMessage = "سجّل الدخول أولاً."
                                     else scope.launch {
-                                        val error = withContext(Dispatchers.IO) { AdminApi.updateButton(token, id, text, messageText, active) }
-                                        buttonMessage = error ?: "تم حفظ الزر."
-                                        if (error == null) buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(token) } ?: buttons
-                                    }
-                                }
-                            )
-                            Page.AUDIT -> AuditScreen(
-                                items = auditItems,
-                                message = auditMessage,
-                                onBack = { page = Page.SETTINGS },
-                                onRefresh = {
-                                    val token = accessToken
-                                    if (token != null) scope.launch {
-                                        auditItems = withContext(Dispatchers.IO) { AdminApi.loadAudit(token) } ?: auditItems
-                                        auditMessage = if (auditItems.isEmpty()) "لا يوجد سجل أو لا تملك صلاحية عرضه." else ""
+                                        val error = withContext(Dispatchers.IO) { AdminApi.updateButton(token, id, text, message, subscription, active) }
+                                        buttonMessage = error ?: "تم حفظ التعديلات."
+                                        buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(token) } ?: buttons
                                     }
                                 }
                             )
@@ -368,22 +382,6 @@ private fun MatarAdminApp() {
                                 notifications = notifications,
                                 onNotificationChange = { key, value -> notifications = notifications + (key to value) },
                                 onTheme = { showAppearance = true },
-                                onGoButtons = {
-                                    val token = accessToken
-                                    if (token != null) scope.launch {
-                                        buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(token) } ?: emptyList()
-                                        buttonMessage = if (buttons.isEmpty()) "لا توجد أزرار محمّلة أو لا تملك صلاحية إدارتها." else ""
-                                        page = Page.BUTTONS
-                                    }
-                                },
-                                onGoAudit = {
-                                    val token = accessToken
-                                    if (token != null) scope.launch {
-                                        auditItems = withContext(Dispatchers.IO) { AdminApi.loadAudit(token) } ?: emptyList()
-                                        auditMessage = if (auditItems.isEmpty()) "لا يوجد سجل أو لا تملك صلاحية عرضه." else ""
-                                        page = Page.AUDIT
-                                    }
-                                },
                                 onSaveNotifications = {
                                     val token = accessToken
                                     if (token == null) {
@@ -409,11 +407,16 @@ private fun MatarAdminApp() {
                                 },
                                 savingNotifications = savingNotifications,
                                 notificationMessage = notificationMessage,
+                                auditItems = auditItems,
                                 onLogin = {
                                     val oldToken = accessToken
                                     if (oldToken != null) scope.launch { withContext(Dispatchers.IO) { AdminApi.logout(oldToken) } }
                                     accessToken = null
                                     accountRole = null
+                                    accountPermissions = emptyMap()
+                                    buttons = emptyList()
+                                    dashboardStats = null
+                                    auditItems = emptyList()
                                     connected = false
                                     showLogin = true
                                     page = Page.HOME
@@ -476,37 +479,44 @@ private fun LoginScreen(code: String, onCodeChange: (String) -> Unit, message: S
 }
 
 @Composable
-private fun HomeScreen(onGoRoom: () -> Unit, onGoSettings: () -> Unit) {
+private fun HomeScreen(
+    stats: Map<String, Int>?,
+    connected: Boolean,
+    onRefresh: () -> Unit,
+    onGoRoom: () -> Unit,
+    onGoSettings: () -> Unit
+) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("أهلاً بك في مركز القيادة", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
-        item { Text("نظرة عامة تجريبية — الأرقام ليست بيانات حقيقية.") }
+        item { Text(if (connected) "هذه الإحصائيات من خادم مطر." else "وضع معاينة — الأرقام التالية توضيحية فقط.") }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                MetricCard("طلبات الشحن", "12", Icons.Default.South, Modifier.weight(1f))
-                MetricCard("طلبات السحب", "4", Icons.Default.North, Modifier.weight(1f))
+                MetricCard("طلبات الشحن", stats?.get("pending_charges")?.toString() ?: if (connected) "—" else "12", Icons.Default.South, Modifier.weight(1f))
+                MetricCard("طلبات السحب", stats?.get("pending_withdraws")?.toString() ?: if (connected) "—" else "4", Icons.Default.North, Modifier.weight(1f))
             }
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                MetricCard("المشرفون", "3", Icons.Default.Groups, Modifier.weight(1f))
-                MetricCard("تنبيهات", "2", Icons.Default.NotificationsActive, Modifier.weight(1f))
+                MetricCard("المشرفون", stats?.get("moderators")?.toString() ?: if (connected) "—" else "3", Icons.Default.Groups, Modifier.weight(1f))
+                MetricCard("المستخدمون", stats?.get("users")?.toString() ?: "—", Icons.Default.People, Modifier.weight(1f))
             }
         }
         item {
             Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("أمان التشغيل", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text("وضع الاختبار مفعل. العمليات المالية الحقيقية مقفلة حتى موافقة المالك.")
+                    Text("التنفيذ المالي الحقيقي يحتاج إعداداً صريحاً على الخادم؛ لا يكفي ضغط زر في التطبيق.")
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Lock, contentDescription = null)
+                        Icon(Icons.Default.Shield, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
-                        Text("التنفيذ الحقيقي: مقفول")
+                        Text("الصلاحيات والتحقق على الخادم")
                     }
                 }
             }
         }
+        item { Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth(), enabled = connected) { Text("تحديث الإحصائيات") } }
         item { Button(onClick = onGoRoom, modifier = Modifier.fillMaxWidth()) { Text("فتح غرفة العمليات") } }
-        item { OutlinedButton(onClick = onGoSettings, modifier = Modifier.fillMaxWidth()) { Text("إعدادات الإشعارات والمظهر") } }
+        item { OutlinedButton(onClick = onGoSettings, modifier = Modifier.fillMaxWidth()) { Text("إعدادات الإشعارات والمظهر والسجل") } }
     }
 }
 
@@ -597,6 +607,7 @@ private fun ModeratorsScreen(
     message: String,
     onRefresh: () -> Unit,
     onAdd: (Long, String, Map<String, Boolean>) -> Unit,
+    onUpdate: (Long, Map<String, Boolean>) -> Unit,
     onDelete: (Long) -> Unit
 ) {
     var userId by remember { mutableStateOf("") }
@@ -604,42 +615,56 @@ private fun ModeratorsScreen(
     var canCharges by remember { mutableStateOf(false) }
     var canWithdraws by remember { mutableStateOf(false) }
     var canBroadcast by remember { mutableStateOf(false) }
+    var canManageUsers by remember { mutableStateOf(false) }
     var canViewStats by remember { mutableStateOf(false) }
     var canButtons by remember { mutableStateOf(false) }
+    var canManageModerators by remember { mutableStateOf(false) }
     var canAI by remember { mutableStateOf(false) }
+    val labels = listOf(
+        "can_handle_charges" to "إدارة طلبات الشحن",
+        "can_handle_withdraws" to "إدارة طلبات السحب",
+        "can_send_broadcast" to "إرسال رسائل جماعية",
+        "can_manage_users" to "إدارة المستخدمين",
+        "can_view_stats" to "عرض الإحصائيات والسجل",
+        "can_manage_buttons" to "إدارة أزرار البوت",
+        "can_manage_moderators" to "إدارة المشرفين",
+        "can_use_ai" to "استخدام المساعد الذكي"
+    )
+    fun addPermissions() = mapOf(
+        "can_handle_charges" to canCharges, "can_handle_withdraws" to canWithdraws,
+        "can_send_broadcast" to canBroadcast, "can_manage_users" to canManageUsers,
+        "can_view_stats" to canViewStats, "can_manage_buttons" to canButtons,
+        "can_manage_moderators" to canManageModerators, "can_use_ai" to canAI
+    )
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("إدارة المشرفين", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
-        item { Text("تُقرأ الصلاحيات من الخادم. الصلاحيات الحساسة لا يمنحها إلا المدير.") }
-        item { OutlinedTextField(value = userId, onValueChange = { userId = it.filter { ch -> ch in '0'..'9' }.take(18) }, label = { Text("معرف تيليغرام") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+        item { Text("تُقرأ الصلاحيات من الخادم. أي تعديل يُحفظ على قاعدة البوت ويُسجّل في سجل التدقيق.") }
+        item { OutlinedTextField(value = userId, onValueChange = { userId = it.filter { ch -> ch.isDigit() }.take(18) }, label = { Text("معرف تيليغرام") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
         item { OutlinedTextField(value = name, onValueChange = { name = it.take(80) }, label = { Text("اسم المشرف (اختياري)") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
         item { PermissionToggle("إدارة طلبات الشحن", canCharges) { canCharges = it } }
         item { PermissionToggle("إدارة طلبات السحب", canWithdraws) { canWithdraws = it } }
         item { PermissionToggle("إرسال رسائل جماعية", canBroadcast) { canBroadcast = it } }
-        item { PermissionToggle("عرض الإحصائيات", canViewStats) { canViewStats = it } }
+        item { PermissionToggle("إدارة المستخدمين", canManageUsers) { canManageUsers = it } }
+        item { PermissionToggle("عرض الإحصائيات والسجل", canViewStats) { canViewStats = it } }
         item { PermissionToggle("إدارة أزرار البوت", canButtons) { canButtons = it } }
+        item { PermissionToggle("إدارة المشرفين", canManageModerators) { canManageModerators = it } }
         item { PermissionToggle("استخدام المساعد الذكي", canAI) { canAI = it } }
         item {
-            Button(
-                onClick = {
-                    val parsed = userId.toLongOrNull()
-                    if (parsed != null && parsed > 0) onAdd(parsed, name.trim(), mapOf(
-                        "can_handle_charges" to canCharges,
-                        "can_handle_withdraws" to canWithdraws,
-                        "can_send_broadcast" to canBroadcast,
-                        "can_view_stats" to canViewStats,
-                        "can_manage_buttons" to canButtons,
-                        "can_use_ai" to canAI
-                    ))
-                },
-                enabled = userId.toLongOrNull()?.let { it > 0 } == true,
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("إضافة مشرف") }
+            Button(onClick = {
+                val parsed = userId.toLongOrNull()
+                if (parsed != null && parsed > 0) {
+                    onAdd(parsed, name.trim(), addPermissions())
+                    userId = ""
+                    name = ""
+                }
+            }, enabled = userId.toLongOrNull()?.let { it > 0 } == true, modifier = Modifier.fillMaxWidth()) { Text("إضافة مشرف") }
         }
         item { OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) { Text("تحديث قائمة المشرفين") } }
         if (message.isNotBlank()) item { Text(message, color = MaterialTheme.colorScheme.primary) }
         item { Text("المشرفون الحاليون", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
         if (moderators.isEmpty()) item { Text("لا توجد بيانات مشرفين محمّلة. اضغط تحديث القائمة.") }
         items(moderators, key = { it.userId }) { moderator ->
+            var edits by remember(moderator.userId, moderator.permissions) { mutableStateOf(moderator.permissions) }
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -647,15 +672,15 @@ private fun ModeratorsScreen(
                             Text(moderator.customName.ifBlank { "مشرف " + moderator.userId }, fontWeight = FontWeight.Bold)
                             Text("معرف تيليغرام: " + moderator.userId, style = MaterialTheme.typography.bodySmall)
                         }
-                        IconButton(onClick = { onDelete(moderator.userId) }) {
-                            Icon(Icons.Default.DeleteOutline, contentDescription = "حذف المشرف")
+                        IconButton(onClick = { onDelete(moderator.userId) }) { Icon(Icons.Default.DeleteOutline, contentDescription = "حذف المشرف") }
+                    }
+                    labels.forEach { (key, label) ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(label, modifier = Modifier.weight(1f))
+                            Switch(checked = edits[key] == true, onCheckedChange = { edits = edits + (key to it) })
                         }
                     }
-                    Text(
-                        moderator.permissions.filterValues { it }.keys.joinToString(" • ") { it.removePrefix("can_").replace('_', ' ') }
-                            .ifBlank { "لا توجد صلاحيات مفعّلة" },
-                        style = MaterialTheme.typography.bodySmall
-                    )
+                    Button(onClick = { onUpdate(moderator.userId, edits) }, modifier = Modifier.fillMaxWidth()) { Text("حفظ صلاحيات المشرف") }
                 }
             }
         }
@@ -673,6 +698,7 @@ private fun PermissionToggle(label: String, checked: Boolean, onCheckedChange: (
 @Composable
 private fun MessagesScreen(
     connected: Boolean,
+    canSend: Boolean,
     sending: Boolean,
     status: String,
     onSend: (String, String) -> Unit
@@ -688,10 +714,11 @@ private fun MessagesScreen(
             FilterChip(selected = target == "moderators", onClick = { target = "moderators" }, label = { Text("المشرفون") })
         }
         OutlinedTextField(value = message, onValueChange = { message = it.take(4000) }, label = { Text("اكتب الرسالة") }, modifier = Modifier.fillMaxWidth(), minLines = 4)
-        Button(onClick = { confirm = true }, enabled = connected && !sending && message.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
+        Button(onClick = { confirm = true }, enabled = connected && canSend && !sending && message.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
             Text(if (sending) "جارٍ الإرسال..." else "مراجعة وإرسال")
         }
         if (!connected) Text("يلزم تسجيل الدخول للاتصال بالخادم قبل الإرسال.", style = MaterialTheme.typography.bodySmall)
+        if (!canSend) Text("حسابك لا يملك صلاحية إرسال الرسائل.", style = MaterialTheme.typography.bodySmall)
         if (status.isNotBlank()) Text(status, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
         if (confirm) {
             AlertDialog(
@@ -711,84 +738,20 @@ private fun MessagesScreen(
     }
 }
 
-
-@Composable
-private fun ButtonsScreen(
-    buttons: List<AdminButtonItem>,
-    message: String,
-    onBack: () -> Unit,
-    onRefresh: () -> Unit,
-    onSave: (Int, String, String, Boolean) -> Unit
-) {
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Text("إدارة أزرار البوت", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
-        item { Text("عدّل نص الزر والرسالة المرتبطة به أو أوقف ظهوره. التغيير يُحفظ على الخادم مباشرة.") }
-        item { OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) { Text("تحديث الأزرار") } }
-        item { OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("العودة للإعدادات") } }
-        if (message.isNotBlank()) item { Text(message, color = MaterialTheme.colorScheme.primary) }
-        if (buttons.isEmpty()) item { Text("لا توجد أزرار للعرض حالياً.") }
-        items(buttons, key = { it.id }) { item ->
-            BotButtonEditor(item, onSave)
-        }
-    }
-}
-
-@Composable
-private fun BotButtonEditor(item: AdminButtonItem, onSave: (Int, String, String, Boolean) -> Unit) {
-    var text by remember(item.id, item.text) { mutableStateOf(item.text) }
-    var message by remember(item.id, item.message) { mutableStateOf(item.message) }
-    var active by remember(item.id, item.active) { mutableStateOf(item.active) }
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(item.name.ifBlank { "زر " + item.id }, fontWeight = FontWeight.Bold)
-            Text("المسار: " + item.parent, style = MaterialTheme.typography.bodySmall)
-            OutlinedTextField(value = text, onValueChange = { text = it.take(200) }, label = { Text("اسم الزر الظاهر") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(value = message, onValueChange = { message = it.take(4000) }, label = { Text("الرسالة عند الضغط") }, modifier = Modifier.fillMaxWidth(), minLines = 2)
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("الزر فعال", modifier = Modifier.weight(1f))
-                Switch(checked = active, onCheckedChange = { active = it })
-            }
-            if (item.requiresSubscription) Text("هذا الزر يتطلب اشتراكاً بالقناة.", style = MaterialTheme.typography.bodySmall)
-            Button(onClick = { onSave(item.id, text, message, active) }, modifier = Modifier.fillMaxWidth()) { Text("حفظ التعديلات") }
-        }
-    }
-}
-
-@Composable
-private fun AuditScreen(items: List<AuditItem>, message: String, onBack: () -> Unit, onRefresh: () -> Unit) {
-    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        item { Text("سجل الإجراءات", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
-        item { Text("يعرض الإجراءات المسجلة على الخادم مع اسم الحساب والتوقيت.") }
-        item { OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) { Text("تحديث السجل") } }
-        item { OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) { Text("العودة للإعدادات") } }
-        if (message.isNotBlank()) item { Text(message, color = MaterialTheme.colorScheme.primary) }
-        items(items, key = { it.id }) { item ->
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(item.action.ifBlank { "إجراء إداري" }, fontWeight = FontWeight.Bold)
-                    Text(item.adminName + " • " + item.createdAt, style = MaterialTheme.typography.bodySmall)
-                    if (item.details.isNotBlank()) Text(item.details)
-                }
-            }
-        }
-    }
-}
-
 @Composable
 private fun SettingsScreen(
     notifications: Map<String, Boolean>,
     onNotificationChange: (String, Boolean) -> Unit,
     onTheme: () -> Unit,
-    onGoButtons: () -> Unit,
-    onGoAudit: () -> Unit,
     onSaveNotifications: () -> Unit,
     savingNotifications: Boolean,
     notificationMessage: String,
+    auditItems: List<AuditItem>,
     onLogin: () -> Unit
 ) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { Text("الإعدادات", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
-        item { Text("الإشعارات التي تريد استلامها بالخلفية") }
+        item { Text("تفضيلات الإشعارات المحفوظة على الخادم. الإشعارات الفورية بالخلفية تحتاج إعداد خدمة الدفع.") }
         items(notifications.keys.toList()) { key ->
             Card(Modifier.fillMaxWidth()) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -800,16 +763,63 @@ private fun SettingsScreen(
         item { Button(onClick = onSaveNotifications, enabled = !savingNotifications, modifier = Modifier.fillMaxWidth()) { Text(if (savingNotifications) "جارٍ الحفظ..." else "حفظ تفضيلات الإشعارات") } }
         if (notificationMessage.isNotBlank()) item { Text(notificationMessage, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall) }
         item { HorizontalDivider() }
-        item { Text("إدارة البوت", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
-        item { OutlinedButton(onClick = onGoButtons, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.AccountTree, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("تعديل أزرار ورسائل البوت") } }
-        item { OutlinedButton(onClick = onGoAudit, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.History, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("سجل الإجراءات الإدارية") } }
-        item { HorizontalDivider() }
         item { Text("المظهر", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
         item { OutlinedButton(onClick = onTheme, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Contrast, contentDescription = null); Spacer(Modifier.width(8.dp)); Text("الوضع الليلي / النهاري / تلقائي") } }
         item { HorizontalDivider() }
         item { Text("أمان الحساب", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
         item { Text("صلاحيات المالك والمشرفين تُحسم على الخادم، وليس من واجهة التطبيق.") }
         item { OutlinedButton(onClick = onLogin, modifier = Modifier.fillMaxWidth()) { Text("العودة لشاشة تسجيل الدخول") } }
-        item { Text("سجل التدقيق سيعرض المستخدم والإجراء والوقت والنتيجة بعد تفعيل واجهة الخادم.", style = MaterialTheme.typography.bodySmall) }
+        item { HorizontalDivider() }
+        item { Text("سجل التدقيق", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }
+        if (auditItems.isEmpty()) item { Text("لا توجد سجلات متاحة أو لا تملك صلاحية عرضها.") }
+        items(auditItems.take(20), key = { it.id }) { entry ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(entry.action, fontWeight = FontWeight.Bold)
+                    Text(entry.admin)
+                    Text(entry.details)
+                    Text(entry.createdAt, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ButtonsScreen(
+    items: List<BotButtonItem>,
+    status: String,
+    onSave: (Int, String, String, Boolean, Boolean) -> Unit
+) {
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Text("إدارة أزرار البوت", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+        item { Text("عدّل نص الزر والرسالة المرتبطة به، وحالة التفعيل واشتراط الاشتراك الإجباري. الحفظ يطبق على إعدادات البوت.") }
+        if (status.isNotBlank()) item { Text(status, color = MaterialTheme.colorScheme.primary) }
+        if (items.isEmpty()) item { Text("لا توجد أزرار متاحة أو لا تملك صلاحية إدارتها.") }
+        items(items, key = { it.id }) { item -> ButtonEditorCard(item, onSave) }
+    }
+}
+
+@Composable
+private fun ButtonEditorCard(item: BotButtonItem, onSave: (Int, String, String, Boolean, Boolean) -> Unit) {
+    var buttonText by remember(item.id, item.text) { mutableStateOf(item.text) }
+    var messageText by remember(item.id, item.message) { mutableStateOf(item.message) }
+    var active by remember(item.id, item.active) { mutableStateOf(item.active) }
+    var requiresSubscription by remember(item.id, item.requiresSubscription) { mutableStateOf(item.requiresSubscription) }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(item.key, style = MaterialTheme.typography.labelMedium)
+            OutlinedTextField(value = buttonText, onValueChange = { buttonText = it.take(150) }, label = { Text("نص الزر") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            OutlinedTextField(value = messageText, onValueChange = { messageText = it.take(4000) }, label = { Text("نص الرسالة / النافذة") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("الزر مفعّل", modifier = Modifier.weight(1f))
+                Switch(checked = active, onCheckedChange = { active = it })
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("اشتراك إجباري", modifier = Modifier.weight(1f))
+                Switch(checked = requiresSubscription, onCheckedChange = { requiresSubscription = it })
+            }
+            Button(onClick = { onSave(item.id, buttonText, messageText, requiresSubscription, active) }, modifier = Modifier.fillMaxWidth()) { Text("حفظ تعديلات الزر") }
+        }
     }
 }
