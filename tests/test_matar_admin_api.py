@@ -67,6 +67,15 @@ class AdminApiTests(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
+    def test_my_permissions_are_derived_from_current_server_records(self):
+        self.user = {"telegram_id": 101, "role": "moderator", "permissions": {}}
+        self.permissions[(101, "can_send_broadcast")] = True
+        response = self.client.get("/api/admin/my-permissions")
+        self.assertEqual(response.status_code, 200)
+        permissions = response.get_json()["permissions"]
+        self.assertTrue(permissions["can_send_broadcast"])
+        self.assertFalse(permissions["can_manage_moderators"])
+
     def test_operations_claim_is_exclusive_and_releasable(self):
         response = self.client.get("/api/admin/operations")
         self.assertEqual(response.status_code, 200)
