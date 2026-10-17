@@ -1571,7 +1571,7 @@ class RegressionTests(unittest.TestCase):
             m.handle_all_callbacks(self.fake_call('admin_cat_users'))
         edit.assert_called_once()
         kwargs = edit.call_args.kwargs
-        self.assertIn('المستخدمون والمشرفون', kwargs['text'])
+        self.assertIn('المستخدمون والمشرفون', edit.call_args.args[0])
         buttons = [
             button.callback_data
             for row in kwargs['reply_markup'].keyboard
