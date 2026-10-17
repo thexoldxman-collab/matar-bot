@@ -70,17 +70,21 @@ object AdminApi {
             val json = if (body.isNotBlank()) JSONObject(body) else JSONObject()
             if (status in 200..299) {
                 val user = json.optJSONObject("user") ?: JSONObject()
+                val role = user.optString("role")
+                val token = json.optString("access_token").takeIf { it.isNotBlank() && role in setOf("owner", "moderator") }
+                val fallbackPermissions = user.optJSONObject("permissions")?.let { p ->
+                    listOf("can_handle_charges", "can_handle_withdraws", "can_send_broadcast",
+                        "can_manage_users", "can_view_stats", "can_manage_buttons",
+                        "can_manage_moderators", "can_use_ai")
+                        .associateWith { p.optBoolean(it, false) }
+                } ?: emptyMap()
+                val serverPermissions = token?.let { loadPermissions(it) } ?: emptyMap()
                 AdminLoginResult(
-                    token = json.optString("access_token").takeIf { it.isNotBlank() && user.optString("role") in setOf("owner", "moderator") },
-                    displayName = if (user.optString("role") == "owner") "مدير البوت" else "مشرف",
-                    role = user.optString("role").takeIf { it == "owner" || it == "moderator" },
-                    permissions = user.optJSONObject("permissions")?.let { p ->
-                        listOf("can_handle_charges", "can_handle_withdraws", "can_send_broadcast",
-                            "can_manage_users", "can_view_stats", "can_manage_buttons",
-                            "can_manage_moderators", "can_use_ai")
-                            .associateWith { p.optBoolean(it, false) }
-                    } ?: emptyMap(),
-                    error = if (user.optString("role") in setOf("owner", "moderator")) null else "الخادم لم يحدد دور الحساب بشكل صحيح؛ تم رفض الدخول."
+                    token = token,
+                    displayName = if (role == "owner") "مدير البوت" else "مشرف",
+                    role = role.takeIf { it == "owner" || it == "moderator" },
+                    permissions = serverPermissions.ifEmpty { fallbackPermissions },
+                    error = if (role in setOf("owner", "moderator")) null else "الخادم لم يحدد دور الحساب بشكل صحيح؛ تم رفض الدخول."
                 )
             } else {
                 val error = when (json.optString("error")) {
@@ -106,11 +110,12 @@ object AdminApi {
             val role = user.optString("role")
             if (role !in setOf("owner", "moderator")) return null
             val source = user.optJSONObject("permissions") ?: JSONObject()
-            val permissions = listOf(
+            val fallbackPermissions = listOf(
                 "can_handle_charges", "can_handle_withdraws", "can_send_broadcast",
                 "can_manage_users", "can_view_stats", "can_manage_buttons",
                 "can_manage_moderators", "can_use_ai"
             ).associateWith { source.optBoolean(it, false) }
+            val permissions = loadPermissions(token).ifEmpty { fallbackPermissions }
             AdminLoginResult(
                 token = token,
                 displayName = if (role == "owner") "مدير البوت" else "مشرف",
@@ -119,6 +124,22 @@ object AdminApi {
             )
         } catch (_: Exception) {
             null
+        }
+    }
+
+    fun loadPermissions(token: String): Map<String, Boolean> {
+        val (status, body) = request("GET", "/api/admin/my-permissions", token, null)
+        if (status !in 200..299) return emptyMap()
+        return try {
+            val source = JSONObject(body).optJSONObject("permissions") ?: return emptyMap()
+            listOf(
+                "can_reply_tickets", "can_handle_charges", "can_handle_withdraws",
+                "can_send_broadcast", "can_manage_users", "can_charge_withdraw_users",
+                "can_view_stats", "can_manage_buttons", "can_access_full_admin",
+                "can_manage_moderators", "can_use_ai"
+            ).associateWith { source.optBoolean(it, false) }
+        } catch (_: Exception) {
+            emptyMap()
         }
     }
 
