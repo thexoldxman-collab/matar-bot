@@ -6,11 +6,7 @@ concurrency:
 
 on:
   push:
-    branches: [main, feature/matar-admin-android]
-    paths:
-      - "android-admin/**"
-      - ".github/workflows/android-admin-apk.yml"
-  pull_request:
+    branches: [main]
     paths:
       - "android-admin/**"
       - ".github/workflows/android-admin-apk.yml"
