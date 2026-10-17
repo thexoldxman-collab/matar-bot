@@ -173,13 +173,13 @@ private fun MatarAdminApp() {
             } else if (showLogin && !connected) {
                 LoginScreen(
                     code = pairingCode,
-                    onCodeChange = { pairingCode = it.filter { ch -> ch in '0'..'9' }.take(6) },
+                    onCodeChange = { pairingCode = it.uppercase().filter { ch -> ch in "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" }.take(8) },
                     message = loginMessage,
                     connecting = connecting,
                     onConnect = {
                         val cleanCode = pairingCode.trim()
-                        if (!cleanCode.matches(Regex("\\d{6}"))) {
-                            loginMessage = "اكتب الرمز الرقمي المؤلف من 6 خانات الذي وصلك من البوت بعد إرسال /link."
+                        if (!cleanCode.matches(Regex("[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}"))) {
+                            loginMessage = "اكتب رمز الربط المؤلف من 8 أحرف وأرقام الذي وصلك من البوت بعد إرسال /adminapp."
                         } else {
                             scope.launch {
                                 connecting = true
