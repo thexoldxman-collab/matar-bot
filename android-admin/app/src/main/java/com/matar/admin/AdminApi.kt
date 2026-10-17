@@ -7,6 +7,15 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 
+data class DashboardStats(
+    val users: Int,
+    val pendingCharges: Int,
+    val pendingWithdraws: Int,
+    val moderators: Int,
+    val openTickets: Int,
+    val operationMode: String
+)
+
 data class AdminButtonItem(
     val id: Int,
     val name: String,
@@ -189,6 +198,23 @@ object AdminApi {
     }
 
 
+
+
+    fun loadDashboard(token: String): DashboardStats? {
+        val (status, body) = request("GET", "/api/admin/dashboard", token, null)
+        if (status !in 200..299) return null
+        return try {
+            val stats = JSONObject(body).optJSONObject("stats") ?: return null
+            DashboardStats(
+                users = stats.optInt("users"),
+                pendingCharges = stats.optInt("pending_charges"),
+                pendingWithdraws = stats.optInt("pending_withdraws"),
+                moderators = stats.optInt("moderators"),
+                openTickets = stats.optInt("open_tickets"),
+                operationMode = stats.optString("operation_mode", "demo")
+            )
+        } catch (_: Exception) { null }
+    }
 
     fun loadButtons(token: String): List<AdminButtonItem>? {
         val (status, body) = request("GET", "/api/admin/buttons", token, null)
