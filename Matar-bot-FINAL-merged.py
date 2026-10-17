@@ -5434,6 +5434,20 @@ def handle_all_callbacks(call):
     """معالج شامل لجميع الكول باكات - نسخة مصححة"""
     uid = call.from_user.id
     data = call.data
+    owner_control_callbacks = {
+        'admin_cat_control', 'admin_control_center', 'mode_info',
+        'request_real_mode', 'request_demo_mode', 'confirm_real_mode',
+        'confirm_demo_mode', 'cancel_mode_switch', 'control_toggle_bot',
+        'control_toggle_wheel', 'toggle_syriatel', 'toggle_sham',
+        'toggle_usdt', 'toggle_binance', 'setup_usdt', 'setup_binance',
+        'edit_syriatel', 'edit_sham', 'edit_usdt_address', 'edit_usdt_network',
+        'edit_binance_address', 'edit_binance_pay_id', 'admin_payment',
+        'edit_limits', 'edit_commission', 'payment_status', 'admin_api_connect',
+        'api_status', 'toggle_api', 'toggle_auto_verify',
+    }
+    if (uid != ADMIN_ID and (data in owner_control_callbacks or data.startswith('api_'))):
+        safe_answer_callback(call.id, "❌ هذا الإجراء للمالك فقط.", show_alert=True)
+        return
     # نؤكد الضغط بأمان أولاً؛ الفشل هنا لا يلغي تنفيذ الزر.
     safe_answer_callback(call.id)
 
@@ -6247,7 +6261,7 @@ def handle_all_callbacks(call):
         keyboard.add(
             types.InlineKeyboardButton("📬 تعديل عنوان Binance", callback_data="edit_binance_address"),
             types.InlineKeyboardButton("🆔 تعديل Binance Pay ID", callback_data="edit_binance_pay_id"),
-            types.InlineKeyboardButton("🔙 رجوع", callback_data="admin_payment")
+            types.InlineKeyboardButton("🔙 رجوع إلى مركز التحكم", callback_data="admin_control_center")
         )
         binance_address = get_db_setting('binance_address') or 'غير محدد'
         binance_pay_id = get_db_setting('binance_pay_id') or 'غير محدد'
