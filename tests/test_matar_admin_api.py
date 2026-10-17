@@ -42,8 +42,8 @@ class AdminApiTests(unittest.TestCase):
                 sort_order INTEGER, is_active INTEGER, requires_subscription INTEGER, requires_admin INTEGER,
                 requires_moderator INTEGER, path TEXT, updated_at TEXT);
             INSERT INTO users(user_id,deleted,status) VALUES (200,0,'active'),(201,1,'active');
-            INSERT INTO pending_charges VALUES (1,200,25000,'syriatel','pending','2026-01-01 10:00:00','R-1',NULL);
-            INSERT INTO pending_withdraws VALUES (2,200,10000,9000,'syriatel','pending','2026-01-01 10:01:00','account-1',NULL);
+            INSERT INTO pending_charges VALUES (1,200,25000,'syriatel','pending','2026-01-01 10:00:00','R-1',NULL,NULL);
+            INSERT INTO pending_withdraws VALUES (2,200,10000,9000,'syriatel','pending','2026-01-01 10:01:00','account-1',NULL,NULL);
             INSERT INTO moderators(user_id,custom_name,added_by,added_at) VALUES (300,'مشرف اختبار',100,'2026-01-01');
             INSERT INTO tickets(ticket_id,status) VALUES (1,'open');
             INSERT INTO dynamic_buttons VALUES (1,'welcome','أهلاً','main','reply','welcome','رسالة ترحيب',1,0,1,0,0,0,'/',NULL);
