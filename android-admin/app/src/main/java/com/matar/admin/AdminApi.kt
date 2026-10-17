@@ -79,6 +79,31 @@ object AdminApi {
         }
     }
 
+
+    fun restoreSession(token: String): AdminLoginResult? {
+        val (status, body) = request("GET", "/api/admin/auth/me", token, null)
+        if (status !in 200..299) return null
+        return try {
+            val user = JSONObject(body).optJSONObject("user") ?: return null
+            val role = user.optString("role")
+            if (role !in setOf("owner", "moderator")) return null
+            val source = user.optJSONObject("permissions") ?: JSONObject()
+            val permissions = listOf(
+                "can_handle_charges", "can_handle_withdraws", "can_send_broadcast",
+                "can_manage_users", "can_view_stats", "can_manage_buttons",
+                "can_manage_moderators", "can_use_ai"
+            ).associateWith { source.optBoolean(it, false) }
+            AdminLoginResult(
+                token = token,
+                displayName = if (role == "owner") "مدير البوت" else "مشرف",
+                role = role,
+                permissions = permissions
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     fun logout(token: String) {
         request("POST", "/api/admin/auth/logout", token, null)
     }
