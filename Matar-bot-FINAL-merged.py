@@ -1237,7 +1237,7 @@ def _copy_mode_configuration(source_conn, target_conn):
     """مزامنة الإعدادات فقط بين وضعي الاختبار والإنتاج، دون نسخ المستخدمين أو الأرصدة."""
     tables = (
         'settings', 'dynamic_buttons', 'moderators', 'notification_settings',
-        'operations_room', 'api_configs', 'api_connections',
+        'operations_room', 'api_configs', 'api_connections', 'wheel_prizes',
     )
     for table in tables:
         source_cursor = source_conn.cursor()
@@ -4473,36 +4473,50 @@ def process_update_binance_pay_id(message):
     _save_service_setting_from_message(message, 'binance_pay_id', 'معرّف Binance Pay')
 
 def process_update_limits(message):
-    """تحديث الحدود"""
+    """تحديث حدود الدفع بأرقام صحيحة وتحقق من ترتيب الحدود."""
     uid = message.from_user.id
-    
+    if uid != ADMIN_ID:
+        bot.send_message(message.chat.id, "❌ تعديل حدود الدفع للمالك فقط.")
+        return
     try:
-        parts = message.text.split(',')
-        if len(parts) >= 3:
-            min_charge = parts[0].strip()
-            min_withdraw = parts[1].strip()
-            max_withdraw = parts[2].strip()
-            
-            update_db_setting('min_charge', min_charge, uid)
-            update_db_setting('min_withdraw_syria', min_withdraw, uid)
-            update_db_setting('max_withdraw_syria', max_withdraw, uid)
-            
-            bot.send_message(message.chat.id, f"✅ **تم تحديث الحدود:**\n📉 الحد الأدنى للشحن: {min_charge}\n📉 الحد الأدنى للسحب: {min_withdraw}\n📈 الحد الأقصى للسحب: {max_withdraw}", parse_mode="Markdown")
-        else:
-            bot.send_message(message.chat.id, "❌ **الصيغة الصحيحة: الحد الأدنى للشحن,الحد الأدنى للسحب,الحد الأقصى للسحب**", parse_mode="Markdown")
-    except:
-        bot.send_message(message.chat.id, "❌ **خطأ في الصيغة**", parse_mode="Markdown")
+        parts = (message.text or '').split(',')
+        if len(parts) != 3:
+            raise ValueError
+        min_charge, min_withdraw, max_withdraw = [float(part.strip()) for part in parts]
+        if not all(math.isfinite(value) and value > 0 for value in (min_charge, min_withdraw, max_withdraw)):
+            raise ValueError
+        if min_withdraw > max_withdraw:
+            bot.send_message(message.chat.id, "❌ الحد الأدنى للسحب يجب ألا يتجاوز الحد الأقصى.")
+            return
+        update_db_setting('min_charge', str(min_charge), uid)
+        update_db_setting('min_withdraw_syria', str(min_withdraw), uid)
+        update_db_setting('max_withdraw_syria', str(max_withdraw), uid)
+        bot.send_message(
+            message.chat.id,
+            f"✅ تم تحديث الحدود:\n• أقل شحن: {min_charge:,.0f}\n• أقل سحب: {min_withdraw:,.0f}\n• أعلى سحب: {max_withdraw:,.0f}",
+        )
+        render_operations_control(message.chat.id)
+    except (TypeError, ValueError):
+        bot.send_message(
+            message.chat.id,
+            "❌ أرسل ثلاثة أرقام موجبة بهذا الشكل: أقل شحن,أقل سحب,أعلى سحب",
+        )
 
 def process_update_commission(message):
-    """تحديث نسبة العمولة"""
+    """تحديث نسبة العمولة بقيمة آمنة بين صفر و100."""
     uid = message.from_user.id
-    
+    if uid != ADMIN_ID:
+        bot.send_message(message.chat.id, "❌ تعديل العمولة للمالك فقط.")
+        return
     try:
         commission = float(message.text)
+        if not math.isfinite(commission) or not 0 <= commission <= 100:
+            raise ValueError
         update_db_setting('withdraw_commission', str(commission), uid)
-        bot.send_message(message.chat.id, f"✅ **تم تحديث نسبة العمولة إلى:** {commission}%", parse_mode="Markdown")
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
+        bot.send_message(message.chat.id, f"✅ تم تحديث نسبة العمولة إلى: {commission:g}%")
+        render_operations_control(message.chat.id)
+    except (TypeError, ValueError):
+        bot.send_message(message.chat.id, "❌ أدخل نسبة عمولة بين 0 و100.")
 
 def process_edit_welcome(message):
     """تعديل رسالة الترحيب"""
@@ -6244,6 +6258,9 @@ def handle_all_callbacks(call):
 
     if data == 'toggle_syriatel':
         current = get_db_setting('syriatel_status') or 'active'
+        if current != 'active' and not (get_db_setting('syriatel_numbers') or '').strip():
+            safe_answer_callback(call.id, "أدخل رقم/أرقام سيرياتل أولاً؛ لم يتم فتح الخدمة.", show_alert=True)
+            return
         new_val = 'stopped' if current == 'active' else 'active'
         update_db_setting('syriatel_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
