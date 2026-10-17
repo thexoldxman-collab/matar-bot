@@ -437,7 +437,6 @@ def register_admin_api(app, bot, owner_id: int, db_factory: Callable):
 
     app.register_blueprint(bp)
 
-    @bot.message_handler(commands=["adminapp"])
     def issue_pairing_code(message):
         user_id = int(message.from_user.id)
         if getattr(message.chat, "type", "private") != "private":
@@ -467,4 +466,7 @@ def register_admin_api(app, bot, owner_id: int, db_factory: Callable):
         finally:
             db.close()
 
+    # The bot has an earlier catch-all text router; it dispatches /adminapp
+    # to this callback explicitly so the pairing command cannot be swallowed.
+    app.config["matar_admin_app_pairing_handler"] = issue_pairing_code
     return bp
