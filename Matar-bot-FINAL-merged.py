@@ -6,7 +6,7 @@
 
 import telebot
 from telebot import types
-from flask import Flask, request, jsonify
+from flask import Flask, request as flask_request, jsonify
 from threading import Thread, RLock
 import os
 import sqlite3
@@ -10890,7 +10890,7 @@ def _admin_app_create_session(user_id):
 
 
 def _admin_app_get_user():
-    authorization = request.headers.get('Authorization', '')
+    authorization = flask_request.headers.get('Authorization', '')
     if not authorization.startswith('Bearer '):
         return None
     token = authorization[7:].strip()
@@ -10917,7 +10917,7 @@ def _admin_app_unauthorized():
 
 @app.route('/api/admin/v1/pair', methods=['POST'])
 def admin_app_pair():
-    body = request.get_json(silent=True) or {}
+    body = flask_request.get_json(silent=True) or {}
     code = str(body.get('code', '')).strip()
     if not code or len(code) > 128:
         return jsonify({'ok': False, 'error': 'أدخل رمز الربط الذي أنشأته من تلغرام.'}), 400
