@@ -5660,7 +5660,7 @@ def handle_all_callbacks(call):
         safe_answer_callback(call.id, maintenance_message[:180], show_alert=True)
         return
     owner_control_callbacks = {
-        'admin_cat_control', 'admin_control_center', 'mode_info',
+        'admin_cat_control', 'admin_cat_services', 'admin_control_center', 'mode_info',
         'request_real_mode', 'request_demo_mode', 'confirm_real_mode',
         'confirm_demo_mode', 'cancel_mode_switch', 'control_toggle_bot',
         'control_toggle_wheel', 'toggle_bot', 'wheel_toggle', 'toggle_syriatel', 'toggle_sham',
