@@ -3316,15 +3316,15 @@ def get_reply_keyboard_for_ticket(ticket_id, user_id):
     return markup
 
 def get_search_keyboard():
-    """لوحة مفاتيح البحث المتقدم"""
+    """لوحة مفاتيح البحث المتقدم؛ تستخدم معرفات الأزرار التي يعالجها الراوتر فعلياً."""
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("📅 بحث بالتاريخ", callback_data="search_by_date"),
-        types.InlineKeyboardButton("👤 بحث بالمشرف", callback_data="search_by_admin"),
-        types.InlineKeyboardButton("🔍 بحث بالنوع", callback_data="search_by_type"),
-        types.InlineKeyboardButton("💰 بحث بالمبلغ", callback_data="search_by_amount"),
-        types.InlineKeyboardButton("👥 بحث بالمستخدم", callback_data="search_by_user"),
-        types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_logs")
+        types.InlineKeyboardButton("📅 بحث بالتاريخ", callback_data="search_logs_date"),
+        types.InlineKeyboardButton("👤 بحث بالمشرف", callback_data="search_logs_admin"),
+        types.InlineKeyboardButton("🔍 بحث بالنوع", callback_data="search_logs_type"),
+        types.InlineKeyboardButton("💰 بحث بالمبلغ", callback_data="search_logs_amount"),
+        types.InlineKeyboardButton("👥 بحث بالمستخدم", callback_data="search_logs_user"),
+        types.InlineKeyboardButton("🔙 رجوع", callback_data="admin_logs")
     )
     return markup
 
