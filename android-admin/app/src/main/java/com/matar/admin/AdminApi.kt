@@ -160,16 +160,6 @@ object AdminApi {
         }
     }
 
-    fun releaseOperation(token: String, type: String, id: Int): String? {
-        val (status, body) = request("POST", "/api/admin/operations/$type/$id/release", token, JSONObject())
-        return if (status in 200..299) null else apiError(body, "تعذر تحرير الطلب.")
-    }
-
-    fun cancelOperation(token: String, type: String, id: Int, reason: String): String? {
-        val (status, body) = request("POST", "/api/admin/operations/$type/$id/cancel", token, JSONObject().put("reason", reason))
-        return if (status in 200..299) null else apiError(body, "تعذر إلغاء الطلب.")
-    }
-
     fun updateModeratorPermissions(token: String, userId: Long, permissions: Map<String, Boolean>): String? {
         val permissionJson = JSONObject()
         permissions.forEach { (key, enabled) -> permissionJson.put(key, enabled) }
