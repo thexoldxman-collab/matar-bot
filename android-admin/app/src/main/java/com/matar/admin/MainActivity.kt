@@ -58,6 +58,10 @@ private fun MatarAdminApp() {
     var liveOperations by remember { mutableStateOf(false) }
     var operationMessage by remember { mutableStateOf("") }
     var notificationMessage by remember { mutableStateOf("") }
+    var moderators by remember { mutableStateOf(emptyList<ModeratorItem>()) }
+    var moderatorMessage by remember { mutableStateOf("") }
+    var sendingMessage by remember { mutableStateOf(false) }
+    var sentMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     var pairingCode by remember { mutableStateOf("") }
     var loginMessage by remember { mutableStateOf("") }
@@ -104,6 +108,9 @@ private fun MatarAdminApp() {
                                 if (result.token != null) {
                                     accessToken = result.token
                                     accountRole = result.role
+                                    if (result.role == "owner") {
+                                        moderators = withContext(Dispatchers.IO) { AdminApi.loadModerators(result.token) } ?: emptyList()
+                                    }
                                     val operations = withContext(Dispatchers.IO) { AdminApi.loadOperations(result.token) }
                                     if (operations != null) {
                                         queue = operations
@@ -166,7 +173,14 @@ private fun MatarAdminApp() {
                                 }
                                 NavigationBarItem(
                                     selected = page == item,
-                                    onClick = { page = item },
+                                    onClick = {
+                                        page = item
+                                        if (item == Page.USERS && accessToken != null) {
+                                            scope.launch {
+                                                moderators = withContext(Dispatchers.IO) { AdminApi.loadModerators(accessToken!!) } ?: moderators
+                                            }
+                                        }
+                                    },
                                     icon = { Icon(icon, contentDescription = item.label) },
                                     label = { Text(item.label, maxLines = 1) }
                                 )
@@ -233,8 +247,49 @@ private fun MatarAdminApp() {
                                     }
                                 }
                             )
-                            Page.USERS -> ModeratorsScreen()
-                            Page.MESSAGES -> MessagesScreen()
+                            Page.USERS -> ModeratorsScreen(
+                                moderators = moderators,
+                                message = moderatorMessage,
+                                onRefresh = {
+                                    val token = accessToken
+                                    if (token != null) scope.launch {
+                                        moderators = withContext(Dispatchers.IO) { AdminApi.loadModerators(token) } ?: moderators
+                                    }
+                                },
+                                onAdd = { userId, name, permissions ->
+                                    val token = accessToken
+                                    if (token == null) moderatorMessage = "سجّل الدخول أولاً."
+                                    else scope.launch {
+                                        val error = withContext(Dispatchers.IO) { AdminApi.addModerator(token, userId, name, permissions) }
+                                        moderatorMessage = error ?: "تمت إضافة المشرف."
+                                        if (error == null) moderators = withContext(Dispatchers.IO) { AdminApi.loadModerators(token) } ?: moderators
+                                    }
+                                },
+                                onDelete = { userId ->
+                                    val token = accessToken
+                                    if (token == null) moderatorMessage = "سجّل الدخول أولاً."
+                                    else scope.launch {
+                                        val error = withContext(Dispatchers.IO) { AdminApi.deleteModerator(token, userId) }
+                                        moderatorMessage = error ?: "تم حذف المشرف."
+                                        if (error == null) moderators = withContext(Dispatchers.IO) { AdminApi.loadModerators(token) } ?: moderators
+                                    }
+                                }
+                            )
+                            Page.MESSAGES -> MessagesScreen(
+                                connected = connected,
+                                sending = sendingMessage,
+                                status = sentMessage,
+                                onSend = { audience, message ->
+                                    val token = accessToken
+                                    if (token == null) sentMessage = "سجّل الدخول أولاً."
+                                    else scope.launch {
+                                        sendingMessage = true
+                                        sentMessage = withContext(Dispatchers.IO) { AdminApi.broadcastMessage(token, message, audience) }
+                                            ?: "تعذر الإرسال؛ قد لا يملك حسابك صلاحية البث."
+                                        sendingMessage = false
+                                    }
+                                }
+                            )
                             Page.SETTINGS -> SettingsScreen(
                                 notifications = notifications,
                                 onNotificationChange = { key, value -> notifications = notifications + (key to value) },
@@ -416,40 +471,122 @@ private fun OperationsRoom(
 }
 
 @Composable
-private fun ModeratorsScreen() {
+private fun ModeratorsScreen(
+    moderators: List<ModeratorItem>,
+    message: String,
+    onRefresh: () -> Unit,
+    onAdd: (Long, String, Map<String, Boolean>) -> Unit,
+    onDelete: (Long) -> Unit
+) {
+    var userId by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+    var canCharges by remember { mutableStateOf(false) }
+    var canWithdraws by remember { mutableStateOf(false) }
+    var canBroadcast by remember { mutableStateOf(false) }
+    var canViewStats by remember { mutableStateOf(false) }
+    var canButtons by remember { mutableStateOf(false) }
+    var canAI by remember { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("إدارة المشرفين", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
-        item { Text("في النسخة المتصلة ستُقرأ القائمة من الخادم، ولا يمكن لأي مشرف منح نفسه صلاحيات.") }
-        items(listOf("مشرف الشحن — مثال", "مشرف السحب — مثال", "مشرف الرسائل — مثال")) { name ->
+        item { Text("تُقرأ الصلاحيات من الخادم. الصلاحيات الحساسة لا يمنحها إلا المدير.") }
+        item { OutlinedTextField(value = userId, onValueChange = { userId = it.filter { ch -> ch.isDigit() }.take(18) }, label = { Text("معرف تيليغرام") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+        item { OutlinedTextField(value = name, onValueChange = { name = it.take(80) }, label = { Text("اسم المشرف (اختياري)") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+        item { PermissionToggle("إدارة طلبات الشحن", canCharges) { canCharges = it } }
+        item { PermissionToggle("إدارة طلبات السحب", canWithdraws) { canWithdraws = it } }
+        item { PermissionToggle("إرسال رسائل جماعية", canBroadcast) { canBroadcast = it } }
+        item { PermissionToggle("عرض الإحصائيات", canViewStats) { canViewStats = it } }
+        item { PermissionToggle("إدارة أزرار البوت", canButtons) { canButtons = it } }
+        item { PermissionToggle("استخدام المساعد الذكي", canAI) { canAI = it } }
+        item {
+            Button(
+                onClick = {
+                    val parsed = userId.toLongOrNull()
+                    if (parsed != null && parsed > 0) onAdd(parsed, name.trim(), mapOf(
+                        "can_handle_charges" to canCharges,
+                        "can_handle_withdraws" to canWithdraws,
+                        "can_send_broadcast" to canBroadcast,
+                        "can_view_stats" to canViewStats,
+                        "can_manage_buttons" to canButtons,
+                        "can_use_ai" to canAI
+                    ))
+                },
+                enabled = userId.toLongOrNull()?.let { it > 0 } == true,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("إضافة مشرف") }
+        }
+        item { OutlinedButton(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) { Text("تحديث قائمة المشرفين") } }
+        if (message.isNotBlank()) item { Text(message, color = MaterialTheme.colorScheme.primary) }
+        item { Text("المشرفون الحاليون", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+        if (moderators.isEmpty()) item { Text("لا توجد بيانات مشرفين محمّلة. اضغط تحديث القائمة.") }
+        items(moderators, key = { it.userId }) { moderator ->
             Card(Modifier.fillMaxWidth()) {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.AccountCircle, contentDescription = null)
-                    Spacer(Modifier.width(10.dp))
-                    Text(name, modifier = Modifier.weight(1f))
-                    Icon(Icons.Default.Lock, contentDescription = "صلاحيات من الخادم")
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(moderator.customName.ifBlank { "مشرف " + moderator.userId }, fontWeight = FontWeight.Bold)
+                            Text("معرف تيليغرام: " + moderator.userId, style = MaterialTheme.typography.bodySmall)
+                        }
+                        IconButton(onClick = { onDelete(moderator.userId) }) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = "حذف المشرف")
+                        }
+                    }
+                    Text(
+                        moderator.permissions.filterValues { it }.keys.joinToString(" • ") { it.removePrefix("can_").replace('_', ' ') }
+                            .ifBlank { "لا توجد صلاحيات مفعّلة" },
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             }
         }
-        item { OutlinedButton(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) { Text("إضافة مشرف — تتطلب اتصال الخادم") } }
     }
 }
 
 @Composable
-private fun MessagesScreen() {
-    var target by remember { mutableStateOf("الكل") }
+private fun PermissionToggle(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, modifier = Modifier.weight(1f))
+        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+private fun MessagesScreen(
+    connected: Boolean,
+    sending: Boolean,
+    status: String,
+    onSend: (String, String) -> Unit
+) {
+    var target by remember { mutableStateOf("all") }
     var message by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("الرسائل", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text("إرسال الرسائل واستقبالها سيعمل عبر الخادم بعد ربط واجهات البوت.")
-        Text("جهة الإرسال")
+        Text("إرسال جماعي عبر تيليغرام. راجع الجمهور والنص قبل التأكيد.")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("الكل", "مستخدم", "المشرفون").forEach { option ->
-                FilterChip(selected = target == option, onClick = { target = option }, label = { Text(option) })
-            }
+            FilterChip(selected = target == "all", onClick = { target = "all" }, label = { Text("كل المستخدمين") })
+            FilterChip(selected = target == "moderators", onClick = { target = "moderators" }, label = { Text("المشرفون") })
         }
-        OutlinedTextField(value = message, onValueChange = { message = it }, label = { Text("اكتب الرسالة") }, modifier = Modifier.fillMaxWidth(), minLines = 4)
-        Button(onClick = {}, enabled = false, modifier = Modifier.fillMaxWidth()) { Text("إرسال — يتطلب اتصال الخادم") }
-        Text("الرسائل الواردة ستظهر هنا مع سجل المحادثة وحالة التسليم.", style = MaterialTheme.typography.bodySmall)
+        OutlinedTextField(value = message, onValueChange = { message = it.take(4000) }, label = { Text("اكتب الرسالة") }, modifier = Modifier.fillMaxWidth(), minLines = 4)
+        Button(onClick = { confirm = true }, enabled = connected && !sending && message.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
+            Text(if (sending) "جارٍ الإرسال..." else "مراجعة وإرسال")
+        }
+        if (!connected) Text("يلزم تسجيل الدخول للاتصال بالخادم قبل الإرسال.", style = MaterialTheme.typography.bodySmall)
+        if (status.isNotBlank()) Text(status, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+        if (confirm) {
+            AlertDialog(
+                onDismissRequest = { confirm = false },
+                title = { Text("تأكيد الإرسال") },
+                text = {
+                    Text(
+                        "سيتم إرسال هذه الرسالة إلى " +
+                            (if (target == "all") "كل المستخدمين النشطين (حتى 5000 حساب)" else "المدير وجميع المشرفين") +
+                            ". هل تريد المتابعة?\n\n" + message
+                    )
+                },
+                confirmButton = { TextButton(onClick = { confirm = false; onSend(target, message.trim()) }) { Text("إرسال الآن") } },
+                dismissButton = { TextButton(onClick = { confirm = false }) { Text("رجوع") } }
+            )
+        }
     }
 }
 
