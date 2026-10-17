@@ -2801,10 +2801,15 @@ class ActionSystem:
                 return
             
             text = "📬 **التذاكر المفتوحة:**\n\n"
+            markup = types.InlineKeyboardMarkup(row_width=1)
             for t in tickets:
                 text += f"🔹 #{t[0]} - مستخدم {t[1]}\n📝 {t[2][:50]}...\n📅 {t[4]}\n\n"
+                markup.add(types.InlineKeyboardButton(
+                    f"✏️ الرد على التذكرة #{t[0]}",
+                    callback_data=f"reply_ticket_{t[0]}_{t[1]}",
+                ))
             
-            bot.send_message(chat_id, text, parse_mode="Markdown")
+            bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
         else:
             # للمستخدم العادي - عرض تذاكره
             cursor.execute("""SELECT ticket_id, message, status, created_at 
@@ -2823,6 +2828,48 @@ class ActionSystem:
             
             bot.send_message(chat_id, text, parse_mode="Markdown")
     
+    @staticmethod
+    def process_ticket_reply(message, ticket_id, target_user_id):
+        """حفظ رد المشرف وإرساله لصاحب تذكرة الدعم بعد إعادة التحقق من الصلاحيات والحالة."""
+        uid = message.from_user.id
+        if uid != ADMIN_ID and not check_permission(uid, 'can_reply_tickets'):
+            bot.send_message(message.chat.id, "❌ لا تملك صلاحية الرد على تذاكر الدعم.")
+            return
+
+        reply_text = (getattr(message, 'text', None) or '').strip()
+        if not reply_text:
+            bot.send_message(message.chat.id, "❌ أرسل الرد كنص، ولم يتم تغيير حالة التذكرة.")
+            return
+
+        cursor.execute("SELECT user_id, status FROM tickets WHERE ticket_id=?", (ticket_id,))
+        ticket = cursor.fetchone()
+        if not ticket or int(ticket[0]) != int(target_user_id) or ticket[1] != 'open':
+            bot.send_message(message.chat.id, "❌ التذكرة غير موجودة أو لم تعد مفتوحة؛ لم يُرسل الرد.")
+            return
+
+        sent_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        sender_type = 'admin' if uid == ADMIN_ID else 'moderator'
+        cursor.execute(
+            "INSERT INTO ticket_conversations (ticket_id, sender_id, sender_type, message, file_id, sent_at) VALUES (?,?,?,?,?,?)",
+            (ticket_id, uid, sender_type, reply_text, None, sent_at),
+        )
+        conn.commit()
+
+        try:
+            bot.send_message(
+                target_user_id,
+                f"💬 رد فريق الدعم على التذكرة #{ticket_id}:\n\n{reply_text}",
+            )
+        except Exception:
+            logger.exception("Failed to deliver support ticket reply ticket_id=%s", ticket_id)
+            bot.send_message(
+                message.chat.id,
+                "⚠️ تم حفظ الرد في سجل التذكرة، لكن تعذّر إرساله للمستخدم. تحقق من سجلات التشغيل.",
+            )
+            return
+
+        bot.send_message(message.chat.id, f"✅ تم إرسال الرد على التذكرة #{ticket_id} وحفظه في السجل.")
+
     @staticmethod
     def show_terms(uid, chat_id):
         """عرض الشروط والأحكام"""
@@ -6218,6 +6265,34 @@ def handle_all_callbacks(call):
     # سجل الإجراءات
     if data == 'admin_logs':
         ActionSystem.show_admin_logs(uid, call.message.chat.id)
+        return
+
+    if data.startswith('reply_ticket_'):
+        if uid != ADMIN_ID and not check_permission(uid, 'can_reply_tickets'):
+            safe_answer_callback(call.id, "❌ لا تملك صلاحية الرد على التذاكر.", show_alert=True)
+            return
+        try:
+            parts = data.split('_')
+            ticket_id = int(parts[-2])
+            target_user_id = int(parts[-1])
+        except (ValueError, IndexError):
+            safe_answer_callback(call.id, "❌ بيانات التذكرة غير صالحة.", show_alert=True)
+            return
+        cursor.execute("SELECT user_id, status FROM tickets WHERE ticket_id=?", (ticket_id,))
+        ticket = cursor.fetchone()
+        if not ticket or int(ticket[0]) != target_user_id or ticket[1] != 'open':
+            safe_answer_callback(call.id, "❌ التذكرة غير موجودة أو لم تعد مفتوحة.", show_alert=True)
+            return
+        bot.send_message(
+            call.message.chat.id,
+            f"✏️ أرسل ردك النصي على التذكرة #{ticket_id}. لن تتغير حالة التذكرة.",
+        )
+        bot.register_next_step_handler_by_chat_id(
+            call.message.chat.id,
+            ActionSystem.process_ticket_reply,
+            ticket_id,
+            target_user_id,
+        )
         return
 
     # ===== اختيار كود سيرياتل بعد إدخال رقم العملية =====
