@@ -1715,6 +1715,7 @@ class RegressionTests(unittest.TestCase):
             "CREATE TABLE operations_room (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER UNIQUE, created_at TEXT)",
             "CREATE TABLE api_configs (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT, name TEXT, api_key TEXT, api_secret TEXT, endpoint TEXT, extra_config TEXT, is_active INTEGER, is_paused INTEGER, created_at TEXT, updated_at TEXT, created_by INTEGER)",
             "CREATE TABLE api_connections (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, api_key TEXT, api_secret TEXT, endpoint TEXT, is_active INTEGER, last_verified TEXT, verified_by INTEGER, created_at TEXT, updated_at TEXT, connection_status TEXT)",
+            "CREATE TABLE wheel_prizes (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT, is_active INTEGER)",
             "CREATE TABLE users (user_id INTEGER PRIMARY KEY, balance REAL)",
             "CREATE TABLE transactions (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL)",
         ]
