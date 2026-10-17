@@ -94,6 +94,35 @@ class AdminApiTests(unittest.TestCase):
         self.bot.handlers["adminapp"](FakeMessage(777777))
         self.assertIn("غير مخوّل", self.bot.replies[-1])
 
+    def _owner_token(self):
+        self.bot.handlers["adminapp"](FakeMessage(123456))
+        code = re.findall(r"\b[A-Z0-9]{8}\b", self.bot.replies[-1])[-1]
+        response = self.client.post("/api/admin/pairing/exchange", json={"code": code})
+        return response.get_json()["access_token"]
+
+    def test_operation_claim_is_expiring_and_financial_completion_is_blocked(self):
+        db = sqlite3.connect(self.path)
+        db.execute(
+            "INSERT INTO pending_charges(id,user_id,method,amount,status,created_at,processed_by) VALUES (1,42,'test',100,'pending','2026-01-01',NULL)"
+        )
+        db.commit()
+        db.close()
+        token = self._owner_token()
+        headers = {"Authorization": "Bearer " + token}
+
+        claimed = self.client.post("/api/admin/operations/charge/1/claim", headers=headers)
+        self.assertEqual(claimed.status_code, 200)
+        self.assertTrue(claimed.get_json()["claimed"])
+
+        blocked = self.client.post("/api/admin/operations/charge/1/complete", headers=headers)
+        self.assertEqual(blocked.status_code, 423)
+        self.assertEqual(blocked.get_json()["error"], "financial_workflow_not_integrated")
+
+        db = sqlite3.connect(self.path)
+        status = db.execute("SELECT status FROM pending_charges WHERE id=1").fetchone()[0]
+        db.close()
+        self.assertEqual(status, "pending")
+
     def test_notification_preferences_require_authenticated_session(self):
         self.assertEqual(self.client.get("/api/admin/notifications").status_code, 401)
 
