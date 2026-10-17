@@ -49,6 +49,10 @@ def translate_sql(sql: str) -> tuple[str | None, str | None]:
     if not isinstance(sql, str):
         raise TypeError("SQL statement must be a string")
     original = sql.strip()
+    # SQLite's BEGIN IMMEDIATE is not valid PostgreSQL syntax. Preserve the
+    # explicit transaction boundary when running against Neon/PostgreSQL.
+    if re.match(r"^BEGIN\\s+IMMEDIATE\\b", original, re.I):
+        return "BEGIN", None
     if re.match(r"^PRAGMA\s+(journal_mode|synchronous|foreign_keys|wal_autocheckpoint)\b", original, re.I):
         return None, None
 
