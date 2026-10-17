@@ -3788,6 +3788,7 @@ def get_full_admin_keyboard():
         types.InlineKeyboardButton("📊 التقارير والسجلات", callback_data="admin_cat_reports"),
         types.InlineKeyboardButton("⚙️ النظام والنسخ الاحتياطي", callback_data="admin_cat_system"),
         types.InlineKeyboardButton("🧰 التشغيل والصيانة والخدمات", callback_data="admin_cat_control"),
+        types.InlineKeyboardButton("🔗 ربط تطبيق الإدارة", callback_data="admin_app_link"),
         types.InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back_to_admin")
     )
     return keyboard
@@ -5660,7 +5661,7 @@ def handle_all_callbacks(call):
         safe_answer_callback(call.id, maintenance_message[:180], show_alert=True)
         return
     owner_control_callbacks = {
-        'admin_cat_control', 'admin_cat_services', 'admin_control_center', 'mode_info',
+        'admin_app_link', 'admin_cat_control', 'admin_cat_services', 'admin_control_center', 'mode_info',
         'request_real_mode', 'request_demo_mode', 'confirm_real_mode',
         'confirm_demo_mode', 'cancel_mode_switch', 'control_toggle_bot',
         'control_toggle_wheel', 'toggle_bot', 'wheel_toggle', 'toggle_syriatel', 'toggle_sham',
@@ -5675,6 +5676,10 @@ def handle_all_callbacks(call):
         return
     # نؤكد الضغط بأمان أولاً؛ الفشل هنا لا يلغي تنفيذ الزر.
     safe_answer_callback(call.id)
+
+    if data == 'admin_app_link':
+        issue_admin_link_code(uid, call.message.chat.id)
+        return
 
     # في الوضع التجريبي لا نعرض عناوين دفع حقيقية ولا ننفذ عمليات مالية خارجية.
     demo_payment_methods = {
@@ -9223,7 +9228,7 @@ def main_router(message):
 
     # يجب التقاط /link قبل معالج الرسائل العام وقبل فحص الاشتراك.
     if text.strip() and text.strip().split()[0].split("@")[0].lower() == "/link":
-        issue_admin_link_code(message)
+        issue_admin_link_code(uid, message.chat.id)
         return
 
     # التحقق من السبام
