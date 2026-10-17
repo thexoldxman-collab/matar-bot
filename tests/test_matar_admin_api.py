@@ -159,15 +159,13 @@ class AdminApiTests(unittest.TestCase):
             "welcome_message": "أهلاً من التطبيق",
             "subscription_message": "اشترك أولاً",
             "required_channel": "@Matar_TestChannel",
-            "force_subscription": False,
-            "bot_status": "maintenance"
+            "force_subscription": False
         })
         self.assertEqual(response.status_code, 200)
         values = {row[0]: row[1] for row in self.conn.execute("SELECT key,value FROM settings").fetchall()}
         self.assertEqual(values["welcome_message"], "أهلاً من التطبيق")
         self.assertEqual(values["required_channel"], "@Matar_TestChannel")
         self.assertEqual(values["force_subscription"], "0")
-        self.assertEqual(values["bot_status"], "maintenance")
 
         response = self.client.put("/api/admin/content", json={"required_channel": "not a channel"})
         self.assertEqual(response.status_code, 400)

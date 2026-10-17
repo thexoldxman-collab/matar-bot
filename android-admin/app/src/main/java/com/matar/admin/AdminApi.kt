@@ -31,8 +31,7 @@ data class BotContentSettings(
     val termsMessage: String,
     val maintenanceMessage: String,
     val requiredChannel: String,
-    val forceSubscription: Boolean,
-    val botStatus: String
+    val forceSubscription: Boolean
 )
 
 data class AdminLoginResult(
@@ -259,8 +258,7 @@ object AdminApi {
                 termsMessage = content.optString("terms_message"),
                 maintenanceMessage = content.optString("maintenance_message"),
                 requiredChannel = content.optString("required_channel"),
-                forceSubscription = content.optBoolean("force_subscription", true),
-                botStatus = content.optString("bot_status", "active")
+                forceSubscription = content.optBoolean("force_subscription", true)
             )
         } catch (_: Exception) { null }
     }
@@ -273,7 +271,6 @@ object AdminApi {
             .put("maintenance_message", content.maintenanceMessage)
             .put("required_channel", content.requiredChannel)
             .put("force_subscription", content.forceSubscription)
-            .put("bot_status", content.botStatus)
         val (status, body) = request("PUT", "/api/admin/content", token, payload)
         return if (status in 200..299) null else apiError(body, "تعذر حفظ محتوى البوت.")
     }

@@ -871,7 +871,7 @@ def register_admin_api(
     CONTENT_TEXT_FIELDS = {
         "welcome_message": 4000, "subscription_message": 4000,
         "terms_message": 4000, "maintenance_message": 4000,
-        "required_channel": 100, "bot_status": 30,
+        "required_channel": 100,
     }
 
     @app.get("/api/admin/content")
@@ -890,7 +890,7 @@ def register_admin_api(
                     "terms_message": "",
                     "maintenance_message": "البوت في حالة صيانة حالياً.",
                     "required_channel": os.environ.get("CHANNEL_ID", "@Matar_ichancy"),
-                    "force_subscription": "1", "bot_status": "active",
+                    "force_subscription": "1",
                 }
                 for key, default in defaults.items():
                     row = db().execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
@@ -927,8 +927,6 @@ def register_admin_api(
                     if not (valid_username or valid_private_id):
                         return jsonify({"ok": False, "error": "invalid_channel",
                                         "message": "اكتب معرف القناة مثل @MyChannel أو رقم القناة الخاص الذي يبدأ بـ -100."}), 400
-                if key == "bot_status" and value not in ("active", "maintenance"):
-                    return jsonify({"ok": False, "error": "invalid_bot_status"}), 400
                 values[key] = value
         now_text = _now().strftime("%Y-%m-%d %H:%M:%S")
         with db_lock:
@@ -940,7 +938,6 @@ def register_admin_api(
                         "terms_message": "نص الشروط", "maintenance_message": "رسالة الصيانة",
                         "required_channel": "معرف قناة الاشتراك الإجباري",
                         "force_subscription": "تفعيل الاشتراك الإجباري لكل المستخدمين",
-                        "bot_status": "حالة البوت",
                     }[key]
                     db().execute(
                         """INSERT INTO settings(key,value,description,type,updated_at,updated_by)

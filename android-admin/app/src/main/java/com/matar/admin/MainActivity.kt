@@ -1034,7 +1034,6 @@ private fun ContentScreen(
     var maintenance by remember(settings?.maintenanceMessage) { mutableStateOf(settings?.maintenanceMessage ?: "") }
     var channel by remember(settings?.requiredChannel) { mutableStateOf(settings?.requiredChannel ?: "") }
     var forceSubscription by remember(settings?.forceSubscription) { mutableStateOf(settings?.forceSubscription ?: true) }
-    var botActive by remember(settings?.botStatus) { mutableStateOf(settings?.botStatus != "maintenance") }
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("نصوص البوت والاشتراك", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
         item { Text("هذه الإعدادات تُحفظ في قاعدة البوت. تأكد من أن حساب البوت يستطيع الوصول إلى القناة التي تحددها.") }
@@ -1053,17 +1052,8 @@ private fun ContentScreen(
             }
         }
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("حالة البوت", fontWeight = FontWeight.Bold)
-                    Text(if (botActive) "نشط" else "صيانة", style = MaterialTheme.typography.bodySmall)
-                }
-                Switch(checked = botActive, onCheckedChange = { botActive = it })
-            }
-        }
-        item {
             Button(onClick = {
-                onSave(BotContentSettings(welcome, subscriptionText, terms, maintenance, channel.trim(), forceSubscription, if (botActive) "active" else "maintenance"))
+                onSave(BotContentSettings(welcome, subscriptionText, terms, maintenance, channel.trim(), forceSubscription))
             }, enabled = settings != null && channel.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("حفظ إعدادات البوت") }
         }
         if (message.isNotBlank()) item { Text(message, color = MaterialTheme.colorScheme.primary) }
