@@ -491,10 +491,11 @@ class RegressionTests(unittest.TestCase):
             for key, value in values.items():
                 m.update_db_setting(key, value, m.ADMIN_ID)
             for callback in ('charge_syria', 'charge_sham', 'charge_usdt', 'charge_binance'):
-                with patch.object(m.bot, 'answer_callback_query'), \
-                     patch.object(m.bot, 'send_message'), \
-                     patch.object(m.bot, 'register_next_step_handler') as next_step:
-                    m.handle_all_callbacks(self.fake_call(callback))
+                with patch.object(m, 'get_operation_mode', return_value='real'):
+                    with patch.object(m.bot, 'answer_callback_query'):
+                        with patch.object(m.bot, 'send_message'):
+                            with patch.object(m.bot, 'register_next_step_handler') as next_step:
+                                m.handle_all_callbacks(self.fake_call(callback))
                 next_step.assert_not_called()
         finally:
             for key, value in previous.items():
@@ -1796,18 +1797,23 @@ class RegressionTests(unittest.TestCase):
     def test_demo_charge_callback_never_displays_real_payment_address(self):
         m = self.m
         call = self.fake_call('charge_syria')
-        with patch.object(m, 'safe_answer_callback'):
-            with patch.object(m.bot, 'send_message') as send:
-                with patch.object(m.bot, 'register_next_step_handler') as register:
-                    m.handle_all_callbacks(call)
-        register.assert_called_once_with(
-            send.return_value,
-            m.process_demo_charge_amount,
-            'syria',
-        )
-        all_text = " ".join(str(c.args[1]) for c in send.call_args_list if len(c.args) > 1)
-        self.assertIn('لن نعرض عنوان دفع حقيقياً', all_text)
-        self.assertNotIn('42483891', all_text)
+        previous_status = m.get_db_setting('syriatel_status')
+        m.update_db_setting('syriatel_status', 'active', m.ADMIN_ID)
+        try:
+            with patch.object(m, 'safe_answer_callback'):
+                with patch.object(m.bot, 'send_message') as send:
+                    with patch.object(m.bot, 'register_next_step_handler') as register:
+                        m.handle_all_callbacks(call)
+            register.assert_called_once_with(
+                send.return_value,
+                m.process_demo_charge_amount,
+                'syria',
+            )
+            all_text = " ".join(str(c.args[1]) for c in send.call_args_list if len(c.args) > 1)
+            self.assertIn('لن نعرض عنوان دفع حقيقياً', all_text)
+            self.assertNotIn('42483891', all_text)
+        finally:
+            m.update_db_setting('syriatel_status', previous_status or 'متوقف', m.ADMIN_ID)
 
     def test_demo_charge_request_is_marked_as_test_and_saved_only_in_demo_database(self):
         m = self.m
