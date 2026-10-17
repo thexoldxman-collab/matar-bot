@@ -18,7 +18,6 @@ import string
 import time
 import json
 import base64
-import binascii
 import hashlib
 import hmac
 import requests
