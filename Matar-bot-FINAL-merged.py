@@ -1239,29 +1239,36 @@ def _copy_mode_configuration(source_conn, target_conn):
         'settings', 'dynamic_buttons', 'moderators', 'notification_settings',
         'operations_room', 'api_configs', 'api_connections', 'wheel_prizes',
     )
-    for table in tables:
-        source_cursor = source_conn.cursor()
-        source_cursor.execute(f"SELECT * FROM {table}")
-        source_columns = [column[0] for column in (source_cursor.description or ())]
-        rows = source_cursor.fetchall()
-        columns = source_columns
-        target_conn.execute(f"DELETE FROM {table}")
-        if columns:
-            placeholders = ','.join('?' for _ in columns)
-            column_sql = ','.join(columns)
-            for row in rows:
+    try:
+        for table in tables:
+            source_cursor = source_conn.cursor()
+            source_cursor.execute(f"SELECT * FROM {table}")
+            source_columns = [column[0] for column in (source_cursor.description or ())]
+            rows = source_cursor.fetchall()
+            columns = source_columns
+            target_conn.execute(f"DELETE FROM {table}")
+            if columns:
+                placeholders = ','.join('?' for _ in columns)
+                column_sql = ','.join(columns)
+                for row in rows:
+                    target_conn.execute(
+                        f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})",
+                        tuple(row),
+                    )
+        if is_postgres_connection(target_conn):
+            for table in ('dynamic_buttons', 'operations_room', 'api_configs', 'api_connections', 'wheel_prizes'):
                 target_conn.execute(
-                    f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})",
-                    tuple(row),
+                    f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), "
+                    f"COALESCE((SELECT MAX(id) FROM {table}), 1), "
+                    f"EXISTS (SELECT 1 FROM {table}))"
                 )
-    if is_postgres_connection(target_conn):
-        for table in ('dynamic_buttons', 'operations_room', 'api_configs', 'api_connections', 'wheel_prizes'):
-            target_conn.execute(
-                f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), "
-                f"COALESCE((SELECT MAX(id) FROM {table}), 1), "
-                f"EXISTS (SELECT 1 FROM {table}))"
-            )
-    target_conn.commit()
+        target_conn.commit()
+    except Exception:
+        try:
+            target_conn.rollback()
+        except Exception:
+            logger.exception("Failed to roll back mode configuration sync")
+        raise
 
 def switch_operation_mode(target_mode, admin_id=ADMIN_ID):
     """التبديل الآمن بين قاعدتي بيانات منفصلتين مع مزامنة الإعدادات فقط."""
@@ -1302,12 +1309,29 @@ def switch_operation_mode(target_mode, admin_id=ADMIN_ID):
     with db_lock:
         _copy_mode_configuration(source, target)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        for database in (source, target):
-            database.execute(
+        try:
+            target.execute(
                 "UPDATE settings SET value=?, updated_at=?, updated_by=? WHERE key='operation_mode'",
                 (target_mode, timestamp, admin_id),
             )
-            database.commit()
+            target.commit()
+            source.execute(
+                "UPDATE settings SET value=?, updated_at=?, updated_by=? WHERE key='operation_mode'",
+                (target_mode, timestamp, admin_id),
+            )
+            source.commit()
+        except Exception:
+            for database in (source, target):
+                try:
+                    database.rollback()
+                    database.execute(
+                        "UPDATE settings SET value=?, updated_at=?, updated_by=? WHERE key='operation_mode'",
+                        (current_mode, timestamp, admin_id),
+                    )
+                    database.commit()
+                except Exception:
+                    logger.exception("Failed to restore previous operation mode after switch error")
+            raise
 
     _activate_database_mode(target_mode)
     admin_logger_system.log_action(
