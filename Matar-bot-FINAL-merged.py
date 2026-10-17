@@ -5783,7 +5783,7 @@ def handle_all_callbacks(call):
             return
         category = data.removeprefix('admin_cat_')
         bot.edit_message_text(
-            admin_category_titles[data] + "\\n\\nاختر الوظيفة المطلوبة:",
+            admin_category_titles[data] + "\n\nاختر الوظيفة المطلوبة:",
             call.message.chat.id,
             call.message.message_id,
             reply_markup=get_admin_category_keyboard(category),
