@@ -1,5 +1,9 @@
 name: Build Matar Admin APK
 
+concurrency:
+  group: android-admin-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 on:
   push:
     branches: [main, feature/matar-admin-android]
