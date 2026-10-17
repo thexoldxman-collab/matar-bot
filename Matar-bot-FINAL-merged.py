@@ -9221,6 +9221,17 @@ def main_router(message):
     if not isinstance(text, str):
         return
 
+    # أمر ربط تطبيق الإدارة يُعالَج قبل فحوصات المستخدم العادي.
+    # تم تسجيل callback داخل app.config عند تهيئة واجهة الإدارة في نهاية الملف.
+    command = text.strip().split(maxsplit=1)[0].split("@")[0] if text.strip() else ""
+    if command == "/adminapp":
+        pairing_handler = app.config.get("matar_admin_app_pairing_handler") if "app" in globals() else None
+        if pairing_handler:
+            pairing_handler(message)
+        else:
+            bot.send_message(message.chat.id, "خدمة ربط تطبيق الإدارة غير جاهزة حالياً.")
+        return
+
     # التحقق من السبام
     if not check_spam(uid):
         return
