@@ -1946,5 +1946,20 @@ class RegressionTests(unittest.TestCase):
         self.assertLess(pair_index, router_index)
 
 
+    def test_admin_app_pair_code_is_never_sent_to_group_chat(self):
+        m = self.m
+        group_message = SimpleNamespace(
+            from_user=SimpleNamespace(id=m.ADMIN_ID),
+            chat=SimpleNamespace(id=-12345, type='group'),
+        )
+        before = m.conn.execute('SELECT COUNT(*) FROM admin_app_pairings').fetchone()[0]
+        sent = []
+        with patch.object(m.bot, 'reply_to', side_effect=lambda message, text: sent.append(text)):
+            m.issue_admin_app_pair_code(group_message)
+        after = m.conn.execute('SELECT COUNT(*) FROM admin_app_pairings').fetchone()[0]
+        self.assertEqual(before, after)
+        self.assertIn('محادثة خاصة', sent[0])
+
+
 if __name__ == '__main__':
     unittest.main()
