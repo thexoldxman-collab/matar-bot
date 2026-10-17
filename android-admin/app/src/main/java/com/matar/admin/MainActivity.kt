@@ -174,6 +174,8 @@ private fun MatarAdminApp() {
                                     Page.USERS -> Icons.Default.AdminPanelSettings
                                     Page.MESSAGES -> Icons.Default.MarkChatUnread
                                     Page.SETTINGS -> Icons.Default.Settings
+                                    Page.BUTTONS -> Icons.Default.AccountTree
+                                    Page.AUDIT -> Icons.Default.History
                                 }
                                 NavigationBarItem(
                                     selected = page == item,
