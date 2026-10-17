@@ -10820,6 +10820,16 @@ def process_change_user_password(message, target):
     bot.send_message(message.chat.id, f"✅ **تم تغيير كلمة السر للمستخدم** `{target}` **إلى:** `{new_pass}`", parse_mode="Markdown")
     log_admin_action(uid, "تغيير كلمة السر", f"تغيير كلمة سر المستخدم {target}", target_user=target)
 
+# تطبيق الإدارة يحتاج جلسة محادثة واحدة مع Gemini، لذلك يسجل رسالة التطبيق
+# في نفس جدول المساعد الذي يستخدمه Telegram ولا ينفذ أوامر مالية تلقائياً.
+def _admin_assistant_ask(user_id, prompt):
+    ai_store(user_id, 'user', prompt)
+    answer, error = call_gemini(user_id)
+    if answer:
+        ai_store(user_id, 'assistant', answer)
+    return answer, error
+
+
 # =============================================================================
 # 22. تشغيل البوت
 # =============================================================================
@@ -10834,6 +10844,26 @@ PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://matar-bot.onrender.
 # ربط آمن لتطبيق الإدارة: رمز تيليغرام أحادي الاستخدام وصلاحيات يحددها الخادم.
 from matar_admin_auth import register_admin_auth
 issue_admin_link_code = register_admin_auth(app, bot, conn, db_lock, ADMIN_ID, is_moderator, check_permission)
+
+# واجهة تطبيق Matar Admin تستخدم نفس الجلسة والصلاحيات وقاعدة البيانات.
+# لا يوجد مسار مالي ثانٍ: التنفيذ والإلغاء يستدعيان الدوال الذرية الأصلية.
+from matar_admin_api import register_admin_api
+register_admin_api(
+    app,
+    bot,
+    conn,
+    db_lock,
+    ADMIN_ID,
+    check_permission,
+    get_operation_mode=get_operation_mode,
+    complete_charge=complete_pending_charge,
+    complete_withdraw=complete_pending_withdraw,
+    cancel_charge=cancel_pending_charge_atomic,
+    cancel_withdraw=cancel_pending_withdraw_atomic,
+    get_conn=lambda: conn,
+    adjust_balance=admin_adjust_balance_atomic,
+    assistant_ask=_admin_assistant_ask,
+)
 
 @app.route('/telegram/webhook', methods=['POST'])
 def telegram_webhook():
