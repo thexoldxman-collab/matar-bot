@@ -214,6 +214,7 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
             return None
         return {
             "telegram_id": user_id,
+            "user_id": user_id,
             "role": role,
             "is_owner": role == "owner",
             "permissions": permissions_for(user_id, role),
@@ -237,5 +238,76 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
             conn.execute("UPDATE admin_sessions SET revoked=1 WHERE token_hash=?", (digest,))
             conn.commit()
         return jsonify({"ok": True}), 200
+
+
+    def require_admin(permission=None):
+        session = authenticated_session()
+        if not session:
+            return None, (jsonify({"ok": False, "error": "unauthorized"}), 401)
+        user, _ = session
+        if permission and not user["permissions"].get(permission, False):
+            return None, (jsonify({"ok": False, "error": "forbidden"}), 403)
+        return user, None
+
+    def fetch_operations():
+        """Return only pending work the signed-in admin is authorized to see."""
+        user, error = require_admin()
+        if error:
+            return None, error
+        permissions = user["permissions"]
+        rows = []
+        try:
+            with db_lock:
+                if permissions.get("can_handle_charges", False):
+                    records = conn.execute(
+                        """SELECT id, user_id, method, amount, status, created_at
+                           FROM pending_charges
+                           WHERE status IN ('pending', 'processing')
+                           ORDER BY id DESC LIMIT 100"""
+                    ).fetchall()
+                    for row in records:
+                        rows.append({
+                            "id": int(row[0]), "operation_id": int(row[0]),
+                            "type": "charge", "kind": "charge",
+                            "user_id": row[1], "method": row[2],
+                            "amount": row[3], "status": row[4],
+                            "created_at": row[5],
+                        })
+                if permissions.get("can_handle_withdraws", False):
+                    records = conn.execute(
+                        """SELECT id, user_id, method, amount, net_amount, status, created_at
+                           FROM pending_withdraws
+                           WHERE status IN ('pending', 'processing')
+                           ORDER BY id DESC LIMIT 100"""
+                    ).fetchall()
+                    for row in records:
+                        rows.append({
+                            "id": int(row[0]), "operation_id": int(row[0]),
+                            "type": "withdraw", "kind": "withdraw",
+                            "user_id": row[1], "method": row[2],
+                            "amount": row[3], "net_amount": row[4],
+                            "status": row[5], "created_at": row[6],
+                        })
+        except Exception:
+            app.logger.exception("Admin app could not load operations")
+            return None, (jsonify({"ok": False, "error": "operations_unavailable"}), 503)
+        rows.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        return rows, None
+
+    @app.get("/api/admin/operations")
+    def admin_app_operations():
+        rows, error = fetch_operations()
+        if error:
+            return error
+        return jsonify({"ok": True, "items": rows, "operations": rows, "count": len(rows)}), 200
+
+    @app.get("/api/admin/notifications")
+    def admin_app_notifications():
+        rows, error = fetch_operations()
+        if error:
+            return error
+        # Notifications are a read-only view of actionable requests. This endpoint
+        # intentionally does not mutate balances or mark requests as completed.
+        return jsonify({"ok": True, "items": rows, "notifications": rows, "count": len(rows)}), 200
 
     return issue_link_code_for_user
