@@ -214,6 +214,7 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
             return None
         return {
             "telegram_id": user_id,
+            "user_id": user_id,
             "role": role,
             "is_owner": role == "owner",
             "permissions": permissions_for(user_id, role),
@@ -237,5 +238,10 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
             conn.execute("UPDATE admin_sessions SET revoked=1 WHERE token_hash=?", (digest,))
             conn.commit()
         return jsonify({"ok": True}), 200
+
+
+    # The API module consumes this validator so every endpoint rechecks the
+    # Telegram identity, session expiry, revocation, and current moderator role.
+    app.config["MATAR_ADMIN_AUTH_SESSION"] = authenticated_session
 
     return issue_link_code_for_user

@@ -180,7 +180,7 @@ class RetrySystem:
         """
         إضافة طلب إلى قائمة الانتظار
         """
-        request = {
+        queued_request = {
             'id': len(self.retry_queue) + 1,
             'type': request_type,
             'user_id': user_id,
@@ -191,9 +191,9 @@ class RetrySystem:
             'status': 'pending',
             'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
-        self.retry_queue.append(request)
+        self.retry_queue.append(queued_request)
         retry_logger.info(f"📥 طلب {request_type} للمستخدم {user_id} أضيف لقائمة الانتظار")
-        return request['id']
+        return queued_request['id']
     
     def process_queue(self):
         """
@@ -203,40 +203,40 @@ class RetrySystem:
             return
         
         now = datetime.now()
-        for request in self.retry_queue:
-            if request['status'] != 'pending':
+        for queued_request in self.retry_queue:
+            if queued_request['status'] != 'pending':
                 continue
             
             # التحقق من وقت المحاولة التالية
-            if request['last_attempt']:
-                last = datetime.strptime(request['last_attempt'], "%Y-%m-%d %H:%M:%S")
+            if queued_request['last_attempt']:
+                last = datetime.strptime(queued_request['last_attempt'], "%Y-%m-%d %H:%M:%S")
                 if (now - last).total_seconds() < RETRY_DELAY * 60:
                     continue
             
             # تنفيذ المحاولة
-            request['attempts'] += 1
-            request['last_attempt'] = now.strftime("%Y-%m-%d %H:%M:%S")
+            queued_request['attempts'] += 1
+            queued_request['last_attempt'] = now.strftime("%Y-%m-%d %H:%M:%S")
             
             try:
-                success = self.execute_request(request)
+                success = self.execute_request(queued_request)
                 if success:
-                    request['status'] = 'success'
-                    retry_logger.info(f"✅ طلب {request['type']} للمستخدم {request['user_id']} نجح بعد {request['attempts']} محاولات")
+                    queued_request['status'] = 'success'
+                    retry_logger.info(f"✅ طلب {queued_request['type']} للمستخدم {queued_request['user_id']} نجح بعد {queued_request['attempts']} محاولات")
                     # إشعار للمستخدم بالنجاح
-                    bot.send_message(request['user_id'], "✅ تمت معالجة طلبك بنجاح بعد محاولة إعادة")
+                    bot.send_message(queued_request['user_id'], "✅ تمت معالجة طلبك بنجاح بعد محاولة إعادة")
                 else:
-                    if request['attempts'] >= request['max_attempts']:
-                        request['status'] = 'failed'
-                        retry_logger.error(f"❌ طلب {request['type']} للمستخدم {request['user_id']} فشل نهائياً بعد {request['attempts']} محاولات")
+                    if queued_request['attempts'] >= queued_request['max_attempts']:
+                        queued_request['status'] = 'failed'
+                        retry_logger.error(f"❌ طلب {queued_request['type']} للمستخدم {queued_request['user_id']} فشل نهائياً بعد {queued_request['attempts']} محاولات")
                         # إشعار للمالك
                         notifier.send_to_admin(
                             title="⚠️ فشل طلب بعد إعادة المحاولة",
-                            message=f"نوع الطلب: {request['type']}\nالمستخدم: {request['user_id']}\nالبيانات: {request['data']}"
+                            message=f"نوع الطلب: {queued_request['type']}\nالمستخدم: {queued_request['user_id']}\nالبيانات: {queued_request['data']}"
                         )
             except Exception as e:
                 error_logger.error(f"خطأ في إعادة المحاولة: {e}")
     
-    def execute_request(self, request):
+    def execute_request(self, queued_request):
         """
         تنفيذ الطلب (يتم تخصيصها حسب النوع)
         """
@@ -9226,8 +9226,13 @@ def main_router(message):
     if not isinstance(text, str):
         return
 
-    # يجب التقاط /link قبل معالج الرسائل العام وقبل فحص الاشتراك.
-    if text.strip() and text.strip().split()[0].split("@")[0].lower() == "/link":
+    # أوامر ربط تطبيق الإدارة تُعالج قبل فحوصات المستخدم العادي.
+    command = text.strip().split(maxsplit=1)[0].split("@")[0].lower() if text.strip() else ""
+    if command == "/link":
+        issue_admin_link_code(uid, message.chat.id)
+        return
+    if command == "/adminapp":
+        # Use the same one-time-code store as /api/admin/auth/verify.
         issue_admin_link_code(uid, message.chat.id)
         return
 
@@ -10834,6 +10839,11 @@ PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://matar-bot.onrender.
 # ربط آمن لتطبيق الإدارة: رمز تيليغرام أحادي الاستخدام وصلاحيات يحددها الخادم.
 from matar_admin_auth import register_admin_auth
 issue_admin_link_code = register_admin_auth(app, bot, conn, db_lock, ADMIN_ID, is_moderator, check_permission)
+
+# واجهات الإدارة الإضافية. معالجات اعتماد/إلغاء المعاملات المالية غير موصولة عمداً؛
+# تبقى هذه الأفعال مقفلة إلى حين مراجعة واختبار المعالجة الذرية الأصلية.
+from matar_admin_api import register_admin_api
+register_admin_api(app, bot, conn, db_lock, ADMIN_ID, check_permission)
 
 @app.route('/telegram/webhook', methods=['POST'])
 def telegram_webhook():
