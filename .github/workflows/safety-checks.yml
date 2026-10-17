@@ -49,7 +49,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyflakes
       - name: Compile main bot
-        run: python -m py_compile Matar-bot-FINAL-merged.py matar_db.py tests/test_regressions.py tests/test_db_backend.py postgres_startup_smoke.py
+        run: python -m py_compile Matar-bot-FINAL-merged.py matar_db.py matar_admin_api.py tests/test_admin_api.py tests/test_regressions.py tests/test_db_backend.py postgres_startup_smoke.py
       - name: Run regression tests with isolated SQLite database
         run: python -m unittest discover -s tests -v
       - name: Exercise full bot schema against PostgreSQL
