@@ -334,7 +334,7 @@ def register_admin_api(
         # Deliberately fail closed until the owner explicitly approves and tests
         # the existing atomic financial handlers. Never mutate balances here.
         audit(user, "financial_completion_blocked",
-              f"{operation_type}:{operation_id}; no balance changes", result="blocked")
+              f"{operation_type}:{operation_id}; no balance changes")
         return jsonify({
             "ok": False, "error": "financial_execution_disabled",
             "message": "التنفيذ المالي الحقيقي مقفول؛ لم تتغير الأرصدة ولم يتم تأكيد العملية."
@@ -352,7 +352,7 @@ def register_admin_api(
         # Cancellation can affect reserved funds, so it remains disabled until
         # the bot's existing atomic cancellation logic is integrated and tested.
         audit(user, "financial_cancellation_blocked",
-              f"{operation_type}:{operation_id}; no balance changes", result="blocked")
+              f"{operation_type}:{operation_id}; no balance changes")
         return jsonify({
             "ok": False, "error": "financial_execution_disabled",
             "message": "الإلغاء المالي الحقيقي مقفول؛ لم تتغير الأرصدة ولم يتم تأكيد الإلغاء."
@@ -724,7 +724,7 @@ def register_admin_api(
         if user.get("role") != "owner" and int(user.get("telegram_id", 0)) != int(owner_id):
             return forbidden()
         audit(user, "referral_payout_blocked",
-              "رفض الصرف من التطبيق قبل اعتماد معالج مالي ذري", result="blocked")
+              "رفض الصرف من التطبيق قبل اعتماد معالج مالي ذري")
         return jsonify({
             "ok": False, "error": "financial_execution_disabled",
             "message": "صرف أرباح الإحالة الحقيقي مقفول؛ لم تتغير الأرصدة."
