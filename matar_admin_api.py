@@ -35,7 +35,7 @@ def _iso(value=None):
     return (value or _now()).isoformat().replace("+00:00", "Z")
 
 
-def register_admin_api(app, bot, conn, db_lock, owner_id, check_permission):
+def register_admin_api(app, bot, conn, db_lock, owner_id, check_permission,\n                       get_operation_mode=None, complete_charge=None, complete_withdraw=None,\n                       cancel_charge=None, cancel_withdraw=None):
     """Register safe management endpoints. Call after register_admin_auth."""
     conn.execute("""CREATE TABLE IF NOT EXISTS admin_operation_claims (
         operation_type TEXT NOT NULL,
@@ -266,13 +266,98 @@ def register_admin_api(app, bot, conn, db_lock, owner_id, check_permission):
             return jsonify({"ok": False, "error": "operation_not_found"}), 404
         if not allowed(user, permission_for_type(operation_type)):
             return forbidden()
-        # Never mark a financial request as paid/completed from the app until the
-        # owner explicitly enables and tests the real transaction integration.
-        return jsonify({
-            "ok": False,
-            "error": "financial_execution_disabled",
-            "message": "لم تتغير الأرصدة. اعتماد التنفيذ المالي من التطبيق غير مفعّل بعد.",
-        }), 409
+        mode = get_operation_mode() if callable(get_operation_mode) else "unknown"
+        # Demo mode may mutate only the isolated demo database. Real mode needs an
+        # explicit owner-side environment switch and the existing atomic finance helper.
+        import os
+        if mode != "demo" and os.environ.get("ADMIN_APP_FINANCIAL_EXECUTION_ENABLED", "0") != "1":
+            return jsonify({
+                "ok": False, "error": "financial_execution_disabled",
+                "message": "التنفيذ المالي الحقيقي مغلق. لم تتغير الأرصدة.",
+            }), 409
+        helper = complete_charge if operation_type == "charge" else complete_withdraw
+        if not callable(helper):
+            return jsonify({"ok": False, "error": "financial_handler_unavailable",
+                            "message": "معالج العملية غير متاح؛ لم تتغير الأرصدة."}), 503
+        uid = int(user["telegram_id"])
+        with db_lock:
+            claim = conn.execute(
+                """SELECT claimed_by,expires_at FROM admin_operation_claims
+                   WHERE operation_type=? AND operation_id=?""",
+                (operation_type, operation_id),
+            ).fetchone()
+            if not claim or str(claim[1]) <= _iso():
+                return jsonify({"ok": False, "error": "claim_expired",
+                                "message": "انتهت مهلة الاستلام؛ استلم الطلب من جديد."}), 409
+            if int(claim[0]) != uid and user.get("role") != "owner":
+                return forbidden()
+        try:
+            result = helper(operation_id, uid) if operation_type == "withdraw" else helper(operation_id, uid, None)
+            _, status = result
+            if status != "ok":
+                return jsonify({"ok": False, "error": status,
+                                "message": "لم يتم اعتماد العملية. راجع حالة الطلب؛ لم نعلن نجاحاً."}), 409
+            with db_lock:
+                conn.execute("DELETE FROM admin_operation_claims WHERE operation_type=? AND operation_id=?",
+                             (operation_type, operation_id))
+                conn.commit()
+            # Notify the customer only after the atomic helper confirms success.
+            table = "pending_charges" if operation_type == "charge" else "pending_withdraws"
+            row = conn.execute(f"SELECT user_id,amount FROM {table} WHERE id=?", (operation_id,)).fetchone()
+            if row:
+                try:
+                    bot.send_message(int(row[0]), "✅ تم تحديث حالة طلبك واعتماد معالجته من إدارة مطر.")
+                except Exception:
+                    app.logger.warning("Financial request completed, but customer notification failed")
+            audit(user, "إتمام طلب مالي", f"{operation_type}:{operation_id}؛ الوضع={mode}",
+                  target_user=int(row[0]) if row else None, amount=float(row[1] or 0) if row else None)
+            return jsonify({"ok": True, "message": "تم اعتماد الطلب وفق حالة التشغيل الحالية."}), 200
+        except Exception:
+            app.logger.exception("Admin financial completion failed")
+            return jsonify({"ok": False, "error": "operation_failed",
+                            "message": "تعذر اعتماد العملية؛ راجع السجل ولم يتم تأكيد النجاح."}), 503
+
+    @app.post("/api/admin/operations/<operation_type>/<int:operation_id>/cancel")
+    def cancel_operation(operation_type, operation_id):
+        user = current()
+        if not user:
+            return denied()
+        if operation_type not in ("charge", "withdraw"):
+            return jsonify({"ok": False, "error": "operation_not_found"}), 404
+        if not allowed(user, permission_for_type(operation_type)):
+            return forbidden()
+        payload = request.get_json(silent=True) or {}
+        reason = str(payload.get("reason", "")).strip()[:1000]
+        if not reason:
+            return jsonify({"ok": False, "error": "reason_required"}), 400
+        mode = get_operation_mode() if callable(get_operation_mode) else "unknown"
+        import os
+        if mode != "demo" and os.environ.get("ADMIN_APP_FINANCIAL_EXECUTION_ENABLED", "0") != "1":
+            return jsonify({"ok": False, "error": "financial_execution_disabled",
+                            "message": "إجراءات الإلغاء المالي الحقيقي مغلقة؛ لم تتغير الأرصدة."}), 409
+        helper = cancel_charge if operation_type == "charge" else cancel_withdraw
+        if not callable(helper):
+            return jsonify({"ok": False, "error": "financial_handler_unavailable"}), 503
+        try:
+            result, status = helper(operation_id, int(user["telegram_id"]), reason)
+            if status != "ok":
+                return jsonify({"ok": False, "error": status,
+                                "message": "تعذر إلغاء الطلب؛ لم يتم تأكيد الإلغاء."}), 409
+            with db_lock:
+                conn.execute("DELETE FROM admin_operation_claims WHERE operation_type=? AND operation_id=?",
+                             (operation_type, operation_id))
+                conn.commit()
+            target_id = int(result["user_id"])
+            try:
+                bot.send_message(target_id, "❌ تم إلغاء طلبك من إدارة مطر. السبب: " + reason)
+            except Exception:
+                app.logger.warning("Request cancelled, but customer notification failed")
+            audit(user, "إلغاء طلب مالي", f"{operation_type}:{operation_id}؛ السبب={reason}", target_user=target_id)
+            return jsonify({"ok": True, "message": "تم إلغاء الطلب وإرسال إشعار للمستخدم."}), 200
+        except Exception:
+            app.logger.exception("Admin financial cancellation failed")
+            return jsonify({"ok": False, "error": "operation_failed",
+                            "message": "تعذر إلغاء الطلب؛ لم يتم تأكيد الإلغاء."}), 503
 
     @app.get("/api/admin/notifications")
     def get_notifications():
