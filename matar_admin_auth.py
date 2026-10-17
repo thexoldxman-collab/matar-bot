@@ -6,7 +6,6 @@ from the configured owner ID and the bot's current moderator records.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
