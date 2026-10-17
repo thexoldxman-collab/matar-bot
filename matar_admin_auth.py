@@ -238,4 +238,8 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
             conn.commit()
         return jsonify({"ok": True}), 200
 
+    # واجهة الإدارة الإضافية تستخدم نفس التحقق من هوية Telegram وانتهاء الجلسة
+    # وسحب الصلاحيات، ولا تنشئ نظام جلسات موازياً.
+    app.config["MATAR_ADMIN_AUTH_SESSION"] = authenticated_session
+
     return issue_link_code_for_user
