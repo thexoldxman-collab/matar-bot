@@ -10917,7 +10917,7 @@ def _admin_app_unauthorized():
 
 @app.route('/api/admin/v1/pair', methods=['POST'])
 def admin_app_pair():
-    body = flask_flask_request.get_json(silent=True) or {}
+    body = flask_request.get_json(silent=True) or {}
     code = str(body.get('code', '')).strip()
     if not code or len(code) > 128:
         return jsonify({'ok': False, 'error': 'أدخل رمز الربط الذي أنشأته من تلغرام.'}), 400
