@@ -1581,6 +1581,23 @@ class RegressionTests(unittest.TestCase):
         self.assertIn('admin_moderators', buttons)
         self.assertIn('back_to_full_admin', buttons)
 
+    def test_log_search_keyboard_uses_registered_callback_ids(self):
+        m = self.m
+        keyboard = m.get_search_keyboard()
+        callbacks = [
+            button.callback_data
+            for row in keyboard.keyboard
+            for button in row
+        ]
+        self.assertIn('search_logs_date', callbacks)
+        self.assertIn('search_logs_admin', callbacks)
+        self.assertIn('search_logs_type', callbacks)
+        self.assertIn('search_logs_amount', callbacks)
+        self.assertIn('search_logs_user', callbacks)
+        self.assertIn('admin_logs', callbacks)
+        self.assertNotIn('search_by_date', callbacks)
+        self.assertNotIn('back_to_logs', callbacks)
+
     def test_owner_admin_entry_opens_categorized_panel_directly(self):
         m = self.m
         with patch.object(m.ActionSystem, 'show_full_admin_menu') as show_full:
