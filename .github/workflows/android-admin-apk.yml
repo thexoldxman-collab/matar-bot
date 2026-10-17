@@ -1,7 +1,7 @@
 name: Build Matar Admin APK
 
 concurrency:
-  group: android-admin-apk-${{ github.ref }}
+  group: android-admin-apk-${{ github.event.pull_request.head.ref || github.ref }}
   cancel-in-progress: true
 
 on:
