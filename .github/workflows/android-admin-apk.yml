@@ -10,12 +10,10 @@ on:
     paths:
       - "android-admin/**"
       - ".github/workflows/android-admin-apk.yml"
-  pull_request:
-    branches: [main]
-    paths:
-      - "android-admin/**"
       - "matar_admin_api.py"
       - "matar_admin_auth.py"
+      - "Matar-bot-FINAL-merged.py"
+      - "tests/**"
   push:
     branches: [main]
     paths:
