@@ -9232,11 +9232,8 @@ def main_router(message):
         issue_admin_link_code(uid, message.chat.id)
         return
     if command == "/adminapp":
-        pairing_handler = app.config.get("matar_admin_app_pairing_handler") if "app" in globals() else None
-        if pairing_handler:
-            pairing_handler(message)
-        else:
-            bot.send_message(message.chat.id, "خدمة ربط تطبيق الإدارة غير جاهزة حالياً.")
+        # Use the same one-time-code store as /api/admin/auth/verify.
+        issue_admin_link_code(uid, message.chat.id)
         return
 
     # التحقق من السبام
