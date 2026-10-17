@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import sqlite3
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -1700,6 +1701,65 @@ class RegressionTests(unittest.TestCase):
             m.handle_all_callbacks(call)
         answer.assert_called_once()
         self.assertEqual(m.get_db_setting('bot_status'), before)
+
+
+    def test_mode_configuration_sync_never_copies_users_or_financial_transactions(self):
+        m = self.m
+        source = sqlite3.connect(':memory:')
+        target = sqlite3.connect(':memory:')
+        schema = [
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT, updated_by INTEGER)",
+            "CREATE TABLE dynamic_buttons (id INTEGER PRIMARY KEY AUTOINCREMENT, button_text TEXT, parent_button TEXT)",
+            "CREATE TABLE moderators (user_id INTEGER PRIMARY KEY, custom_name TEXT)",
+            "CREATE TABLE notification_settings (user_id INTEGER PRIMARY KEY, notify_on_charge INTEGER)",
+            "CREATE TABLE operations_room (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER UNIQUE, created_at TEXT)",
+            "CREATE TABLE api_configs (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT, name TEXT, api_key TEXT, api_secret TEXT, endpoint TEXT, extra_config TEXT, is_active INTEGER, is_paused INTEGER, created_at TEXT, updated_at TEXT, created_by INTEGER)",
+            "CREATE TABLE api_connections (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, api_key TEXT, api_secret TEXT, endpoint TEXT, is_active INTEGER, last_verified TEXT, verified_by INTEGER, created_at TEXT, updated_at TEXT, connection_status TEXT)",
+            "CREATE TABLE users (user_id INTEGER PRIMARY KEY, balance REAL)",
+            "CREATE TABLE transactions (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL)",
+        ]
+        for db in (source, target):
+            for statement in schema:
+                db.execute(statement)
+        source.execute("INSERT INTO settings(key,value) VALUES('operation_mode','demo')")
+        source.execute("INSERT INTO dynamic_buttons(button_text,parent_button) VALUES('زر تجريبي','main')")
+        source.execute("INSERT INTO users(user_id,balance) VALUES(101,500)")
+        source.execute("INSERT INTO transactions(id,user_id,amount) VALUES(1,101,500)")
+        target.execute("INSERT INTO settings(key,value) VALUES('operation_mode','old')")
+        target.execute("INSERT INTO users(user_id,balance) VALUES(202,900)")
+        target.execute("INSERT INTO transactions(id,user_id,amount) VALUES(2,202,900)")
+        source.commit()
+        target.commit()
+        try:
+            m._copy_mode_configuration(source, target)
+            self.assertEqual(
+                target.execute("SELECT value FROM settings WHERE key='operation_mode'").fetchone()[0],
+                'demo',
+            )
+            self.assertEqual(target.execute("SELECT user_id,balance FROM users").fetchall(), [(202, 900.0)])
+            self.assertEqual(target.execute("SELECT id,user_id,amount FROM transactions").fetchall(), [(2, 202, 900.0)])
+            self.assertEqual(target.execute("SELECT button_text FROM dynamic_buttons").fetchall(), [('زر تجريبي',)])
+        finally:
+            source.close()
+            target.close()
+
+    def test_control_category_routes_to_the_control_panel(self):
+        m = self.m
+        call = self.fake_call('admin_cat_control')
+        with patch.object(m, 'render_operations_control') as render:
+            m.handle_all_callbacks(call)
+        render.assert_called_once_with(m.ADMIN_ID, 1)
+
+    def test_maintenance_blocks_customer_callbacks(self):
+        m = self.m
+        call = self.fake_call('ai_chat')
+        call.from_user.id = m.ADMIN_ID + 10
+        with patch.object(m, 'check_bot_status', return_value=False), \\
+             patch.object(m, 'safe_answer_callback') as answer, \\
+             patch.object(m, 'start_ai_chat') as start_ai:
+            m.handle_all_callbacks(call)
+        answer.assert_called_once()
+        start_ai.assert_not_called()
 
 
 if __name__ == '__main__':
