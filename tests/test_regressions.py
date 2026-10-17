@@ -1608,9 +1608,7 @@ class RegressionTests(unittest.TestCase):
         ticket_id = m.cursor.lastrowid
         m.conn.commit()
         call = self.fake_call(f"reply_ticket_{ticket_id}_{target_user_id}")
-        with patch.object(m.bot, 'answer_callback_query'), \\
-             patch.object(m.bot, 'send_message'), \\
-             patch.object(m.bot, 'register_next_step_handler_by_chat_id') as register:
+        with patch.object(m.bot, 'answer_callback_query'), patch.object(m.bot, 'send_message'), patch.object(m.bot, 'register_next_step_handler_by_chat_id') as register:
             m.handle_all_callbacks(call)
         register.assert_called_once_with(
             m.ADMIN_ID,
