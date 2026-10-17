@@ -86,7 +86,7 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
         if role is None:
             bot.send_message(
                 chat_id,
-                "❌ ربط التطبيق متاح للمالك والمشرفين المضافين فقط.",
+                "❌ غير مسموح: ربط التطبيق متاح للمالك والمشرفين المضافين فقط.",
             )
             return
         alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
