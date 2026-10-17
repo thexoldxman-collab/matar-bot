@@ -1728,10 +1728,14 @@ class RegressionTests(unittest.TestCase):
             for statement in schema:
                 db.execute(statement)
         source.execute("INSERT INTO settings(key,value) VALUES('operation_mode','demo')")
+        source.execute("INSERT INTO settings(key,value) VALUES('syriatel_status','active')")
         source.execute("INSERT INTO dynamic_buttons(button_text,parent_button) VALUES('زر تجريبي','main')")
+        source.execute("INSERT INTO api_configs(provider,name,endpoint,is_active,is_paused) VALUES('sham','demo-sandbox','https://sandbox.invalid',1,0)")
         source.execute("INSERT INTO users(user_id,balance) VALUES(101,500)")
         source.execute("INSERT INTO transactions(id,user_id,amount) VALUES(1,101,500)")
         target.execute("INSERT INTO settings(key,value) VALUES('operation_mode','old')")
+        target.execute("INSERT INTO settings(key,value) VALUES('syriatel_status','متوقف')")
+        target.execute("INSERT INTO api_configs(provider,name,endpoint,is_active,is_paused) VALUES('sham','real-production','https://production.invalid',1,0)")
         target.execute("INSERT INTO users(user_id,balance) VALUES(202,900)")
         target.execute("INSERT INTO transactions(id,user_id,amount) VALUES(2,202,900)")
         source.commit()
@@ -1741,6 +1745,14 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(
                 target.execute("SELECT value FROM settings WHERE key='operation_mode'").fetchone()[0],
                 'demo',
+            )
+            self.assertEqual(
+                target.execute("SELECT value FROM settings WHERE key='syriatel_status'").fetchone()[0],
+                'متوقف',
+            )
+            self.assertEqual(
+                target.execute("SELECT name FROM api_configs").fetchall(),
+                [('real-production',)],
             )
             self.assertEqual(target.execute("SELECT user_id,balance FROM users").fetchall(), [(202, 900.0)])
             self.assertEqual(target.execute("SELECT id,user_id,amount FROM transactions").fetchall(), [(2, 202, 900.0)])
