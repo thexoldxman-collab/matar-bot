@@ -25,7 +25,7 @@ private enum class Page(val label: String) {
     HOME("الرئيسية"), ROOM("غرفة العمليات"), USERS("المشرفون"), MESSAGES("الرسائل"), SETTINGS("الإعدادات")
 }
 
-internal data class QueueItem(
+data class QueueItem(
     val id: Int,
     val type: String,
     val user: String,
