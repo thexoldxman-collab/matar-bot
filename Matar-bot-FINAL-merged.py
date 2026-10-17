@@ -1278,7 +1278,6 @@ def switch_operation_mode(target_mode, admin_id=ADMIN_ID):
         if _same_database_target(real_url, demo_url):
             raise ValueError("قاعدة الإنتاج يجب أن تكون مستقلة عن قاعدة الاختبار.")
         if 'real' not in MODE_DATABASES:
-            active_snapshot = MODE_DATABASES[current_mode]
             try:
                 real_conn, real_cursor = setup_database(real_url)
                 if not is_postgres_connection(real_conn):
