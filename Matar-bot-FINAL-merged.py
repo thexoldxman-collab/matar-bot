@@ -10817,6 +10817,18 @@ def process_change_user_password(message, target):
 # إعداد Flask للتشغيل على Render/Replit
 app = Flask(__name__)
 
+# Mobile admin API: Telegram-issued one-time pairing codes, server-side roles,
+# notification preferences and audit trail. No financial settlement endpoints.
+from matar_admin_api import register_admin_api
+
+def _admin_app_db_factory():
+    active_database = MODE_DATABASES.get(CURRENT_OPERATION_MODE)
+    if active_database:
+        return connect_database(active_database[2], active_database[3])
+    return connect_database(DATABASE_URL, DB_PATH)
+
+register_admin_api(app, bot, ADMIN_ID, _admin_app_db_factory)
+
 @app.route('/')
 def home():
     return "🚀 Matar Ultimate Bot is Running! - Enterprise Edition v5.0 (FIXED)"
