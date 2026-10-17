@@ -5438,10 +5438,10 @@ def handle_all_callbacks(call):
         'admin_cat_control', 'admin_control_center', 'mode_info',
         'request_real_mode', 'request_demo_mode', 'confirm_real_mode',
         'confirm_demo_mode', 'cancel_mode_switch', 'control_toggle_bot',
-        'control_toggle_wheel', 'toggle_syriatel', 'toggle_sham',
+        'control_toggle_wheel', 'toggle_bot', 'wheel_toggle', 'toggle_syriatel', 'toggle_sham',
         'toggle_usdt', 'toggle_binance', 'setup_usdt', 'setup_binance',
         'edit_syriatel', 'edit_sham', 'edit_usdt_address', 'edit_usdt_network',
-        'edit_binance_address', 'edit_binance_pay_id', 'admin_payment',
+        'edit_binance_address', 'edit_binance_pay_id', 'edit_welcome', 'edit_terms', 'edit_referral', 'admin_payment',
         'edit_limits', 'edit_commission', 'payment_status', 'admin_api_connect',
         'api_status', 'toggle_api', 'toggle_auto_verify',
     }
