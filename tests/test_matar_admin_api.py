@@ -25,8 +25,8 @@ class AdminApiTests(unittest.TestCase):
         self.app.config["MATAR_ADMIN_AUTH_SESSION"] = lambda: (self.user, "digest")
         self.conn.executescript("""
             CREATE TABLE users(user_id INTEGER PRIMARY KEY, deleted INTEGER DEFAULT 0, status TEXT DEFAULT 'active');
-            CREATE TABLE pending_charges(id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, method TEXT, status TEXT, created_at TEXT, receipt_number TEXT, processed_by INTEGER);
-            CREATE TABLE pending_withdraws(id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, net_amount REAL, method TEXT, status TEXT, created_at TEXT, account TEXT, processed_by INTEGER);
+            CREATE TABLE pending_charges(id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, method TEXT, status TEXT, created_at TEXT, receipt_number TEXT, processed_by INTEGER, processed_at TEXT);
+            CREATE TABLE pending_withdraws(id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, net_amount REAL, method TEXT, status TEXT, created_at TEXT, account TEXT, processed_by INTEGER, processed_at TEXT);
             CREATE TABLE moderators(user_id INTEGER PRIMARY KEY, custom_name TEXT, added_by INTEGER, added_at TEXT,
                 can_reply_tickets INTEGER DEFAULT 0, can_handle_charges INTEGER DEFAULT 0,
                 can_handle_withdraws INTEGER DEFAULT 0, can_send_broadcast INTEGER DEFAULT 0,
