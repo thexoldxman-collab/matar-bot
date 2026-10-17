@@ -1548,5 +1548,46 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(completed_status, 'invalid_status')
 
 
+    def test_admin_home_is_categorized_and_avoids_nested_owner_menu(self):
+        m = self.m
+        keyboard = m.get_full_admin_keyboard()
+        callbacks = [
+            button.callback_data
+            for row in keyboard.keyboard
+            for button in row
+        ]
+        self.assertIn('admin_cat_users', callbacks)
+        self.assertIn('admin_cat_finance', callbacks)
+        self.assertIn('admin_cat_services', callbacks)
+        self.assertIn('admin_cat_content', callbacks)
+        self.assertIn('admin_cat_reports', callbacks)
+        self.assertIn('admin_cat_system', callbacks)
+        self.assertNotIn('admin_buttons', callbacks)
+        self.assertNotIn('admin_payment', callbacks)
+
+    def test_admin_category_callback_opens_expected_section(self):
+        m = self.m
+        with patch.object(m.bot, 'answer_callback_query'), \\
+             patch.object(m.bot, 'edit_message_text') as edit:
+            m.handle_all_callbacks(self.fake_call('admin_cat_users'))
+        edit.assert_called_once()
+        kwargs = edit.call_args.kwargs
+        self.assertIn('المستخدمون والمشرفون', kwargs['text'])
+        buttons = [
+            button.callback_data
+            for row in kwargs['reply_markup'].keyboard
+            for button in row
+        ]
+        self.assertIn('admin_users', buttons)
+        self.assertIn('admin_moderators', buttons)
+        self.assertIn('back_to_full_admin', buttons)
+
+    def test_owner_admin_entry_opens_categorized_panel_directly(self):
+        m = self.m
+        with patch.object(m.ActionSystem, 'show_full_admin_menu') as show_full:
+            m.ActionSystem.show_admin_panel(m.ADMIN_ID, m.ADMIN_ID)
+        show_full.assert_called_once_with(m.ADMIN_ID, m.ADMIN_ID)
+
+
 if __name__ == '__main__':
     unittest.main()
