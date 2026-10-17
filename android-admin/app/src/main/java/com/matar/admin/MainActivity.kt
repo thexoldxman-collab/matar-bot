@@ -109,6 +109,19 @@ private fun MatarAdminApp() {
                                     } else {
                                         liveOperations = false
                                     }
+                                    val savedPreferences = withContext(Dispatchers.IO) { AdminApi.loadNotifications(result.token) }
+                                    if (savedPreferences != null) {
+                                        val labels = mapOf(
+                                            "طلب شحن جديد" to "charge_new",
+                                            "طلب سحب جديد" to "withdraw_new",
+                                            "خطأ أو فشل مالي" to "financial_error",
+                                            "إجراءات المشرفين" to "moderator_actions",
+                                            "الإحالات والمستحقات" to "referrals",
+                                            "توقف البوت أو انقطاع الاتصال" to "bot_offline",
+                                            "قرارات المساعد الذكي" to "ai_decisions"
+                                        )
+                                        notifications = notifications.mapValues { (label, defaultValue) -> savedPreferences[labels[label]] ?: defaultValue }
+                                    }
                                     connected = true
                                     showLogin = false
                                     demoMode = true
