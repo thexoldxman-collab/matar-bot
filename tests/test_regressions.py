@@ -1933,5 +1933,18 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(m.get_operation_mode(), 'demo')
 
 
+    def test_admin_app_pair_command_is_registered_before_telegram_catch_all(self):
+        handlers = self.m.bot.message_handlers
+        pair_index = next(
+            index for index, handler in enumerate(handlers)
+            if getattr(handler.get('function'), '__name__', '') == 'issue_admin_app_pair_code'
+        )
+        router_index = next(
+            index for index, handler in enumerate(handlers)
+            if getattr(handler.get('function'), '__name__', '') == 'main_router'
+        )
+        self.assertLess(pair_index, router_index)
+
+
 if __name__ == '__main__':
     unittest.main()
