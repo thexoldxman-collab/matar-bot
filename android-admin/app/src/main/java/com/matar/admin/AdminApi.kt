@@ -339,6 +339,8 @@ object AdminApi {
         }
     }
 
+    fun isServerHealthy(): Boolean = request("GET", "/health", "", null).first == 200
+
     private fun request(method: String, path: String, token: String, payload: JSONObject?): Pair<Int, String> {
         var connection: HttpURLConnection? = null
         return try {

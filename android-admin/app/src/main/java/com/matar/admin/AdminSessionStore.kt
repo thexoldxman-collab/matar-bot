@@ -10,6 +10,8 @@ object AdminSessionStore {
     private const val TOKEN = "session_token"
     private const val SEEN_IDS = "seen_operation_ids"
     private const val SNAPSHOT_READY = "operation_snapshot_ready"
+    private const val LAST_AUDIT_ID = "last_audit_id"
+    private const val OFFLINE_NOTIFIED = "offline_notified"
 
     private fun prefs(context: Context): SharedPreferences? = try {
         val masterKey = MasterKey.Builder(context)
@@ -41,6 +43,19 @@ object AdminSessionStore {
             if (!p.getBoolean(SNAPSHOT_READY, false)) null
             else p.getStringSet(SEEN_IDS, emptySet())?.toSet() ?: emptySet()
         }
+
+    fun lastAuditId(context: Context): Long? =
+        prefs(context)?.let { p -> if (p.contains(LAST_AUDIT_ID)) p.getLong(LAST_AUDIT_ID, 0L) else null }
+
+    fun saveLastAuditId(context: Context, id: Long) {
+        prefs(context)?.edit()?.putLong(LAST_AUDIT_ID, id)?.apply()
+    }
+
+    fun offlineNotified(context: Context): Boolean = prefs(context)?.getBoolean(OFFLINE_NOTIFIED, false) ?: false
+
+    fun setOfflineNotified(context: Context, value: Boolean) {
+        prefs(context)?.edit()?.putBoolean(OFFLINE_NOTIFIED, value)?.apply()
+    }
 
     fun saveSeenOperationIds(context: Context, ids: Set<String>) {
         prefs(context)?.edit()
