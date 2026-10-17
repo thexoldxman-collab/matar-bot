@@ -109,15 +109,16 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
             "صالح لمدة 5 دقائق ولمرة واحدة فقط. لا تشاركه مع أي شخص.",
         )
 
-    @bot.message_handler(commands=["link"])
+    @bot.message_handler(commands=["link", "adminapp"])
     def issue_link_code(message):
         issue_link_code_for_user(message.from_user.id, message.chat.id)
 
     @app.post("/api/admin/auth/verify")
+    @app.post("/api/admin/pairing/exchange")
     def verify_link_code():
         payload = request.get_json(silent=True) or {}
         code = str(payload.get("code", "")).strip()
-        if not re.fullmatch(r"\d{6}", code):
+        if not (re.fullmatch(r"\d{6}", code) or re.fullmatch(r"[A-Za-z0-9]{8}", code)):
             return jsonify({"ok": False, "error": "invalid_code"}), 400
 
         now_text = _iso(_now())
@@ -169,17 +170,25 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
                 app.logger.exception("Admin app authentication failed")
                 return jsonify({"ok": False, "error": "authentication_unavailable"}), 503
 
+        user_payload = {
+            "telegram_id": user_id,
+            "user_id": user_id,
+            "userId": user_id,
+            "role": role,
+            "is_owner": role == "owner",
+            "claimOwner": role == "owner",
+            "permissions": permissions_for(user_id, role),
+        }
         return jsonify({
             "ok": True,
+            "token": raw_token,
             "access_token": raw_token,
             "token_type": "Bearer",
             "expires_at": session_expiry,
-            "user": {
-                "telegram_id": user_id,
-                "role": role,
-                "is_owner": role == "owner",
-                "permissions": permissions_for(user_id, role),
-            },
+            "user_id": user_id,
+            "userId": user_id,
+            "claimOwner": role == "owner",
+            "user": user_payload,
         }), 200
 
     def authenticated_session():
