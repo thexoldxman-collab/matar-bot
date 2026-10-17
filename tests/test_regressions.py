@@ -537,8 +537,9 @@ class RegressionTests(unittest.TestCase):
         try:
             m.update_db_setting('sham_status', 'متوقف', m.ADMIN_ID)
             m.update_db_setting('sham_address', 'sham_example@sham', m.ADMIN_ID)
-            with patch.object(m.bot, 'answer_callback_query'), patch.object(m.bot, 'edit_message_reply_markup'):
-                m.handle_all_callbacks(self.fake_call('toggle_sham'))
+            with patch.object(m, 'get_operation_mode', return_value='real'):
+                with patch.object(m.bot, 'answer_callback_query'):
+                    m.handle_all_callbacks(self.fake_call('toggle_sham'))
             self.assertNotEqual(m.get_db_setting('sham_status'), 'active')
         finally:
             m.update_db_setting('sham_status', previous_status or 'متوقف', m.ADMIN_ID)
@@ -573,8 +574,9 @@ class RegressionTests(unittest.TestCase):
         try:
             m.update_db_setting('usdt_status', 'متوقف', m.ADMIN_ID)
             m.update_db_setting('usdt_address', '', m.ADMIN_ID)
-            with patch.object(m.bot, 'answer_callback_query'):
-                m.handle_all_callbacks(self.fake_call('toggle_usdt'))
+            with patch.object(m, 'get_operation_mode', return_value='real'):
+                with patch.object(m.bot, 'answer_callback_query'):
+                    m.handle_all_callbacks(self.fake_call('toggle_usdt'))
             self.assertNotEqual(m.get_db_setting('usdt_status'), 'active')
         finally:
             m.update_db_setting('usdt_status', previous_status or 'متوقف', m.ADMIN_ID)
@@ -589,8 +591,9 @@ class RegressionTests(unittest.TestCase):
             m.update_db_setting('binance_status', 'متوقف', m.ADMIN_ID)
             m.update_db_setting('binance_address', '', m.ADMIN_ID)
             m.update_db_setting('binance_pay_id', '', m.ADMIN_ID)
-            with patch.object(m.bot, 'answer_callback_query'):
-                m.handle_all_callbacks(self.fake_call('toggle_binance'))
+            with patch.object(m, 'get_operation_mode', return_value='real'):
+                with patch.object(m.bot, 'answer_callback_query'):
+                    m.handle_all_callbacks(self.fake_call('toggle_binance'))
             self.assertNotEqual(m.get_db_setting('binance_status'), 'active')
         finally:
             m.update_db_setting('binance_status', previous_status or 'متوقف', m.ADMIN_ID)
