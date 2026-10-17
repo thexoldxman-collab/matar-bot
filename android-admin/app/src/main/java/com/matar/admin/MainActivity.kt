@@ -24,7 +24,16 @@ private enum class Page(val label: String) {
     HOME("الرئيسية"), ROOM("غرفة العمليات"), USERS("المشرفون"), MESSAGES("الرسائل"), SETTINGS("الإعدادات")
 }
 
-private data class QueueItem(val id: Int, val type: String, val user: String, val amount: String, val status: String = "بانتظار التنفيذ")
+internal data class QueueItem(
+    val id: Int,
+    val type: String,
+    val user: String,
+    val amount: String,
+    val status: String = "بانتظار التنفيذ",
+    val typeKey: String = "charge",
+    val userId: Long? = null,
+    val claimOwner: Long? = null
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -44,6 +53,8 @@ private fun MatarAdminApp() {
     var accessToken by remember { mutableStateOf<String?>(null) }
     var connecting by remember { mutableStateOf(false) }
     var savingNotifications by remember { mutableStateOf(false) }
+    var liveOperations by remember { mutableStateOf(false) }
+    var operationMessage by remember { mutableStateOf("") }
     var notificationMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     var pairingCode by remember { mutableStateOf("") }
@@ -90,6 +101,13 @@ private fun MatarAdminApp() {
                                 connecting = false
                                 if (result.token != null) {
                                     accessToken = result.token
+                                    val operations = withContext(Dispatchers.IO) { AdminApi.loadOperations(result.token) }
+                                    if (operations != null) {
+                                        queue = operations
+                                        liveOperations = true
+                                    } else {
+                                        liveOperations = false
+                                    }
                                     connected = true
                                     showLogin = false
                                     demoMode = true
@@ -144,7 +162,7 @@ private fun MatarAdminApp() {
                         if (demoMode) {
                             Surface(color = MaterialTheme.colorScheme.tertiaryContainer, modifier = Modifier.fillMaxWidth()) {
                                 Text(
-                                    if (connected) "تم التحقق من حساب تيليغرام؛ البيانات والإجراءات ما زالت تجريبية." else "معاينة فقط — لا يوجد اتصال بالبوت ولا تُنفّذ أي عملية حقيقية",
+                                    if (connected && liveOperations) "تم التحقق — قائمة الطلبات من الخادم؛ التسوية المالية ما زالت مقفلة." else if (connected) "تم التحقق من الحساب، لكن تعذر تحميل الطلبات الحية؛ العرض تجريبي." else "معاينة فقط — لا يوجد اتصال بالبوت ولا تُنفّذ أي عملية حقيقية",
                                     modifier = Modifier.padding(10.dp),
                                     style = MaterialTheme.typography.labelMedium,
                                     textAlign = TextAlign.Center
@@ -157,15 +175,46 @@ private fun MatarAdminApp() {
                                 queue = queue,
                                 selected = selectedRequest,
                                 note = actionNote,
+                                message = operationMessage,
+                                liveMode = connected && liveOperations,
                                 onNoteChange = { actionNote = it },
-                                onSelect = { selectedRequest = it },
+                                onSelect = { id ->
+                                    val token = accessToken
+                                    val item = queue.firstOrNull { it.id == id }
+                                    if (connected && liveOperations && token != null && item != null) {
+                                        scope.launch {
+                                            val error = withContext(Dispatchers.IO) { AdminApi.claimOperation(token, item.typeKey, id) }
+                                            if (error == null) {
+                                                selectedRequest = id
+                                                queue = withContext(Dispatchers.IO) { AdminApi.loadOperations(token) } ?: queue
+                                                operationMessage = "تم استلام الطلب باسم حسابك لمدة 10 دقائق."
+                                            } else {
+                                                operationMessage = error
+                                            }
+                                        }
+                                    } else {
+                                        selectedRequest = id
+                                    }
+                                },
                                 onTake = { id ->
-                                    queue = queue.map { if (it.id == id) it.copy(status = "قيد التنفيذ — مشرف تجريبي") else it }
+                                    if (connected && liveOperations) {
+                                        operationMessage = "تم استلام الطلب. خيارات التنفيذ المالي لم تُفعّل بعد حتى لا نعلن نجاحاً وهمياً."
+                                    } else {
+                                        queue = queue.map { if (it.id == id) it.copy(status = "قيد التنفيذ — مشرف تجريبي") else it }
+                                    }
                                 },
                                 onComplete = { id ->
-                                    queue = queue.map { if (it.id == id) it.copy(status = "منجز تجريبياً") else it }
-                                    selectedRequest = null
-                                    actionNote = ""
+                                    val token = accessToken
+                                    val item = queue.firstOrNull { it.id == id }
+                                    if (connected && liveOperations && token != null && item != null) {
+                                        scope.launch {
+                                            operationMessage = withContext(Dispatchers.IO) { AdminApi.completeOperation(token, item.typeKey, id) }
+                                        }
+                                    } else {
+                                        queue = queue.map { if (it.id == id) it.copy(status = "منجز تجريبياً") else it }
+                                        selectedRequest = null
+                                        actionNote = ""
+                                    }
                                 }
                             )
                             Page.USERS -> ModeratorsScreen()
@@ -313,12 +362,17 @@ private fun MetricCard(title: String, value: String, icon: androidx.compose.ui.g
 @Composable
 private fun OperationsRoom(
     queue: List<QueueItem>, selected: Int?, note: String,
+    message: String, liveMode: Boolean,
     onNoteChange: (String) -> Unit, onSelect: (Int) -> Unit,
     onTake: (Int) -> Unit, onComplete: (Int) -> Unit
 ) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("غرفة العمليات المشتركة", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
-        item { Text("آلية الاستلام والتنفيذ معروضة تجريبياً. ستُقفل الطلبات على الخادم لمنع تنفيذ الطلب من مشرفين اثنين.") }
+        item { Text(if (liveMode) "قائمة الطلبات متصلة بالخادم. الاستلام يقفل الطلب 10 دقائق؛ إتمام المعاملة المالية محظور حتى ربط المعالجة الذرية." else "آلية الاستلام والتنفيذ معروضة تجريبياً. لن تُنفّذ أي معاملة حقيقية.") }
+        if (message.isNotBlank()) item {
+            Card(Modifier.fillMaxWidth()) { Text(message, modifier = Modifier.padding(12.dp), color = MaterialTheme.colorScheme.primary) }
+        }
+        if (queue.isEmpty()) item { Text(if (liveMode) "لا توجد طلبات مفتوحة مسموح لك بعرضها حالياً." else "هذه طلبات توضيحية للمعاينة فقط.") }
         items(queue, key = { it.id }) { item ->
             Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -327,6 +381,7 @@ private fun OperationsRoom(
                         AssistChip(onClick = {}, label = { Text(item.status) })
                     }
                     Text("صاحب الطلب: ${item.user}")
+                    if (item.claimOwner != null) Text("تم استلام الطلب بواسطة حساب تيليغرام: ${item.claimOwner}", style = MaterialTheme.typography.bodySmall)
                     Text("المبلغ: ${item.amount}")
                     if (selected == item.id) {
                         OutlinedTextField(value = note, onValueChange = onNoteChange, label = { Text("ملاحظات / تفاصيل الإجراء") }, modifier = Modifier.fillMaxWidth())
