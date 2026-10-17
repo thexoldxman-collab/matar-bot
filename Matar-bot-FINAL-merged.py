@@ -52,6 +52,7 @@ CHANNEL_URL = os.environ.get('CHANNEL_URL', 'https://t.me/Matar_ichancy')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '').strip()
 GEMINI_MODEL = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash').strip() or 'gemini-2.5-flash'
 AI_CHAT_MAX_MESSAGES = 40
+ADMIN_APP_PAIR_TTL = 5 * 60
 
 # متغيرات عامة للتتبع
 user_states = {}           # حالة المستخدمين (للمحادثات متعددة الخطوات)
@@ -9223,6 +9224,31 @@ def handle_ai_command(message):
     show_ai_menu(uid, message.chat.id)
 
 
+@bot.message_handler(commands=['admin_app_pair'])
+def issue_admin_app_pair_code(message):
+    user_id = getattr(getattr(message, 'from_user', None), 'id', 0)
+    if user_id != ADMIN_ID:
+        bot.reply_to(message, 'هذا الأمر متاح لمالك البوت فقط.')
+        return
+    code = secrets.token_urlsafe(18)
+    now = datetime.now()
+    created = now.strftime('%Y-%m-%d %H:%M:%S')
+    expires = (now + timedelta(seconds=ADMIN_APP_PAIR_TTL)).strftime('%Y-%m-%d %H:%M:%S')
+    with db_lock:
+        conn.execute('DELETE FROM admin_app_pairings WHERE expires_at < ? OR used_at IS NOT NULL', (created,))
+        conn.execute(
+            'INSERT INTO admin_app_pairings(user_id,code_hash,expires_at,created_at) VALUES (?,?,?,?)',
+            (ADMIN_ID, hashlib.sha256(code.encode('utf-8')).hexdigest(), expires, created),
+        )
+        conn.commit()
+    bot.reply_to(
+        message,
+        '🔐 رمز ربط تطبيق إدارة Matar Bot (صالح لخمس دقائق ولمرة واحدة):\n\n'
+        + code + '\n\nلا ترسله لأي شخص. بعد إدخاله في التطبيق يصبح غير صالح.',
+    )
+
+
+
 @bot.message_handler(func=lambda m: True)
 def main_router(message):
     """الراوتر الرئيسي لجميع الرسائل النصية"""
@@ -10832,7 +10858,6 @@ app = Flask(__name__)
 
 # جلسات تطبيق الإدارة موقّعة على الخادم؛ لا يحتوي APK على مفتاح توقيع أو أسرار.
 ADMIN_APP_TOKEN_TTL = 12 * 60 * 60
-ADMIN_APP_PAIR_TTL = 5 * 60
 _admin_app_ai_last_request = {}
 
 
@@ -10885,30 +10910,6 @@ def _admin_app_get_user():
 
 def _admin_app_unauthorized():
     return jsonify({'ok': False, 'error': 'انتهت الجلسة أو بيانات الدخول غير صحيحة. اربط التطبيق من جديد.'}), 401
-
-
-@bot.message_handler(commands=['admin_app_pair'])
-def issue_admin_app_pair_code(message):
-    user_id = getattr(getattr(message, 'from_user', None), 'id', 0)
-    if user_id != ADMIN_ID:
-        bot.reply_to(message, 'هذا الأمر متاح لمالك البوت فقط.')
-        return
-    code = secrets.token_urlsafe(18)
-    now = datetime.now()
-    created = now.strftime('%Y-%m-%d %H:%M:%S')
-    expires = (now + timedelta(seconds=ADMIN_APP_PAIR_TTL)).strftime('%Y-%m-%d %H:%M:%S')
-    with db_lock:
-        conn.execute('DELETE FROM admin_app_pairings WHERE expires_at < ? OR used_at IS NOT NULL', (created,))
-        conn.execute(
-            'INSERT INTO admin_app_pairings(user_id,code_hash,expires_at,created_at) VALUES (?,?,?,?)',
-            (ADMIN_ID, hashlib.sha256(code.encode('utf-8')).hexdigest(), expires, created),
-        )
-        conn.commit()
-    bot.reply_to(
-        message,
-        '🔐 رمز ربط تطبيق إدارة Matar Bot (صالح لخمس دقائق ولمرة واحدة):\n\n'
-        + code + '\n\nلا ترسله لأي شخص. بعد إدخاله في التطبيق يصبح غير صالح.',
-    )
 
 
 @app.route('/api/admin/v1/pair', methods=['POST'])
