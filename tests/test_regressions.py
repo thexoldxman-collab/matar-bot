@@ -1852,5 +1852,86 @@ class RegressionTests(unittest.TestCase):
         m.conn.commit()
 
 
+    def test_admin_app_pair_code_is_owner_only_single_use_and_short_lived(self):
+        m = self.m
+        owner_message = SimpleNamespace(
+            from_user=SimpleNamespace(id=m.ADMIN_ID),
+            chat=SimpleNamespace(id=m.ADMIN_ID),
+        )
+        sent = []
+        with patch.object(m.bot, 'reply_to', side_effect=lambda message, text: sent.append(text)):
+            m.issue_admin_app_pair_code(owner_message)
+        self.assertEqual(len(sent), 1)
+        code = sent[0].split('\\n\\n')[1].split('\\n')[0]
+        client = m.app.test_client()
+        paired = client.post('/api/admin/v1/pair', json={'code': code})
+        self.assertEqual(paired.status_code, 200)
+        self.assertTrue(paired.get_json()['token'])
+        reused = client.post('/api/admin/v1/pair', json={'code': code})
+        self.assertEqual(reused.status_code, 401)
+
+    def test_admin_app_pair_code_cannot_be_issued_by_non_owner(self):
+        m = self.m
+        outsider = SimpleNamespace(
+            from_user=SimpleNamespace(id=m.ADMIN_ID + 900),
+            chat=SimpleNamespace(id=m.ADMIN_ID + 900),
+        )
+        sent = []
+        with patch.object(m.bot, 'reply_to', side_effect=lambda message, text: sent.append(text)):
+            m.issue_admin_app_pair_code(outsider)
+        self.assertEqual(len(sent), 1)
+        self.assertIn('مالك البوت فقط', sent[0])
+
+    def test_admin_app_api_rejects_missing_or_invalid_session(self):
+        response = self.m.app.test_client().get('/api/admin/v1/overview')
+        self.assertEqual(response.status_code, 401)
+        response = self.m.app.test_client().get(
+            '/api/admin/v1/overview',
+            headers={'Authorization': 'Bearer not-a-valid-token'},
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_admin_app_overview_works_for_owner_session_without_exposing_payment_addresses(self):
+        m = self.m
+        token = m._admin_app_create_session(m.ADMIN_ID)
+        response = m.app.test_client().get(
+            '/api/admin/v1/overview',
+            headers={'Authorization': 'Bearer ' + token},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload['ok'])
+        self.assertIn('services', payload)
+        self.assertNotIn('sham_address', str(payload))
+        self.assertNotIn('api_key', str(payload))
+
+    def test_admin_app_maintenance_endpoint_updates_status_and_can_restore(self):
+        m = self.m
+        token = m._admin_app_create_session(m.ADMIN_ID)
+        client = m.app.test_client()
+        original = m.get_db_setting('bot_status') or 'active'
+        headers = {'Authorization': 'Bearer ' + token}
+        try:
+            response = client.post('/api/admin/v1/maintenance', json={'enabled': True}, headers=headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertNotEqual(m.get_db_setting('bot_status'), 'active')
+            response = client.post('/api/admin/v1/maintenance', json={'enabled': False}, headers=headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(m.get_db_setting('bot_status'), 'active')
+        finally:
+            m.update_db_setting('bot_status', original, m.ADMIN_ID)
+
+    def test_admin_app_cannot_enable_real_mode_in_initial_release(self):
+        m = self.m
+        token = m._admin_app_create_session(m.ADMIN_ID)
+        response = m.app.test_client().post(
+            '/api/admin/v1/mode',
+            json={'mode': 'real'},
+            headers={'Authorization': 'Bearer ' + token},
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(m.get_operation_mode(), 'demo')
+
+
 if __name__ == '__main__':
     unittest.main()
