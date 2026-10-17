@@ -408,10 +408,14 @@ admin_logger_system = AdminLogger()
 # 7. نظام قاعدة البيانات المتكامل (30+ جدول)
 # =============================================================================
 
-def setup_database():
-    """إنشاء الجداول دون حذف أو إعادة ضبط بيانات موجودة."""
+def setup_database(database_url_override=None):
+    """إنشاء الجداول دون حذف أو إعادة ضبط بيانات موجودة، مع دعم قاعدة مستقلة لكل وضع."""
     global DB_PATH, DATABASE_URL, BACKUP_DIR
-    DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
+    DATABASE_URL = (
+        str(database_url_override).strip()
+        if database_url_override is not None
+        else os.environ.get('DATABASE_URL', '').strip()
+    )
     if os.environ.get('REQUIRE_PERSISTENT_DATABASE', '0').strip() == '1' and not DATABASE_URL:
         raise RuntimeError('DATABASE_URL is required here to prevent losing bot data on temporary storage.')
     DB_PATH = os.path.abspath(os.environ.get('DATABASE_PATH', 'matar_ultimate.db'))
@@ -982,8 +986,32 @@ def setup_database():
     logger.info("✅ تم إنشاء قاعدة البيانات بنجاح مع 30+ جدول")
     return conn, cursor
 
-# تهيئة قاعدة البيانات
+# تهيئة قاعدة البيانات ووضع التشغيل.
+# DATABASE_URL قاعدة الاختبار، وREAL_DATABASE_URL قاعدة الإنتاج المستقلة.
+MODE_DATABASES = {}
+CURRENT_OPERATION_MODE = 'demo'
 conn, cursor = setup_database()
+MODE_DATABASES['demo'] = (conn, cursor, DATABASE_URL, DB_PATH, BACKUP_DIR)
+
+_mode_row = cursor.execute("SELECT value FROM settings WHERE key='operation_mode'").fetchone()
+_saved_mode = str(_mode_row[0] if _mode_row else 'demo').strip().lower()
+if _saved_mode not in ('demo', 'real'):
+    _saved_mode = 'demo'
+if _saved_mode == 'real':
+    _real_database_url = os.environ.get('REAL_DATABASE_URL', '').strip()
+    if not _real_database_url:
+        raise RuntimeError(
+            'Bot was last saved in real mode, but REAL_DATABASE_URL is missing. '
+            'Refusing to start against the demo database.'
+        )
+    if DATABASE_URL and _real_database_url == DATABASE_URL:
+        raise RuntimeError('REAL_DATABASE_URL must point to a separate database from DATABASE_URL.')
+    _real_conn, _real_cursor = setup_database(_real_database_url)
+    if not is_postgres_connection(_real_conn):
+        raise RuntimeError('REAL_DATABASE_URL must be a persistent PostgreSQL database.')
+    MODE_DATABASES['real'] = (_real_conn, _real_cursor, DATABASE_URL, DB_PATH, BACKUP_DIR)
+    conn, cursor, DATABASE_URL, DB_PATH, BACKUP_DIR = MODE_DATABASES['real']
+    CURRENT_OPERATION_MODE = 'real'
 
 def create_consistent_backup(created_by=None):
     """إنشاء نسخة احتياطية متسقة؛ SQLite ملف DB وNeon لقطة JSON قابلة للتنزيل."""
@@ -1155,18 +1183,108 @@ def get_db_setting(key_name):
     return result[0] if result else None
 
 def update_db_setting(key_name, value, admin_id=ADMIN_ID):
-    """تحديث إعداد في قاعدة البيانات"""
+    """تحديث إعداد في قاعدة البيانات النشطة."""
     cursor.execute("""UPDATE settings SET value=?, updated_at=?, updated_by=?
                       WHERE key=?""", (value, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), admin_id, key_name))
     conn.commit()
     admin_logger.info(f"Admin {admin_id} updated setting {key_name} to {value}")
-    
-    # تسجيل في سجل الإجراءات
     admin_logger_system.log_action(
         admin_id=admin_id,
         action_type="تحديث إعداد",
         details=f"تحديث {key_name} إلى {value}"
     )
+
+def get_operation_mode():
+    """الوضع الفعلي للاتصال النشط: demo يستخدم قاعدة منفصلة عن real."""
+    return CURRENT_OPERATION_MODE
+
+def _activate_database_mode(mode):
+    global conn, cursor, DATABASE_URL, DB_PATH, BACKUP_DIR, CURRENT_OPERATION_MODE
+    if mode not in MODE_DATABASES:
+        raise RuntimeError(f"Database for mode {mode!r} has not been initialized.")
+    conn, cursor, DATABASE_URL, DB_PATH, BACKUP_DIR = MODE_DATABASES[mode]
+    CURRENT_OPERATION_MODE = mode
+
+def _copy_mode_configuration(source_conn, target_conn):
+    """مزامنة الإعدادات فقط بين وضعي الاختبار والإنتاج، دون نسخ المستخدمين أو الأرصدة."""
+    tables = (
+        'settings', 'dynamic_buttons', 'moderators', 'notification_settings',
+        'operations_room', 'api_configs', 'api_connections',
+    )
+    for table in tables:
+        source_cursor = source_conn.cursor()
+        source_cursor.execute(f"SELECT * FROM {table}")
+        source_columns = [column[0] for column in (source_cursor.description or ())]
+        rows = source_cursor.fetchall()
+        columns = [column for column in source_columns if column != 'id']
+        target_conn.execute(f"DELETE FROM {table}")
+        if columns:
+            placeholders = ','.join('?' for _ in columns)
+            column_sql = ','.join(columns)
+            selected_indexes = [source_columns.index(column) for column in columns]
+            for row in rows:
+                values = tuple(row[index] for index in selected_indexes)
+                target_conn.execute(
+                    f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})",
+                    values,
+                )
+    target_conn.commit()
+
+def switch_operation_mode(target_mode, admin_id=ADMIN_ID):
+    """التبديل الآمن بين قاعدتي بيانات منفصلتين مع مزامنة الإعدادات فقط."""
+    target_mode = str(target_mode or '').strip().lower()
+    if target_mode not in ('demo', 'real'):
+        raise ValueError("وضع التشغيل غير معروف.")
+    current_mode = get_operation_mode()
+    if current_mode == target_mode:
+        return current_mode
+
+    if target_mode == 'real':
+        real_url = os.environ.get('REAL_DATABASE_URL', '').strip()
+        demo_url = os.environ.get('DATABASE_URL', '').strip()
+        if not real_url:
+            raise ValueError(
+                "لم يتم إعداد قاعدة إنتاج مستقلة بعد. أضف REAL_DATABASE_URL في إعدادات Render؛ "
+                "لم يتغير وضع التشغيل."
+            )
+        if demo_url and real_url == demo_url:
+            raise ValueError("قاعدة الإنتاج يجب أن تكون مستقلة عن قاعدة الاختبار.")
+        if 'real' not in MODE_DATABASES:
+            active_snapshot = MODE_DATABASES[current_mode]
+            try:
+                real_conn, real_cursor = setup_database(real_url)
+                if not is_postgres_connection(real_conn):
+                    real_conn.close()
+                    raise ValueError("REAL_DATABASE_URL يجب أن يشير إلى PostgreSQL دائم.")
+                MODE_DATABASES['real'] = (
+                    real_conn, real_cursor, DATABASE_URL, DB_PATH, BACKUP_DIR
+                )
+            finally:
+                _activate_database_mode(current_mode)
+        source = MODE_DATABASES[current_mode][0]
+        target = MODE_DATABASES['real'][0]
+    else:
+        source = MODE_DATABASES[current_mode][0]
+        target = MODE_DATABASES['demo'][0]
+
+    with db_lock:
+        _copy_mode_configuration(source, target)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for database in (source, target):
+            database.execute(
+                "UPDATE settings SET value=?, updated_at=?, updated_by=? WHERE key='operation_mode'",
+                (target_mode, timestamp, admin_id),
+            )
+            database.commit()
+
+    _activate_database_mode(target_mode)
+    admin_logger_system.log_action(
+        admin_id=admin_id,
+        action_type="تغيير وضع التشغيل",
+        details=f"تم الانتقال إلى الوضع {'الحقيقي' if target_mode == 'real' else 'التجريبي'}",
+    )
+    logger.warning("Operation mode switched to %s by admin %s", target_mode, admin_id)
+    return target_mode
 
 def check_subscription(uid):
     """التحقق من اشتراك المستخدم في القناة"""
