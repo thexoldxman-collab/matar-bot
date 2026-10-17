@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import sqlite3
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ class RegressionTests(unittest.TestCase):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         os.environ.pop('DATABASE_URL', None)
+        os.environ.pop('REAL_DATABASE_URL', None)
         os.environ.pop('REQUIRE_PERSISTENT_DATABASE', None)
         os.environ.update({
             'TOKEN': '123456:TESTTOKEN',
@@ -489,10 +491,11 @@ class RegressionTests(unittest.TestCase):
             for key, value in values.items():
                 m.update_db_setting(key, value, m.ADMIN_ID)
             for callback in ('charge_syria', 'charge_sham', 'charge_usdt', 'charge_binance'):
-                with patch.object(m.bot, 'answer_callback_query'), \
-                     patch.object(m.bot, 'send_message'), \
-                     patch.object(m.bot, 'register_next_step_handler') as next_step:
-                    m.handle_all_callbacks(self.fake_call(callback))
+                with patch.object(m, 'get_operation_mode', return_value='real'):
+                    with patch.object(m.bot, 'answer_callback_query'):
+                        with patch.object(m.bot, 'send_message'):
+                            with patch.object(m.bot, 'register_next_step_handler') as next_step:
+                                m.handle_all_callbacks(self.fake_call(callback))
                 next_step.assert_not_called()
         finally:
             for key, value in previous.items():
@@ -534,8 +537,9 @@ class RegressionTests(unittest.TestCase):
         try:
             m.update_db_setting('sham_status', 'متوقف', m.ADMIN_ID)
             m.update_db_setting('sham_address', 'sham_example@sham', m.ADMIN_ID)
-            with patch.object(m.bot, 'answer_callback_query'), patch.object(m.bot, 'edit_message_reply_markup'):
-                m.handle_all_callbacks(self.fake_call('toggle_sham'))
+            with patch.object(m, 'get_operation_mode', return_value='real'):
+                with patch.object(m.bot, 'answer_callback_query'):
+                    m.handle_all_callbacks(self.fake_call('toggle_sham'))
             self.assertNotEqual(m.get_db_setting('sham_status'), 'active')
         finally:
             m.update_db_setting('sham_status', previous_status or 'متوقف', m.ADMIN_ID)
@@ -570,8 +574,9 @@ class RegressionTests(unittest.TestCase):
         try:
             m.update_db_setting('usdt_status', 'متوقف', m.ADMIN_ID)
             m.update_db_setting('usdt_address', '', m.ADMIN_ID)
-            with patch.object(m.bot, 'answer_callback_query'):
-                m.handle_all_callbacks(self.fake_call('toggle_usdt'))
+            with patch.object(m, 'get_operation_mode', return_value='real'):
+                with patch.object(m.bot, 'answer_callback_query'):
+                    m.handle_all_callbacks(self.fake_call('toggle_usdt'))
             self.assertNotEqual(m.get_db_setting('usdt_status'), 'active')
         finally:
             m.update_db_setting('usdt_status', previous_status or 'متوقف', m.ADMIN_ID)
@@ -586,8 +591,9 @@ class RegressionTests(unittest.TestCase):
             m.update_db_setting('binance_status', 'متوقف', m.ADMIN_ID)
             m.update_db_setting('binance_address', '', m.ADMIN_ID)
             m.update_db_setting('binance_pay_id', '', m.ADMIN_ID)
-            with patch.object(m.bot, 'answer_callback_query'):
-                m.handle_all_callbacks(self.fake_call('toggle_binance'))
+            with patch.object(m, 'get_operation_mode', return_value='real'):
+                with patch.object(m.bot, 'answer_callback_query'):
+                    m.handle_all_callbacks(self.fake_call('toggle_binance'))
             self.assertNotEqual(m.get_db_setting('binance_status'), 'active')
         finally:
             m.update_db_setting('binance_status', previous_status or 'متوقف', m.ADMIN_ID)
@@ -1546,6 +1552,304 @@ class RegressionTests(unittest.TestCase):
         m.conn.commit()
         _, completed_status = m.cancel_pending_charge_atomic(completed_id, 555553, 'إلغاء متأخر')
         self.assertEqual(completed_status, 'invalid_status')
+
+
+    def test_admin_home_is_categorized_and_avoids_nested_owner_menu(self):
+        m = self.m
+        keyboard = m.get_full_admin_keyboard()
+        callbacks = [
+            button.callback_data
+            for row in keyboard.keyboard
+            for button in row
+        ]
+        self.assertIn('admin_cat_users', callbacks)
+        self.assertIn('admin_cat_finance', callbacks)
+        self.assertNotIn('admin_cat_services', callbacks)
+        self.assertIn('admin_cat_control', callbacks)
+        self.assertIn('admin_cat_content', callbacks)
+        self.assertIn('admin_cat_reports', callbacks)
+        self.assertIn('admin_cat_system', callbacks)
+        self.assertNotIn('admin_buttons', callbacks)
+        self.assertNotIn('admin_payment', callbacks)
+
+    def test_admin_category_callback_opens_expected_section(self):
+        m = self.m
+        with patch.object(m.bot, 'answer_callback_query'), patch.object(m.bot, 'edit_message_text') as edit:
+            m.handle_all_callbacks(self.fake_call('admin_cat_users'))
+        edit.assert_called_once()
+        kwargs = edit.call_args.kwargs
+        self.assertIn('المستخدمون والمشرفون', edit.call_args.args[0])
+        buttons = [
+            button.callback_data
+            for row in kwargs['reply_markup'].keyboard
+            for button in row
+        ]
+        self.assertIn('admin_users', buttons)
+        self.assertIn('admin_moderators', buttons)
+        self.assertIn('back_to_full_admin', buttons)
+
+    def test_log_search_keyboard_uses_registered_callback_ids(self):
+        m = self.m
+        keyboard = m.get_search_keyboard()
+        callbacks = [
+            button.callback_data
+            for row in keyboard.keyboard
+            for button in row
+        ]
+        self.assertIn('search_logs_date', callbacks)
+        self.assertIn('search_logs_admin', callbacks)
+        self.assertIn('search_logs_type', callbacks)
+        self.assertIn('search_logs_amount', callbacks)
+        self.assertIn('search_logs_user', callbacks)
+        self.assertIn('admin_logs', callbacks)
+        self.assertNotIn('search_by_date', callbacks)
+        self.assertNotIn('back_to_logs', callbacks)
+
+    def test_open_support_ticket_reply_button_registers_valid_reply_handler(self):
+        m = self.m
+        target_user_id = 812341
+        m.cursor.execute(
+            "INSERT INTO tickets(user_id, message, status, created_at) VALUES (?,?,?,?)",
+            (target_user_id, "مشكلة اختبار", "open", "2026-10-17 00:00:00"),
+        )
+        ticket_id = m.cursor.lastrowid
+        m.conn.commit()
+        call = self.fake_call(f"reply_ticket_{ticket_id}_{target_user_id}")
+        with patch.object(m.bot, 'answer_callback_query'), patch.object(m.bot, 'send_message'), patch.object(m.bot, 'register_next_step_handler_by_chat_id') as register:
+            m.handle_all_callbacks(call)
+        register.assert_called_once_with(
+            m.ADMIN_ID,
+            m.ActionSystem.process_ticket_reply,
+            ticket_id,
+            target_user_id,
+        )
+
+    def test_support_ticket_reply_is_saved_and_delivered(self):
+        m = self.m
+        target_user_id = 812342
+        m.cursor.execute(
+            "INSERT INTO tickets(user_id, message, status, created_at) VALUES (?,?,?,?)",
+            (target_user_id, "مشكلة اختبار ثانية", "open", "2026-10-17 00:00:00"),
+        )
+        ticket_id = m.cursor.lastrowid
+        m.conn.commit()
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=m.ADMIN_ID),
+            chat=SimpleNamespace(id=m.ADMIN_ID),
+            text="تم حل المشكلة، جرّب الآن.",
+        )
+        with patch.object(m.bot, 'send_message') as send:
+            m.ActionSystem.process_ticket_reply(message, ticket_id, target_user_id)
+        stored = m.cursor.execute(
+            "SELECT sender_id, sender_type, message FROM ticket_conversations WHERE ticket_id=? ORDER BY id DESC LIMIT 1",
+            (ticket_id,),
+        ).fetchone()
+        self.assertEqual(stored, (m.ADMIN_ID, 'admin', "تم حل المشكلة، جرّب الآن."))
+        self.assertTrue(any(call.args[0] == target_user_id for call in send.call_args_list))
+        status = m.cursor.execute(
+            "SELECT status FROM tickets WHERE ticket_id=?", (ticket_id,)
+        ).fetchone()[0]
+        self.assertEqual(status, 'open')
+
+    def test_owner_admin_entry_opens_categorized_panel_directly(self):
+        m = self.m
+        with patch.object(m.ActionSystem, 'show_full_admin_menu') as show_full:
+            m.ActionSystem.show_admin_panel(m.ADMIN_ID, m.ADMIN_ID)
+        show_full.assert_called_once_with(m.ADMIN_ID, m.ADMIN_ID)
+
+
+    def test_control_center_contains_mode_maintenance_and_all_service_controls(self):
+        m = self.m
+        keyboard = m.get_operations_control_keyboard()
+        callbacks = [button.callback_data for row in keyboard.keyboard for button in row]
+        self.assertIn('request_real_mode', callbacks)
+        self.assertIn('control_toggle_bot', callbacks)
+        self.assertIn('toggle_syriatel', callbacks)
+        self.assertIn('toggle_sham', callbacks)
+        self.assertIn('toggle_usdt', callbacks)
+        self.assertIn('toggle_binance', callbacks)
+        self.assertIn('control_toggle_wheel', callbacks)
+        self.assertIn('admin_api_connect', callbacks)
+        self.assertIn('admin_payment', callbacks)
+
+    def test_service_toggles_are_not_scattered_in_payment_limits_keyboard(self):
+        m = self.m
+        keyboard = m.get_payment_settings_keyboard()
+        callbacks = [button.callback_data for row in keyboard.keyboard for button in row]
+        self.assertIn('edit_limits', callbacks)
+        self.assertIn('edit_commission', callbacks)
+        self.assertNotIn('toggle_syriatel', callbacks)
+        self.assertNotIn('toggle_sham', callbacks)
+        self.assertNotIn('toggle_usdt', callbacks)
+        self.assertNotIn('toggle_binance', callbacks)
+        self.assertNotIn('toggle_bot', callbacks)
+
+    def test_real_mode_switch_requires_a_separate_real_database(self):
+        m = self.m
+        with patch.dict(m.os.environ, {'REAL_DATABASE_URL': '', 'DATABASE_URL': ''}, clear=False):
+            with self.assertRaisesRegex(ValueError, 'REAL_DATABASE_URL'):
+                m.switch_operation_mode('real', m.ADMIN_ID)
+        self.assertEqual(m.get_operation_mode(), 'demo')
+
+    def test_full_admin_keyboard_includes_dedicated_control_category(self):
+        m = self.m
+        keyboard = m.get_full_admin_keyboard()
+        callbacks = [button.callback_data for row in keyboard.keyboard for button in row]
+        self.assertIn('admin_cat_control', callbacks)
+
+    def test_non_owner_cannot_toggle_maintenance_from_control_center(self):
+        m = self.m
+        before = m.get_db_setting('bot_status')
+        call = self.fake_call('control_toggle_bot')
+        call.from_user.id = m.ADMIN_ID + 1
+        with patch.object(m, 'safe_answer_callback') as answer:
+            m.handle_all_callbacks(call)
+        answer.assert_called_once()
+        self.assertEqual(m.get_db_setting('bot_status'), before)
+
+
+    def test_mode_configuration_sync_never_copies_users_or_financial_transactions(self):
+        m = self.m
+        source = sqlite3.connect(':memory:')
+        target = sqlite3.connect(':memory:')
+        schema = [
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT, updated_by INTEGER)",
+            "CREATE TABLE dynamic_buttons (id INTEGER PRIMARY KEY AUTOINCREMENT, button_text TEXT, parent_button TEXT)",
+            "CREATE TABLE moderators (user_id INTEGER PRIMARY KEY, custom_name TEXT)",
+            "CREATE TABLE notification_settings (user_id INTEGER PRIMARY KEY, notify_on_charge INTEGER)",
+            "CREATE TABLE operations_room (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER UNIQUE, created_at TEXT)",
+            "CREATE TABLE api_configs (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT, name TEXT, api_key TEXT, api_secret TEXT, endpoint TEXT, extra_config TEXT, is_active INTEGER, is_paused INTEGER, created_at TEXT, updated_at TEXT, created_by INTEGER)",
+            "CREATE TABLE api_connections (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, api_key TEXT, api_secret TEXT, endpoint TEXT, is_active INTEGER, last_verified TEXT, verified_by INTEGER, created_at TEXT, updated_at TEXT, connection_status TEXT)",
+            "CREATE TABLE wheel_prizes (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT, is_active INTEGER)",
+            "CREATE TABLE users (user_id INTEGER PRIMARY KEY, balance REAL)",
+            "CREATE TABLE transactions (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL)",
+        ]
+        for db in (source, target):
+            for statement in schema:
+                db.execute(statement)
+        source.execute("INSERT INTO settings(key,value) VALUES('operation_mode','demo')")
+        source.execute("INSERT INTO settings(key,value) VALUES('syriatel_status','active')")
+        source.execute("INSERT INTO dynamic_buttons(button_text,parent_button) VALUES('زر تجريبي','main')")
+        source.execute("INSERT INTO api_configs(provider,name,endpoint,is_active,is_paused) VALUES('sham','demo-sandbox','https://sandbox.invalid',1,0)")
+        source.execute("INSERT INTO users(user_id,balance) VALUES(101,500)")
+        source.execute("INSERT INTO transactions(id,user_id,amount) VALUES(1,101,500)")
+        target.execute("INSERT INTO settings(key,value) VALUES('operation_mode','old')")
+        target.execute("INSERT INTO settings(key,value) VALUES('syriatel_status','متوقف')")
+        target.execute("INSERT INTO api_configs(provider,name,endpoint,is_active,is_paused) VALUES('sham','real-production','https://production.invalid',1,0)")
+        target.execute("INSERT INTO users(user_id,balance) VALUES(202,900)")
+        target.execute("INSERT INTO transactions(id,user_id,amount) VALUES(2,202,900)")
+        source.commit()
+        target.commit()
+        try:
+            m._copy_mode_configuration(source, target)
+            self.assertEqual(
+                target.execute("SELECT value FROM settings WHERE key='operation_mode'").fetchone()[0],
+                'demo',
+            )
+            self.assertEqual(
+                target.execute("SELECT value FROM settings WHERE key='syriatel_status'").fetchone()[0],
+                'متوقف',
+            )
+            self.assertEqual(
+                target.execute("SELECT name FROM api_configs").fetchall(),
+                [('real-production',)],
+            )
+            self.assertEqual(target.execute("SELECT user_id,balance FROM users").fetchall(), [(202, 900.0)])
+            self.assertEqual(target.execute("SELECT id,user_id,amount FROM transactions").fetchall(), [(2, 202, 900.0)])
+            self.assertEqual(target.execute("SELECT button_text FROM dynamic_buttons").fetchall(), [('زر تجريبي',)])
+        finally:
+            source.close()
+            target.close()
+
+    def test_control_category_routes_to_the_control_panel(self):
+        m = self.m
+        call = self.fake_call('admin_cat_control')
+        with patch.object(m, 'render_operations_control') as render:
+            m.handle_all_callbacks(call)
+        render.assert_called_once_with(m.ADMIN_ID, 1)
+
+    def test_maintenance_blocks_customer_callbacks(self):
+        m = self.m
+        call = self.fake_call('ai_chat')
+        call.from_user.id = m.ADMIN_ID + 10
+        with patch.object(m, 'check_bot_status', return_value=False):
+            with patch.object(m, 'safe_answer_callback') as answer:
+                with patch.object(m, 'start_ai_chat') as start_ai:
+                    m.handle_all_callbacks(call)
+        answer.assert_called_once()
+        start_ai.assert_not_called()
+
+    def test_database_target_comparison_ignores_connection_query_parameters(self):
+        m = self.m
+        self.assertTrue(m._same_database_target(
+            'postgresql://user:pass@db.example/neon?sslmode=require',
+            'postgresql://user:pass@db.example/neon?sslmode=verify-full',
+        ))
+        self.assertFalse(m._same_database_target(
+            'postgresql://user:pass@db.example/demo',
+            'postgresql://user:pass@db.example/production',
+        ))
+
+    def test_operation_mode_cannot_be_changed_without_switching_database(self):
+        m = self.m
+        with self.assertRaisesRegex(ValueError, 'switch_operation_mode'):
+            m.update_db_setting('operation_mode', 'real', m.ADMIN_ID)
+        self.assertEqual(m.get_operation_mode(), 'demo')
+
+    def test_ai_command_obeys_maintenance_mode(self):
+        m = self.m
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=m.ADMIN_ID + 11),
+            chat=SimpleNamespace(id=m.ADMIN_ID + 11),
+        )
+        with patch.object(m, 'check_bot_status', return_value=False):
+            with patch.object(m.bot, 'send_message') as send:
+                with patch.object(m, 'show_ai_menu') as show_ai:
+                    m.handle_ai_command(message)
+        send.assert_called_once()
+        show_ai.assert_not_called()
+
+
+    def test_demo_charge_callback_never_displays_real_payment_address(self):
+        m = self.m
+        call = self.fake_call('charge_syria')
+        previous_status = m.get_db_setting('syriatel_status')
+        m.update_db_setting('syriatel_status', 'active', m.ADMIN_ID)
+        try:
+            with patch.object(m, 'safe_answer_callback'):
+                with patch.object(m.bot, 'send_message') as send:
+                    with patch.object(m.bot, 'register_next_step_handler') as register:
+                        m.handle_all_callbacks(call)
+            register.assert_called_once_with(
+                send.return_value,
+                m.process_demo_charge_amount,
+                'syria',
+            )
+            all_text = " ".join(str(c.args[1]) for c in send.call_args_list if len(c.args) > 1)
+            self.assertIn('لن نعرض عنوان دفع حقيقياً', all_text)
+            self.assertNotIn('42483891', all_text)
+        finally:
+            m.update_db_setting('syriatel_status', previous_status or 'متوقف', m.ADMIN_ID)
+
+    def test_demo_charge_request_is_marked_as_test_and_saved_only_in_demo_database(self):
+        m = self.m
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=m.ADMIN_ID + 21),
+            chat=SimpleNamespace(id=m.ADMIN_ID + 21),
+            text='250',
+        )
+        with patch.object(m.bot, 'send_message'):
+            m.process_demo_charge_amount(message, 'syria')
+        row = m.cursor.execute(
+            "SELECT id, method, receipt_number, amount FROM pending_charges WHERE user_id=? AND method='demo_syria' ORDER BY id DESC LIMIT 1",
+            (m.ADMIN_ID + 21,),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[1], 'demo_syria')
+        self.assertTrue(row[2].startswith('DEMO-'))
+        self.assertEqual(float(row[3]), 250.0)
+        m.cursor.execute("DELETE FROM pending_charges WHERE id=?", (row[0],))
+        m.conn.commit()
 
 
 if __name__ == '__main__':

@@ -23,6 +23,7 @@ import math
 import logging
 from logging.handlers import RotatingFileHandler
 from collections import defaultdict
+from urllib.parse import urlsplit
 
 # سطر التشخيص
 print("✅ تم تحميل البوت - نسخة تشخيص الأزرار")
@@ -57,6 +58,31 @@ api_connections = {}       # اتصالات API
 user_last_message = defaultdict(float)  # لمراقبة السبام
 user_mode = {}             # وضع المستخدم (عادي/إداري/تعديل أزرار)
 user_section = {}          # القسم الحالي للمستخدم
+
+def _same_database_target(first_url, second_url):
+    """مقارنة وجهة قاعدة البيانات مع تجاهل اختلاف خيارات الاتصال فقط."""
+    first_url = (first_url or '').strip()
+    second_url = (second_url or '').strip()
+    if not first_url or not second_url:
+        return False
+    try:
+        first = urlsplit(first_url)
+        second = urlsplit(second_url)
+        if first.scheme and second.scheme and first.hostname and second.hostname:
+            return (
+                first.scheme.lower(),
+                first.hostname.lower(),
+                first.port,
+                first.path.rstrip('/'),
+            ) == (
+                second.scheme.lower(),
+                second.hostname.lower(),
+                second.port,
+                second.path.rstrip('/'),
+            )
+    except ValueError:
+        pass
+    return first_url.rstrip('/') == second_url.rstrip('/')
 
 # إعدادات
 SPAM_DELAY = 1.5           # ثانية بين كل رسالة
@@ -408,10 +434,14 @@ admin_logger_system = AdminLogger()
 # 7. نظام قاعدة البيانات المتكامل (30+ جدول)
 # =============================================================================
 
-def setup_database():
-    """إنشاء الجداول دون حذف أو إعادة ضبط بيانات موجودة."""
+def setup_database(database_url_override=None):
+    """إنشاء الجداول دون حذف أو إعادة ضبط بيانات موجودة، مع دعم قاعدة مستقلة لكل وضع."""
     global DB_PATH, DATABASE_URL, BACKUP_DIR
-    DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
+    DATABASE_URL = (
+        str(database_url_override).strip()
+        if database_url_override is not None
+        else os.environ.get('DATABASE_URL', '').strip()
+    )
     if os.environ.get('REQUIRE_PERSISTENT_DATABASE', '0').strip() == '1' and not DATABASE_URL:
         raise RuntimeError('DATABASE_URL is required here to prevent losing bot data on temporary storage.')
     DB_PATH = os.path.abspath(os.environ.get('DATABASE_PATH', 'matar_ultimate.db'))
@@ -847,11 +877,11 @@ def setup_database():
     
     # ===== الإعدادات الافتراضية =====
     default_settings = [
-        ('syriatel_numbers', '42483891,99706078', 'أرقام سيرياتل كاش', 'text'),
+        ('syriatel_numbers', '', 'أرقام سيرياتل كاش', 'text'),
         ('sham_address', '', 'عنوان شام كاش', 'text'),
         ('usdt_status', 'متوقف', 'حالة USDT', 'text'),
         ('binance_status', 'متوقف', 'حالة Binance', 'text'),
-        ('syriatel_status', 'active', 'حالة سيرياتل كاش', 'text'),
+        ('syriatel_status', 'متوقف', 'حالة سيرياتل كاش', 'text'),
         ('sham_status', 'متوقف', 'حالة شام كاش', 'text'),
         ('usdt_address', '', 'عنوان محفظة USDT', 'text'),
         ('usdt_network', 'TRC20', 'شبكة USDT', 'text'),
@@ -982,8 +1012,32 @@ def setup_database():
     logger.info("✅ تم إنشاء قاعدة البيانات بنجاح مع 30+ جدول")
     return conn, cursor
 
-# تهيئة قاعدة البيانات
+# تهيئة قاعدة البيانات ووضع التشغيل.
+# DATABASE_URL قاعدة الاختبار، وREAL_DATABASE_URL قاعدة الإنتاج المستقلة.
+MODE_DATABASES = {}
+CURRENT_OPERATION_MODE = 'demo'
 conn, cursor = setup_database()
+MODE_DATABASES['demo'] = (conn, cursor, DATABASE_URL, DB_PATH, BACKUP_DIR)
+
+_mode_row = cursor.execute("SELECT value FROM settings WHERE key='operation_mode'").fetchone()
+_saved_mode = str(_mode_row[0] if _mode_row else 'demo').strip().lower()
+if _saved_mode not in ('demo', 'real'):
+    _saved_mode = 'demo'
+if _saved_mode == 'real':
+    _real_database_url = os.environ.get('REAL_DATABASE_URL', '').strip()
+    if not _real_database_url:
+        raise RuntimeError(
+            'Bot was last saved in real mode, but REAL_DATABASE_URL is missing. '
+            'Refusing to start against the demo database.'
+        )
+    if _same_database_target(_real_database_url, DATABASE_URL):
+        raise RuntimeError('REAL_DATABASE_URL must point to a separate database from DATABASE_URL.')
+    _real_conn, _real_cursor = setup_database(_real_database_url)
+    if not is_postgres_connection(_real_conn):
+        raise RuntimeError('REAL_DATABASE_URL must be a persistent PostgreSQL database.')
+    MODE_DATABASES['real'] = (_real_conn, _real_cursor, DATABASE_URL, DB_PATH, BACKUP_DIR)
+    conn, cursor, DATABASE_URL, DB_PATH, BACKUP_DIR = MODE_DATABASES['real']
+    CURRENT_OPERATION_MODE = 'real'
 
 def create_consistent_backup(created_by=None):
     """إنشاء نسخة احتياطية متسقة؛ SQLite ملف DB وNeon لقطة JSON قابلة للتنزيل."""
@@ -1155,18 +1209,169 @@ def get_db_setting(key_name):
     return result[0] if result else None
 
 def update_db_setting(key_name, value, admin_id=ADMIN_ID):
-    """تحديث إعداد في قاعدة البيانات"""
+    """تحديث إعداد في قاعدة البيانات النشطة."""
+    if key_name == 'operation_mode':
+        raise ValueError("لا تغيّر وضع التشغيل مباشرة؛ استخدم switch_operation_mode لضمان تبديل قاعدة البيانات بأمان.")
     cursor.execute("""UPDATE settings SET value=?, updated_at=?, updated_by=?
                       WHERE key=?""", (value, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), admin_id, key_name))
     conn.commit()
     admin_logger.info(f"Admin {admin_id} updated setting {key_name} to {value}")
-    
-    # تسجيل في سجل الإجراءات
     admin_logger_system.log_action(
         admin_id=admin_id,
         action_type="تحديث إعداد",
         details=f"تحديث {key_name} إلى {value}"
     )
+
+def get_operation_mode():
+    """الوضع الفعلي للاتصال النشط: demo يستخدم قاعدة منفصلة عن real."""
+    return CURRENT_OPERATION_MODE
+
+def _activate_database_mode(mode):
+    global conn, cursor, DATABASE_URL, DB_PATH, BACKUP_DIR, CURRENT_OPERATION_MODE
+    if mode not in MODE_DATABASES:
+        raise RuntimeError(f"Database for mode {mode!r} has not been initialized.")
+    conn, cursor, DATABASE_URL, DB_PATH, BACKUP_DIR = MODE_DATABASES[mode]
+    CURRENT_OPERATION_MODE = mode
+
+MODE_SPECIFIC_SETTING_KEYS = {
+    # بيانات الدفع الحقيقية وحالاتها تبقى مستقلة بين الاختبار والإنتاج.
+    'syriatel_numbers', 'syriatel_status',
+    'sham_address', 'sham_status',
+    'usdt_address', 'usdt_network', 'usdt_status',
+    'binance_address', 'binance_pay_id', 'binance_status',
+    'syriatel_api_enabled', 'sham_api_enabled', 'auto_verify_charges',
+    'ichancy_api_mode',
+}
+
+def _copy_mode_configuration(source_conn, target_conn):
+    """مزامنة إعدادات الواجهة العامة فقط؛ لا تنسخ أرصدة أو بيانات دفع أو اتصالات API."""
+    tables = (
+        'dynamic_buttons', 'moderators', 'notification_settings',
+        'operations_room', 'wheel_prizes',
+    )
+    try:
+        # انسخ الإعدادات العامة مع الإبقاء على بيانات الدفع وحالة API الخاصة بكل وضع.
+        source_cursor = source_conn.cursor()
+        source_cursor.execute("SELECT * FROM settings")
+        setting_columns = [column[0] for column in (source_cursor.description or ())]
+        setting_rows = source_cursor.fetchall()
+        key_index = setting_columns.index('key')
+        mode_specific_keys = tuple(sorted(MODE_SPECIFIC_SETTING_KEYS))
+        placeholders = ','.join('?' for _ in mode_specific_keys)
+        target_conn.execute(
+            f"DELETE FROM settings WHERE key NOT IN ({placeholders})",
+            mode_specific_keys,
+        )
+        column_sql = ','.join(setting_columns)
+        row_placeholders = ','.join('?' for _ in setting_columns)
+        for row in setting_rows:
+            if str(row[key_index]) in MODE_SPECIFIC_SETTING_KEYS:
+                continue
+            target_conn.execute(
+                f"INSERT INTO settings ({column_sql}) VALUES ({row_placeholders})",
+                tuple(row),
+            )
+
+        for table in tables:
+            source_cursor = source_conn.cursor()
+            source_cursor.execute(f"SELECT * FROM {table}")
+            columns = [column[0] for column in (source_cursor.description or ())]
+            rows = source_cursor.fetchall()
+            target_conn.execute(f"DELETE FROM {table}")
+            if columns:
+                column_sql = ','.join(columns)
+                placeholders = ','.join('?' for _ in columns)
+                for row in rows:
+                    target_conn.execute(
+                        f"INSERT INTO {table} ({column_sql}) VALUES ({placeholders})",
+                        tuple(row),
+                    )
+        if is_postgres_connection(target_conn):
+            for table in ('dynamic_buttons', 'operations_room', 'wheel_prizes'):
+                target_conn.execute(
+                    f"SELECT setval(pg_get_serial_sequence('{table}', 'id'), "
+                    f"COALESCE((SELECT MAX(id) FROM {table}), 1), "
+                    f"EXISTS (SELECT 1 FROM {table}))"
+                )
+        target_conn.commit()
+    except Exception:
+        try:
+            target_conn.rollback()
+        except Exception:
+            logger.exception("Failed to roll back mode configuration sync")
+        raise
+
+def switch_operation_mode(target_mode, admin_id=ADMIN_ID):
+    """التبديل الآمن بين قاعدتي بيانات منفصلتين مع مزامنة الإعدادات فقط."""
+    target_mode = str(target_mode or '').strip().lower()
+    if target_mode not in ('demo', 'real'):
+        raise ValueError("وضع التشغيل غير معروف.")
+    current_mode = get_operation_mode()
+    if current_mode == target_mode:
+        return current_mode
+
+    if target_mode == 'real':
+        real_url = os.environ.get('REAL_DATABASE_URL', '').strip()
+        demo_url = os.environ.get('DATABASE_URL', '').strip()
+        if not real_url:
+            raise ValueError(
+                "لم يتم إعداد قاعدة إنتاج مستقلة بعد. أضف REAL_DATABASE_URL في إعدادات Render؛ "
+                "لم يتغير وضع التشغيل."
+            )
+        if _same_database_target(real_url, demo_url):
+            raise ValueError("قاعدة الإنتاج يجب أن تكون مستقلة عن قاعدة الاختبار.")
+        if 'real' not in MODE_DATABASES:
+            try:
+                real_conn, real_cursor = setup_database(real_url)
+                if not is_postgres_connection(real_conn):
+                    real_conn.close()
+                    raise ValueError("REAL_DATABASE_URL يجب أن يشير إلى PostgreSQL دائم.")
+                MODE_DATABASES['real'] = (
+                    real_conn, real_cursor, DATABASE_URL, DB_PATH, BACKUP_DIR
+                )
+            finally:
+                _activate_database_mode(current_mode)
+        source = MODE_DATABASES[current_mode][0]
+        target = MODE_DATABASES['real'][0]
+    else:
+        source = MODE_DATABASES[current_mode][0]
+        target = MODE_DATABASES['demo'][0]
+
+    with db_lock:
+        _copy_mode_configuration(source, target)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            target.execute(
+                "UPDATE settings SET value=?, updated_at=?, updated_by=? WHERE key='operation_mode'",
+                (target_mode, timestamp, admin_id),
+            )
+            target.commit()
+            source.execute(
+                "UPDATE settings SET value=?, updated_at=?, updated_by=? WHERE key='operation_mode'",
+                (target_mode, timestamp, admin_id),
+            )
+            source.commit()
+        except Exception:
+            for database in (source, target):
+                try:
+                    database.rollback()
+                    database.execute(
+                        "UPDATE settings SET value=?, updated_at=?, updated_by=? WHERE key='operation_mode'",
+                        (current_mode, timestamp, admin_id),
+                    )
+                    database.commit()
+                except Exception:
+                    logger.exception("Failed to restore previous operation mode after switch error")
+            raise
+
+    _activate_database_mode(target_mode)
+    admin_logger_system.log_action(
+        admin_id=admin_id,
+        action_type="تغيير وضع التشغيل",
+        details=f"تم الانتقال إلى الوضع {'الحقيقي' if target_mode == 'real' else 'التجريبي'}",
+    )
+    logger.warning("Operation mode switched to %s by admin %s", target_mode, admin_id)
+    return target_mode
 
 def check_subscription(uid):
     """التحقق من اشتراك المستخدم في القناة"""
@@ -1960,11 +2165,10 @@ def wheel_keyboard(uid):
 
 def wheel_admin_keyboard():
     kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(types.InlineKeyboardButton('🟢/🔴 تشغيل أو إيقاف', callback_data='wheel_toggle'))
     kb.add(types.InlineKeyboardButton('➕ إضافة جائزة', callback_data='wheel_add'))
     kb.add(types.InlineKeyboardButton('📋 إدارة الجوائز', callback_data='wheel_prizes'))
     kb.add(types.InlineKeyboardButton('💰 تعديل شرط الشحن', callback_data='wheel_threshold'))
-    kb.add(types.InlineKeyboardButton('🔙 رجوع', callback_data='back_to_full_admin'))
+    kb.add(types.InlineKeyboardButton('🔙 رجوع إلى مركز التحكم', callback_data='admin_control_center'))
     return kb
 
 def wheel_status_text():
@@ -2801,10 +3005,15 @@ class ActionSystem:
                 return
             
             text = "📬 **التذاكر المفتوحة:**\n\n"
+            markup = types.InlineKeyboardMarkup(row_width=1)
             for t in tickets:
                 text += f"🔹 #{t[0]} - مستخدم {t[1]}\n📝 {t[2][:50]}...\n📅 {t[4]}\n\n"
+                markup.add(types.InlineKeyboardButton(
+                    f"✏️ الرد على التذكرة #{t[0]}",
+                    callback_data=f"reply_ticket_{t[0]}_{t[1]}",
+                ))
             
-            bot.send_message(chat_id, text, parse_mode="Markdown")
+            bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
         else:
             # للمستخدم العادي - عرض تذاكره
             cursor.execute("""SELECT ticket_id, message, status, created_at 
@@ -2823,6 +3032,48 @@ class ActionSystem:
             
             bot.send_message(chat_id, text, parse_mode="Markdown")
     
+    @staticmethod
+    def process_ticket_reply(message, ticket_id, target_user_id):
+        """حفظ رد المشرف وإرساله لصاحب تذكرة الدعم بعد إعادة التحقق من الصلاحيات والحالة."""
+        uid = message.from_user.id
+        if uid != ADMIN_ID and not check_permission(uid, 'can_reply_tickets'):
+            bot.send_message(message.chat.id, "❌ لا تملك صلاحية الرد على تذاكر الدعم.")
+            return
+
+        reply_text = (getattr(message, 'text', None) or '').strip()
+        if not reply_text:
+            bot.send_message(message.chat.id, "❌ أرسل الرد كنص، ولم يتم تغيير حالة التذكرة.")
+            return
+
+        cursor.execute("SELECT user_id, status FROM tickets WHERE ticket_id=?", (ticket_id,))
+        ticket = cursor.fetchone()
+        if not ticket or int(ticket[0]) != int(target_user_id) or ticket[1] != 'open':
+            bot.send_message(message.chat.id, "❌ التذكرة غير موجودة أو لم تعد مفتوحة؛ لم يُرسل الرد.")
+            return
+
+        sent_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        sender_type = 'admin' if uid == ADMIN_ID else 'moderator'
+        cursor.execute(
+            "INSERT INTO ticket_conversations (ticket_id, sender_id, sender_type, message, file_id, sent_at) VALUES (?,?,?,?,?,?)",
+            (ticket_id, uid, sender_type, reply_text, None, sent_at),
+        )
+        conn.commit()
+
+        try:
+            bot.send_message(
+                target_user_id,
+                f"💬 رد فريق الدعم على التذكرة #{ticket_id}:\n\n{reply_text}",
+            )
+        except Exception:
+            logger.exception("Failed to deliver support ticket reply ticket_id=%s", ticket_id)
+            bot.send_message(
+                message.chat.id,
+                "⚠️ تم حفظ الرد في سجل التذكرة، لكن تعذّر إرساله للمستخدم. تحقق من سجلات التشغيل.",
+            )
+            return
+
+        bot.send_message(message.chat.id, f"✅ تم إرسال الرد على التذكرة #{ticket_id} وحفظه في السجل.")
+
     @staticmethod
     def show_terms(uid, chat_id):
         """عرض الشروط والأحكام"""
@@ -2847,7 +3098,7 @@ class ActionSystem:
     def show_admin_panel(uid, chat_id):
         """عرض لوحة الإدارة الرئيسية"""
         if uid == ADMIN_ID:
-            bot.send_message(chat_id, "🔐 **لوحة تحكم المالك**", reply_markup=get_admin_main_keyboard(is_owner=True, uid=uid), parse_mode="Markdown")
+            ActionSystem.show_full_admin_menu(uid, chat_id)
         elif is_moderator(uid):
             bot.send_message(chat_id, "🔐 **لوحة تحكم المشرف**", reply_markup=get_admin_main_keyboard(is_owner=False, uid=uid), parse_mode="Markdown")
         else:
@@ -3316,15 +3567,15 @@ def get_reply_keyboard_for_ticket(ticket_id, user_id):
     return markup
 
 def get_search_keyboard():
-    """لوحة مفاتيح البحث المتقدم"""
+    """لوحة مفاتيح البحث المتقدم؛ تستخدم معرفات الأزرار التي يعالجها الراوتر فعلياً."""
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("📅 بحث بالتاريخ", callback_data="search_by_date"),
-        types.InlineKeyboardButton("👤 بحث بالمشرف", callback_data="search_by_admin"),
-        types.InlineKeyboardButton("🔍 بحث بالنوع", callback_data="search_by_type"),
-        types.InlineKeyboardButton("💰 بحث بالمبلغ", callback_data="search_by_amount"),
-        types.InlineKeyboardButton("👥 بحث بالمستخدم", callback_data="search_by_user"),
-        types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_logs")
+        types.InlineKeyboardButton("📅 بحث بالتاريخ", callback_data="search_logs_date"),
+        types.InlineKeyboardButton("👤 بحث بالمشرف", callback_data="search_logs_admin"),
+        types.InlineKeyboardButton("🔍 بحث بالنوع", callback_data="search_logs_type"),
+        types.InlineKeyboardButton("💰 بحث بالمبلغ", callback_data="search_logs_amount"),
+        types.InlineKeyboardButton("👥 بحث بالمستخدم", callback_data="search_logs_user"),
+        types.InlineKeyboardButton("🔙 رجوع", callback_data="admin_logs")
     )
     return markup
 
@@ -3501,15 +3752,8 @@ def get_admin_main_keyboard(is_owner=False, uid=None):
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
 
     if is_owner:
-        markup.add('🎫 إنشاء كود هدية', '👥 إدارة المستخدمين')
-        markup.add('💰 تغيير أكواد الدفع', '📊 سجل المعاملات')
-        markup.add('📨 رسالة جماعية', '📧 رسالة فردية')
-        markup.add('🔄 استرجاع حساب', '🔧 حالة البوت')
-        markup.add('📋 قاعدة البيانات', '💬 تذاكر الدعم')
-        markup.add('👥 المشرفين', '📊 نظام الإحالات')
-        markup.add('📝 إدارة الأزرار', '🔔 إعدادات الإشعارات')
-        markup.add('🤖 المساعد الذكي', '📋 سجل الإجراءات')
-        markup.add('⚙️ إعدادات متقدمة')
+        # المالك يدخل مباشرة إلى لوحة الإدارة المصنفة عبر زر «إدارة البوت».
+        # لا نعرض لوحة ثانية مليئة بأزرار مكررة داخل لوحة الإدارة.
         markup.add('🔙 العودة للقائمة الرئيسية')
     else:
         # عرض الأزرار حسب صلاحيات المشرف
@@ -3535,27 +3779,140 @@ def get_admin_main_keyboard(is_owner=False, uid=None):
     return markup
 
 def get_full_admin_keyboard():
-    """لوحة التحكم الكامل (للمالك فقط)"""
+    """لوحة الإدارة الرئيسية المصنفة؛ كل وظيفة ضمن قسم واضح."""
     keyboard = types.InlineKeyboardMarkup(row_width=2)
-    
     keyboard.add(
-        types.InlineKeyboardButton("📝 إدارة الأزرار", callback_data="admin_buttons"),
-        types.InlineKeyboardButton("💳 إعدادات الدفع", callback_data="admin_payment"),
-        types.InlineKeyboardButton("👥 إدارة المستخدمين", callback_data="admin_users"),
-        types.InlineKeyboardButton("📊 الإحصائيات", callback_data="admin_stats"),
-        types.InlineKeyboardButton("⚙️ الإعدادات العامة", callback_data="admin_settings"),
-        types.InlineKeyboardButton("📨 رسائل جماعية", callback_data="admin_broadcast"),
-        types.InlineKeyboardButton("🔗 ربط API", callback_data="admin_api_connect"),
-        types.InlineKeyboardButton("👥 صلاحيات المشرفين", callback_data="admin_moderators"),
-        types.InlineKeyboardButton("💾 النسخ الاحتياطي", callback_data="admin_backup"),
-        types.InlineKeyboardButton("🔔 إعدادات الإشعارات", callback_data="admin_notifications"),
-        types.InlineKeyboardButton("📋 سجل الإجراءات", callback_data="admin_logs"),
-        types.InlineKeyboardButton("🎁 نظام الهدايا", callback_data="admin_gifts"),
-        types.InlineKeyboardButton("🎡 عجلة الحظ", callback_data="wheel_admin"),
-        types.InlineKeyboardButton("📊 ادارة الإحالات", callback_data="admin_referrals"),
-        types.InlineKeyboardButton("🏢 غرفة العمليات", callback_data="admin_operations_room"),
-        types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_admin")
+        types.InlineKeyboardButton("👥 المستخدمون والمشرفون", callback_data="admin_cat_users"),
+        types.InlineKeyboardButton("💰 المال والعمليات", callback_data="admin_cat_finance"),
+        types.InlineKeyboardButton("🧩 الأزرار والرسائل", callback_data="admin_cat_content"),
+        types.InlineKeyboardButton("📊 التقارير والسجلات", callback_data="admin_cat_reports"),
+        types.InlineKeyboardButton("⚙️ النظام والنسخ الاحتياطي", callback_data="admin_cat_system"),
+        types.InlineKeyboardButton("🧰 التشغيل والصيانة والخدمات", callback_data="admin_cat_control"),
+        types.InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back_to_admin")
     )
+    return keyboard
+
+
+def get_operations_control_keyboard():
+    """مركز واحد للوضع والصيانة وتشغيل/إيقاف الخدمات وتعديل إعداداتها."""
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    mode = get_operation_mode()
+    bot_status = get_db_setting('bot_status') or 'active'
+    maintenance = bot_status != 'active'
+    keyboard.add(types.InlineKeyboardButton(
+        "🧪 الوضع الحالي: تجريبي" if mode == 'demo' else "🚀 الوضع الحالي: حقيقي",
+        callback_data="mode_info",
+    ))
+    keyboard.add(types.InlineKeyboardButton(
+        "🚀 طلب الانتقال للوضع الحقيقي" if mode == 'demo' else "🧪 طلب العودة للوضع التجريبي",
+        callback_data="request_real_mode" if mode == 'demo' else "request_demo_mode",
+    ))
+    keyboard.add(types.InlineKeyboardButton(
+        "🛑 إيقاف الخدمة (صيانة)" if not maintenance else "🟢 إنهاء الصيانة وتشغيل البوت",
+        callback_data="control_toggle_bot",
+    ))
+    service_rows = (
+        ("سيرياتل كاش", "syriatel_status", "toggle_syriatel", "edit_syriatel"),
+        ("شام كاش", "sham_status", "toggle_sham", "edit_sham"),
+        ("USDT", "usdt_status", "toggle_usdt", "setup_usdt"),
+        ("Binance", "binance_status", "toggle_binance", "setup_binance"),
+    )
+    for label, setting_key, callback, edit_callback in service_rows:
+        current = get_db_setting(setting_key) or ('active' if setting_key == 'syriatel_status' else 'متوقف')
+        active = current == 'active'
+        keyboard.add(
+            types.InlineKeyboardButton(
+                f"{'🟢' if active else '🔴'} {label}: {'إيقاف' if active else 'تشغيل'}",
+                callback_data=callback,
+            ),
+            types.InlineKeyboardButton(f"✏️ تعديل {label}", callback_data=edit_callback),
+        )
+    wheel_active = wheel_is_enabled()
+    keyboard.add(
+        types.InlineKeyboardButton(
+            f"{'🟢' if wheel_active else '🔴'} عجلة الحظ: {'إيقاف' if wheel_active else 'تشغيل'}",
+            callback_data="control_toggle_wheel",
+        ),
+        types.InlineKeyboardButton("🎡 إعدادات وجوائز العجلة", callback_data="wheel_admin"),
+    )
+    keyboard.add(
+        types.InlineKeyboardButton("🔌 إدارة اتصالات API", callback_data="admin_api_connect"),
+        types.InlineKeyboardButton("💳 حدود وعمولات الدفع", callback_data="admin_payment"),
+    )
+    keyboard.add(types.InlineKeyboardButton("↩️ رجوع إلى لوحة الإدارة", callback_data="back_to_full_admin"))
+    return keyboard
+
+def get_operations_control_text():
+    mode = get_operation_mode()
+    bot_status = get_db_setting('bot_status') or 'active'
+    lines = [
+        "🧰 **مركز التشغيل والصيانة والخدمات**",
+        "",
+        f"وضع التشغيل: {'🧪 تجريبي — قاعدة بيانات اختبار منفصلة' if mode == 'demo' else '🚀 حقيقي — قاعدة بيانات الإنتاج'}",
+        f"حالة البوت: {'🛑 صيانة' if bot_status != 'active' else '🟢 يعمل'}",
+        "",
+        "**حالة الخدمات:**",
+    ]
+    for label, key in (
+        ('سيرياتل كاش', 'syriatel_status'),
+        ('شام كاش', 'sham_status'),
+        ('USDT', 'usdt_status'),
+        ('Binance', 'binance_status'),
+    ):
+        value = get_db_setting(key) or ('active' if key == 'syriatel_status' else 'متوقف')
+        lines.append(f"• {label}: {'🟢 تعمل' if value == 'active' else '🔴 متوقفة'}")
+    lines.append(f"• عجلة الحظ: {'🟢 تعمل' if wheel_is_enabled() else '🔴 متوقفة'}")
+    lines.extend([
+        "",
+        "إعدادات بيانات الدفع واتصالات API منفصلة بين الاختبار والإنتاج ولا تُنسخ عند التبديل.",
+        "ملاحظة: إعدادات API لا تُفعّل تكاملاً حقيقياً وحدها. أي API يبقى معطلاً حتى يكتمل موصله واختباره.",
+    ])
+    return "\n".join(lines)
+
+def render_operations_control(chat_id, message_id=None):
+    text = get_operations_control_text()
+    keyboard = get_operations_control_keyboard()
+    if message_id is not None:
+        try:
+            bot.edit_message_text(text, chat_id, message_id, reply_markup=keyboard, parse_mode="Markdown")
+            return
+        except Exception:
+            logger.debug("Could not edit control panel message; sending a fresh panel.")
+    bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="Markdown")
+
+def get_admin_category_keyboard(category):
+    """إنشاء قوائم فرعية قصيرة ومصنفة دون تكرار لوحة الإدارة داخلها."""
+    if category == 'control':
+        return get_operations_control_keyboard()
+    categories = {
+        "users": [
+            ("👥 إدارة المستخدمين", "admin_users"),
+            ("🛡️ المشرفون والصلاحيات", "admin_moderators"),
+        ],
+        "finance": [
+            ("🏢 غرفة العمليات", "admin_operations_room"),
+            ("👥 نظام الإحالات", "admin_referrals"),
+            ("🎁 نظام الهدايا", "admin_gifts"),
+        ],
+        "services": [],
+        "content": [
+            ("📝 إدارة الأزرار", "admin_buttons"),
+            ("📨 الرسائل الجماعية", "admin_broadcast"),
+        ],
+        "reports": [
+            ("📊 الإحصائيات", "admin_stats"),
+            ("📋 سجل الإجراءات", "admin_logs"),
+        ],
+        "system": [
+            ("⚙️ رسالة الترحيب والشروط والإعدادات العامة", "admin_settings"),
+            ("🔔 إعدادات الإشعارات", "admin_notifications"),
+            ("💾 النسخ الاحتياطي وقاعدة البيانات", "admin_backup"),
+        ],
+    }
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    for label, callback_data in categories.get(category, []):
+        keyboard.add(types.InlineKeyboardButton(label, callback_data=callback_data))
+    keyboard.add(types.InlineKeyboardButton("↩️ رجوع إلى لوحة الإدارة", callback_data="back_to_full_admin"))
     return keyboard
 
 def get_buttons_management_keyboard():
@@ -3629,34 +3986,13 @@ def get_available_actions_keyboard(button_text):
     return keyboard
 
 def get_payment_settings_keyboard():
-    """لوحة إعدادات الدفع"""
+    """لوحة الحدود والعمولات فقط؛ تشغيل الخدمات وتعديل بياناتها في مركز التحكم."""
     keyboard = types.InlineKeyboardMarkup(row_width=2)
-    
-    # حالة الخدمات
-    syriatel_status = get_db_setting('syriatel_status') or 'active'
-    sham_status = get_db_setting('sham_status') or 'متوقف'
-    usdt_status = get_db_setting('usdt_status') or 'متوقف'
-    binance_status = get_db_setting('binance_status') or 'متوقف'
-    
-    sy_icon = "🟢" if syriatel_status == 'active' else "🔴"
-    sh_icon = "🟢" if sham_status == 'active' else "🔴"
-    usdt_icon = "🟢" if usdt_status == 'active' else "🔴"
-    bin_icon = "🟢" if binance_status == 'active' else "🔴"
-    
     keyboard.add(
-        types.InlineKeyboardButton(f"{sy_icon} تعديل سيرياتل", callback_data="edit_syriatel"),
-        types.InlineKeyboardButton(f"{sh_icon} تعديل شام", callback_data="edit_sham"),
-        types.InlineKeyboardButton(f"{sy_icon} فتح/إغلاق سيرياتل", callback_data="toggle_syriatel"),
-        types.InlineKeyboardButton(f"{sh_icon} فتح/إغلاق شام", callback_data="toggle_sham"),
-        types.InlineKeyboardButton(f"{usdt_icon} إعداد USDT", callback_data="setup_usdt"),
-        types.InlineKeyboardButton(f"{bin_icon} إعداد Binance", callback_data="setup_binance"),
-        types.InlineKeyboardButton(f"{usdt_icon} فتح/إغلاق USDT", callback_data="toggle_usdt"),
-        types.InlineKeyboardButton(f"{bin_icon} فتح/إغلاق Binance", callback_data="toggle_binance"),
-        types.InlineKeyboardButton("💰 تعديل الحدود", callback_data="edit_limits"),
+        types.InlineKeyboardButton("💰 تعديل حدود الشحن والسحب", callback_data="edit_limits"),
         types.InlineKeyboardButton("💸 تعديل العمولة", callback_data="edit_commission"),
-        types.InlineKeyboardButton("🔌 تفعيل API", callback_data="toggle_api"),
-        types.InlineKeyboardButton("📊 حالة الخدمات", callback_data="payment_status"),
-        types.InlineKeyboardButton("🔙 رجوع", callback_data="back_to_full_admin")
+        types.InlineKeyboardButton("📊 عرض حالة الخدمات", callback_data="payment_status"),
+        types.InlineKeyboardButton("🔙 رجوع إلى مركز التحكم", callback_data="admin_control_center"),
     )
     return keyboard
 
@@ -3694,7 +4030,6 @@ def get_bot_settings_keyboard():
     """لوحة إعدادات البوت"""
     keyboard = types.InlineKeyboardMarkup(row_width=2)
     keyboard.add(
-        types.InlineKeyboardButton("🟢 تفعيل/تعطيل", callback_data="toggle_bot"),
         types.InlineKeyboardButton("📝 تعديل رسالة الترحيب", callback_data="edit_welcome"),
         types.InlineKeyboardButton("📜 تعديل الشروط", callback_data="edit_terms"),
         types.InlineKeyboardButton("👥 تعديل نسبة الإحالات", callback_data="edit_referral"),
@@ -4160,53 +4495,188 @@ def process_create_submenu_step2(message, parent_button):
 
 # ===== دوال معالجة الإعدادات =====
 
-def process_update_syriatel(message):
-    """تحديث أرقام سيرياتل"""
+def _save_service_setting_from_message(message, setting_key, label, allow_empty=False):
+    """معالجة آمنة لتعديل بيانات الخدمة؛ لا تسمح لرسائل غير المالك بتغيير الإعدادات."""
     uid = message.from_user.id
-    numbers = message.text
-    
-    update_db_setting('syriatel_numbers', numbers, uid)
-    bot.send_message(message.chat.id, f"✅ **تم تحديث أرقام سيرياتل إلى:**\n`{numbers}`", parse_mode="Markdown")
+    if uid != ADMIN_ID:
+        bot.send_message(message.chat.id, "❌ تعديل إعدادات الخدمات للمالك فقط.")
+        return
+    value = (getattr(message, 'text', None) or '').strip()
+    if not value and not allow_empty:
+        bot.send_message(message.chat.id, "❌ القيمة لا يمكن أن تكون فارغة. لم يتم تغيير الإعداد.")
+        render_operations_control(message.chat.id)
+        return
+    update_db_setting(setting_key, value, uid)
+    bot.send_message(message.chat.id, f"✅ تم تحديث إعداد {label}.")
+    render_operations_control(message.chat.id)
+
+def process_update_syriatel(message):
+    """تحديث أرقام سيرياتل."""
+    _save_service_setting_from_message(message, 'syriatel_numbers', 'سيرياتل')
 
 def process_update_sham(message):
-    """تحديث عنوان شام"""
+    """تحديث عنوان شام."""
+    _save_service_setting_from_message(message, 'sham_address', 'شام كاش')
+
+def process_update_usdt_address(message):
+    _save_service_setting_from_message(message, 'usdt_address', 'عنوان USDT')
+
+def process_update_usdt_network(message):
+    _save_service_setting_from_message(message, 'usdt_network', 'شبكة USDT')
+
+def process_update_binance_address(message):
+    _save_service_setting_from_message(message, 'binance_address', 'عنوان Binance')
+
+def process_update_binance_pay_id(message):
+    _save_service_setting_from_message(message, 'binance_pay_id', 'معرّف Binance Pay')
+
+def process_demo_charge_amount(message, method_key):
+    """محاكاة طلب شحن في قاعدة الاختبار دون عرض بيانات دفع أو إرسال أموال."""
     uid = message.from_user.id
-    address = message.text
-    
-    update_db_setting('sham_address', address, uid)
-    bot.send_message(message.chat.id, f"✅ **تم تحديث عنوان شام إلى:**\n`{address}`", parse_mode="Markdown")
+    try:
+        amount = float((message.text or '').strip())
+        minimum = float(get_db_setting('min_charge') or 0)
+        if not math.isfinite(amount) or amount <= 0 or amount < minimum:
+            raise ValueError
+    except (TypeError, ValueError):
+        bot.send_message(message.chat.id, "❌ أدخل مبلغاً تجريبياً موجباً لا يقل عن الحد الأدنى.")
+        return
+    if get_operation_mode() != 'demo':
+        bot.send_message(message.chat.id, "⚠️ تغيّر وضع التشغيل. أعد فتح طلب الشحن من القائمة.")
+        return
+    method_name = {'syria': 'سيرياتل كاش', 'sham': 'شام كاش', 'usdt': 'USDT', 'binance': 'Binance'}.get(method_key, method_key)
+    receipt = f"DEMO-{secrets.token_hex(6).upper()}"
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute(
+        "INSERT INTO pending_charges(user_id, method, receipt_number, amount, status, created_at) VALUES(?,?,?,?,?,?)",
+        (uid, f"demo_{method_key}", receipt, amount, 'pending', created_at),
+    )
+    charge_id = cursor.lastrowid
+    conn.commit()
+    bot.send_message(
+        message.chat.id,
+        f"🧪 **تم إنشاء طلب شحن تجريبي #{charge_id}**\n"
+        f"الوسيلة: {method_name}\nالمبلغ: {amount:,.2f}\n"
+        "لم نعرض أي عنوان دفع ولم يتم تحويل أو استقبال أي أموال حقيقية.",
+        parse_mode="Markdown",
+    )
+    try:
+        bot.send_message(
+            ADMIN_ID,
+            f"🧪 طلب شحن تجريبي #{charge_id}\nالمستخدم: {uid}\nالوسيلة: {method_name}\nالمبلغ: {amount:,.2f}\nالإيصال التجريبي: {receipt}",
+        )
+    except Exception:
+        logger.exception("Could not notify owner about demo charge request")
+
+def process_demo_withdraw_amount(message, method_key):
+    """بدء طلب سحب تجريبي من رصيد قاعدة الاختبار فقط."""
+    uid = message.from_user.id
+    try:
+        amount = float((message.text or '').strip())
+        if not math.isfinite(amount) or amount <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        bot.send_message(message.chat.id, "❌ أدخل مبلغ سحب تجريبي موجباً.")
+        return
+    if get_operation_mode() != 'demo':
+        bot.send_message(message.chat.id, "⚠️ تغيّر وضع التشغيل. أعد فتح طلب السحب من القائمة.")
+        return
+    row = cursor.execute("SELECT balance FROM users WHERE user_id=? AND deleted=0", (uid,)).fetchone()
+    if not row or float(row[0] or 0) < amount:
+        bot.send_message(message.chat.id, "❌ رصيد الاختبار غير كافٍ. أضف رصيداً تجريبياً أولاً ثم أعد المحاولة.")
+        return
+    method_name = {'syria': 'سيرياتل كاش', 'sham': 'شام كاش', 'usdt': 'USDT', 'binance': 'Binance'}.get(method_key, method_key)
+    msg = bot.send_message(
+        message.chat.id,
+        f"🧪 أرسل بيانات حساب اختبارية فقط لطلب سحب {method_name}. لا ترسل بيانات حقيقية.",
+    )
+    bot.register_next_step_handler(msg, process_demo_withdraw_account, method_key, amount)
+
+def process_demo_withdraw_account(message, method_key, amount):
+    """حفظ طلب سحب تجريبي دون تحويل مالي حقيقي."""
+    uid = message.from_user.id
+    if get_operation_mode() != 'demo':
+        bot.send_message(message.chat.id, "⚠️ تغيّر وضع التشغيل. لم يتم إنشاء طلب السحب.")
+        return
+    account = (getattr(message, 'text', None) or '').strip()
+    if not account or account == '🔙 إلغاء':
+        bot.send_message(message.chat.id, "تم إلغاء طلب السحب التجريبي.")
+        return
+    row = cursor.execute("SELECT balance FROM users WHERE user_id=? AND deleted=0", (uid,)).fetchone()
+    if not row or float(row[0] or 0) < amount:
+        bot.send_message(message.chat.id, "❌ تغيّر رصيد الاختبار ولم يتم إنشاء الطلب.")
+        return
+    commission_percent = float(get_db_setting('withdraw_commission') or 0)
+    commission = round(amount * commission_percent / 100, 2)
+    net_amount = round(amount - commission, 2)
+    method_name = {'syria': 'سيرياتل كاش', 'sham': 'شام كاش', 'usdt': 'USDT', 'binance': 'Binance'}.get(method_key, method_key)
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute(
+        "INSERT INTO pending_withdraws(user_id, method, account, amount, commission, net_amount, currency, status, created_at, reserved) VALUES(?,?,?,?,?,?,?,?,?,0)",
+        (uid, f"demo_{method_key}", account[:250], amount, commission, net_amount, 'TEST', 'pending', created_at),
+    )
+    withdraw_id = cursor.lastrowid
+    conn.commit()
+    bot.send_message(
+        message.chat.id,
+        f"🧪 **تم إنشاء طلب سحب تجريبي #{withdraw_id}**\n"
+        f"المبلغ: {amount:,.2f}\nالعمولة التجريبية: {commission:,.2f}\nالصافي التجريبي: {net_amount:,.2f}\n"
+        "لم يتم تنفيذ أي تحويل حقيقي.",
+        parse_mode="Markdown",
+    )
+    try:
+        bot.send_message(
+            ADMIN_ID,
+            f"🧪 طلب سحب تجريبي #{withdraw_id}\nالمستخدم: {uid}\nالوسيلة: {method_name}\nالمبلغ: {amount:,.2f}\nبيانات الاختبار: {account[:120]}",
+        )
+    except Exception:
+        logger.exception("Could not notify owner about demo withdrawal request")
 
 def process_update_limits(message):
-    """تحديث الحدود"""
+    """تحديث حدود الدفع بأرقام صحيحة وتحقق من ترتيب الحدود."""
     uid = message.from_user.id
-    
+    if uid != ADMIN_ID:
+        bot.send_message(message.chat.id, "❌ تعديل حدود الدفع للمالك فقط.")
+        return
     try:
-        parts = message.text.split(',')
-        if len(parts) >= 3:
-            min_charge = parts[0].strip()
-            min_withdraw = parts[1].strip()
-            max_withdraw = parts[2].strip()
-            
-            update_db_setting('min_charge', min_charge, uid)
-            update_db_setting('min_withdraw_syria', min_withdraw, uid)
-            update_db_setting('max_withdraw_syria', max_withdraw, uid)
-            
-            bot.send_message(message.chat.id, f"✅ **تم تحديث الحدود:**\n📉 الحد الأدنى للشحن: {min_charge}\n📉 الحد الأدنى للسحب: {min_withdraw}\n📈 الحد الأقصى للسحب: {max_withdraw}", parse_mode="Markdown")
-        else:
-            bot.send_message(message.chat.id, "❌ **الصيغة الصحيحة: الحد الأدنى للشحن,الحد الأدنى للسحب,الحد الأقصى للسحب**", parse_mode="Markdown")
-    except:
-        bot.send_message(message.chat.id, "❌ **خطأ في الصيغة**", parse_mode="Markdown")
+        parts = (message.text or '').split(',')
+        if len(parts) != 3:
+            raise ValueError
+        min_charge, min_withdraw, max_withdraw = [float(part.strip()) for part in parts]
+        if not all(math.isfinite(value) and value > 0 for value in (min_charge, min_withdraw, max_withdraw)):
+            raise ValueError
+        if min_withdraw > max_withdraw:
+            bot.send_message(message.chat.id, "❌ الحد الأدنى للسحب يجب ألا يتجاوز الحد الأقصى.")
+            return
+        update_db_setting('min_charge', str(min_charge), uid)
+        update_db_setting('min_withdraw_syria', str(min_withdraw), uid)
+        update_db_setting('max_withdraw_syria', str(max_withdraw), uid)
+        bot.send_message(
+            message.chat.id,
+            f"✅ تم تحديث الحدود:\n• أقل شحن: {min_charge:,.0f}\n• أقل سحب: {min_withdraw:,.0f}\n• أعلى سحب: {max_withdraw:,.0f}",
+        )
+        render_operations_control(message.chat.id)
+    except (TypeError, ValueError):
+        bot.send_message(
+            message.chat.id,
+            "❌ أرسل ثلاثة أرقام موجبة بهذا الشكل: أقل شحن,أقل سحب,أعلى سحب",
+        )
 
 def process_update_commission(message):
-    """تحديث نسبة العمولة"""
+    """تحديث نسبة العمولة بقيمة آمنة بين صفر و100."""
     uid = message.from_user.id
-    
+    if uid != ADMIN_ID:
+        bot.send_message(message.chat.id, "❌ تعديل العمولة للمالك فقط.")
+        return
     try:
         commission = float(message.text)
+        if not math.isfinite(commission) or not 0 <= commission <= 100:
+            raise ValueError
         update_db_setting('withdraw_commission', str(commission), uid)
-        bot.send_message(message.chat.id, f"✅ **تم تحديث نسبة العمولة إلى:** {commission}%", parse_mode="Markdown")
-    except ValueError:
-        bot.send_message(message.chat.id, "❌ **الرجاء إدخال رقم صحيح**", parse_mode="Markdown")
+        bot.send_message(message.chat.id, f"✅ تم تحديث نسبة العمولة إلى: {commission:g}%")
+        render_operations_control(message.chat.id)
+    except (TypeError, ValueError):
+        bot.send_message(message.chat.id, "❌ أدخل نسبة عمولة بين 0 و100.")
 
 def process_edit_welcome(message):
     """تعديل رسالة الترحيب"""
@@ -4320,7 +4790,7 @@ def process_charge_user_type(message, target):
     charge_type = message.text
     
     if charge_type == '🔙 إلغاء':
-        bot.send_message(message.chat.id, "✅ **تم الإلغاء**", reply_markup=get_admin_main_keyboard(uid == ADMIN_ID, uid=uid))
+        bot.send_message(message.chat.id, "✅ **تم الإلغاء**", reply_markup=(get_main_keyboard(uid) if uid == ADMIN_ID else get_admin_main_keyboard(is_owner=False, uid=uid)))
         return
     
     msg = bot.send_message(message.chat.id, f"💰 **أدخل المبلغ لشحنه للمستخدم** `{target}`**:**", parse_mode="Markdown")
@@ -5185,8 +5655,60 @@ def handle_all_callbacks(call):
     """معالج شامل لجميع الكول باكات - نسخة مصححة"""
     uid = call.from_user.id
     data = call.data
+    if not check_bot_status() and uid != ADMIN_ID and not is_moderator(uid):
+        maintenance_message = get_db_setting('maintenance_message') or "🔧 البوت في حالة صيانة حالياً. سنعود قريباً!"
+        safe_answer_callback(call.id, maintenance_message[:180], show_alert=True)
+        return
+    owner_control_callbacks = {
+        'admin_cat_control', 'admin_cat_services', 'admin_control_center', 'mode_info',
+        'request_real_mode', 'request_demo_mode', 'confirm_real_mode',
+        'confirm_demo_mode', 'cancel_mode_switch', 'control_toggle_bot',
+        'control_toggle_wheel', 'toggle_bot', 'wheel_toggle', 'toggle_syriatel', 'toggle_sham',
+        'toggle_usdt', 'toggle_binance', 'setup_usdt', 'setup_binance',
+        'edit_syriatel', 'edit_sham', 'edit_usdt_address', 'edit_usdt_network',
+        'edit_binance_address', 'edit_binance_pay_id', 'edit_welcome', 'edit_terms', 'edit_referral', 'admin_payment',
+        'edit_limits', 'edit_commission', 'payment_status', 'admin_api_connect',
+        'api_status', 'toggle_api', 'toggle_auto_verify',
+    }
+    if (uid != ADMIN_ID and (data in owner_control_callbacks or data.startswith('api_'))):
+        safe_answer_callback(call.id, "❌ هذا الإجراء للمالك فقط.", show_alert=True)
+        return
     # نؤكد الضغط بأمان أولاً؛ الفشل هنا لا يلغي تنفيذ الزر.
     safe_answer_callback(call.id)
+
+    # في الوضع التجريبي لا نعرض عناوين دفع حقيقية ولا ننفذ عمليات مالية خارجية.
+    demo_payment_methods = {
+        'charge_syria': ('charge', 'syria', 'syriatel_status'),
+        'charge_sham': ('charge', 'sham', 'sham_status'),
+        'charge_usdt': ('charge', 'usdt', 'usdt_status'),
+        'charge_binance': ('charge', 'binance', 'binance_status'),
+        'withdraw_syria': ('withdraw', 'syria', 'syriatel_status'),
+        'withdraw_sham': ('withdraw', 'sham', 'sham_status'),
+        'withdraw_usdt': ('withdraw', 'usdt', 'usdt_status'),
+        'withdraw_binance': ('withdraw', 'binance', 'binance_status'),
+    }
+    if get_operation_mode() == 'demo' and data in demo_payment_methods:
+        action, method_key, setting_key = demo_payment_methods[data]
+        service_status = get_db_setting(setting_key) or ('active' if setting_key == 'syriatel_status' else 'متوقف')
+        if service_status != 'active':
+            bot.send_message(call.message.chat.id, "🔴 هذه الخدمة متوقفة في وضع الاختبار حالياً.")
+            return
+        method_name = {'syria': 'سيرياتل كاش', 'sham': 'شام كاش', 'usdt': 'USDT', 'binance': 'Binance'}.get(method_key, method_key)
+        if action == 'charge':
+            prompt = bot.send_message(
+                call.message.chat.id,
+                f"🧪 **طلب شحن تجريبي عبر {method_name}**\nأدخل مبلغ الاختبار فقط. لن نعرض عنوان دفع حقيقياً ولن يتم تحويل أموال.",
+                parse_mode="Markdown",
+            )
+            bot.register_next_step_handler(prompt, process_demo_charge_amount, method_key)
+        else:
+            prompt = bot.send_message(
+                call.message.chat.id,
+                f"🧪 **طلب سحب تجريبي عبر {method_name}**\nأدخل مبلغ الاختبار فقط. لن يتم تنفيذ أي تحويل حقيقي.",
+                parse_mode="Markdown",
+            )
+            bot.register_next_step_handler(prompt, process_demo_withdraw_amount, method_key)
+        return
 
     # ===== المساعد الذكي =====
     if data == 'ai_chat':
@@ -5262,7 +5784,10 @@ def handle_all_callbacks(call):
         safe_answer_callback(call.id)
         user_mode.pop(uid, None)
         if ai_allowed(uid):
-            bot.send_message(call.message.chat.id, '🔙 تم الرجوع.', reply_markup=get_admin_main_keyboard(uid == ADMIN_ID, uid))
+            if uid == ADMIN_ID:
+                ActionSystem.show_full_admin_menu(uid, call.message.chat.id)
+            else:
+                bot.send_message(call.message.chat.id, '🔙 تم الرجوع.', reply_markup=get_admin_main_keyboard(False, uid))
         return
 
     # ===== 1. معالج النسخ (يجب أن يكون الأول) =====
@@ -5733,6 +6258,36 @@ def handle_all_callbacks(call):
         bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_btn_add_new, parent)
         return
 
+    # ===== أقسام لوحة الإدارة المصنفة =====
+    admin_category_titles = {
+        'admin_cat_users': '👥 **المستخدمون والمشرفون**',
+        'admin_cat_finance': '💰 **المال والعمليات**',
+        'admin_cat_services': '🔌 **التكاملات والميزات**',
+        'admin_cat_content': '🧩 **الأزرار والرسائل**',
+        'admin_cat_reports': '📊 **التقارير والسجلات**',
+        'admin_cat_system': '⚙️ **النظام والنسخ الاحتياطي**',
+        'admin_cat_control': '🧰 **التشغيل والصيانة والخدمات**',
+    }
+    if data in admin_category_titles:
+        if uid != ADMIN_ID and not check_permission(uid, 'can_access_full_admin'):
+            safe_answer_callback(call.id, "❌ لا تملك صلاحية الوصول إلى لوحة الإدارة الكاملة.", show_alert=True)
+            return
+        category = data.removeprefix('admin_cat_')
+        if category == 'control' and uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ مركز التشغيل والوضع الحقيقي للمالك فقط.", show_alert=True)
+            return
+        if category in ('control', 'services'):
+            render_operations_control(call.message.chat.id, call.message.message_id)
+        else:
+            bot.edit_message_text(
+                admin_category_titles[data] + "\n\nاختر الوظيفة المطلوبة:",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=get_admin_category_keyboard(category),
+                parse_mode="Markdown",
+            )
+        return
+
     # ===== إدارة الأزرار (admin_buttons) =====
     if data == 'admin_buttons':
         bot.edit_message_text("🔧 **إدارة الأزرار - اختر ما تريد فعله:**", call.message.chat.id, call.message.message_id, reply_markup=get_buttons_management_keyboard(), parse_mode="Markdown")
@@ -5879,29 +6434,37 @@ def handle_all_callbacks(call):
 
     # إعدادات الدفع
     if data == 'admin_payment':
-        syriatel = get_db_setting('syriatel_numbers')
-        sham = get_db_setting('sham_address')
         min_charge = get_db_setting('min_charge')
         min_withdraw = get_db_setting('min_withdraw_syria')
         max_withdraw = get_db_setting('max_withdraw_syria')
         commission = get_db_setting('withdraw_commission')
-        text = f"💳 **إعدادات الدفع الحالية:**\n\n📱 **سيرياتل كاش:** `{syriatel}`\n🏦 **شام كاش:** `{sham}`\n💰 **الحد الأدنى للشحن:** {min_charge} ل.س\n💸 **الحد الأدنى للسحب:** {min_withdraw} ل.س\n📈 **الحد الأقصى للسحب:** {max_withdraw} ل.س\n💵 **عمولة السحب:** {commission}%\n\nاختر ما تريد تعديله:"
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=get_payment_settings_keyboard(), parse_mode="Markdown")
+        text = (
+            f"💳 **حدود وعمولات الدفع:**\n\n"
+            f"💰 **الحد الأدنى للشحن:** {min_charge} ل.س\n"
+            f"💸 **الحد الأدنى للسحب:** {min_withdraw} ل.س\n"
+            f"📈 **الحد الأقصى للسحب:** {max_withdraw} ل.س\n"
+            f"💵 **عمولة السحب:** {commission}%\n\n"
+            "تعديل حالة الخدمات وبياناتها موجود في مركز التشغيل والتحكم."
+        )
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
+                              reply_markup=get_payment_settings_keyboard(), parse_mode="Markdown")
         return
 
     if data == 'toggle_syriatel':
         current = get_db_setting('syriatel_status') or 'active'
+        if current != 'active' and get_operation_mode() != 'demo' and not (get_db_setting('syriatel_numbers') or '').strip():
+            safe_answer_callback(call.id, "أدخل رقم/أرقام سيرياتل أولاً؛ لم يتم فتح الخدمة.", show_alert=True)
+            return
         new_val = 'stopped' if current == 'active' else 'active'
         update_db_setting('syriatel_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
         safe_answer_callback(call.id, f"سيرياتل كاش: {status}", show_alert=True)
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
-                                      reply_markup=get_payment_settings_keyboard())
+        render_operations_control(call.message.chat.id, call.message.message_id)
         return
 
     if data == 'toggle_sham':
         current = get_db_setting('sham_status') or 'متوقف'
-        if current != 'active':
+        if current != 'active' and get_operation_mode() != 'demo':
             address = (get_db_setting('sham_address') or '').strip()
             if not address or 'example' in address.lower() or address == 'غير محدد':
                 safe_answer_callback(call.id, "أدخل عنوان شام كاش الحقيقي أولاً؛ لم يتم فتح الخدمة.", show_alert=True)
@@ -5910,13 +6473,12 @@ def handle_all_callbacks(call):
         update_db_setting('sham_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
         safe_answer_callback(call.id, f"شام كاش: {status}", show_alert=True)
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
-                                      reply_markup=get_payment_settings_keyboard())
+        render_operations_control(call.message.chat.id, call.message.message_id)
         return
 
     if data == 'toggle_usdt':
         current = get_db_setting('usdt_status') or 'متوقف'
-        if current != 'active':
+        if current != 'active' and get_operation_mode() != 'demo':
             address = (get_db_setting('usdt_address') or '').strip()
             if not address or address == 'غير محدد':
                 safe_answer_callback(call.id, "أدخل عنوان محفظة USDT الصحيح أولاً؛ لم يتم فتح الخدمة.", show_alert=True)
@@ -5925,13 +6487,12 @@ def handle_all_callbacks(call):
         update_db_setting('usdt_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
         safe_answer_callback(call.id, f"USDT: {status}", show_alert=True)
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
-                                      reply_markup=get_payment_settings_keyboard())
+        render_operations_control(call.message.chat.id, call.message.message_id)
         return
 
     if data == 'toggle_binance':
         current = get_db_setting('binance_status') or 'متوقف'
-        if current != 'active':
+        if current != 'active' and get_operation_mode() != 'demo':
             address = (get_db_setting('binance_address') or '').strip()
             pay_id = (get_db_setting('binance_pay_id') or '').strip()
             if (not address or address == 'غير محدد') and not pay_id:
@@ -5941,8 +6502,7 @@ def handle_all_callbacks(call):
         update_db_setting('binance_status', new_val, uid)
         status = "🟢 مفتوح" if new_val == 'active' else "🔴 متوقف"
         safe_answer_callback(call.id, f"Binance: {status}", show_alert=True)
-        bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id,
-                                      reply_markup=get_payment_settings_keyboard())
+        render_operations_control(call.message.chat.id, call.message.message_id)
         return
 
     if data == 'setup_usdt':
@@ -5950,7 +6510,7 @@ def handle_all_callbacks(call):
         keyboard.add(
             types.InlineKeyboardButton("📬 تعديل عنوان USDT", callback_data="edit_usdt_address"),
             types.InlineKeyboardButton("🌐 تعديل شبكة USDT", callback_data="edit_usdt_network"),
-            types.InlineKeyboardButton("🔙 رجوع", callback_data="admin_payment")
+            types.InlineKeyboardButton("🔙 رجوع إلى مركز التحكم", callback_data="admin_control_center")
         )
         usdt_address = get_db_setting('usdt_address') or 'غير محدد'
         usdt_network = get_db_setting('usdt_network') or 'TRC20'
@@ -5964,7 +6524,7 @@ def handle_all_callbacks(call):
         keyboard.add(
             types.InlineKeyboardButton("📬 تعديل عنوان Binance", callback_data="edit_binance_address"),
             types.InlineKeyboardButton("🆔 تعديل Binance Pay ID", callback_data="edit_binance_pay_id"),
-            types.InlineKeyboardButton("🔙 رجوع", callback_data="admin_payment")
+            types.InlineKeyboardButton("🔙 رجوع إلى مركز التحكم", callback_data="admin_control_center")
         )
         binance_address = get_db_setting('binance_address') or 'غير محدد'
         binance_pay_id = get_db_setting('binance_pay_id') or 'غير محدد'
@@ -5976,33 +6536,25 @@ def handle_all_callbacks(call):
     if data == 'edit_usdt_address':
         bot.edit_message_text("📬 **أرسل عنوان محفظة USDT الجديد:**",
                               call.message.chat.id, call.message.message_id)
-        bot.register_next_step_handler_by_chat_id(call.message.chat.id,
-            lambda m: (update_db_setting('usdt_address', m.text.strip(), m.from_user.id),
-                       bot.send_message(m.chat.id, f"✅ تم تحديث عنوان USDT: `{m.text.strip()}`", parse_mode="Markdown")))
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_update_usdt_address)
         return
 
     if data == 'edit_usdt_network':
         bot.edit_message_text("🌐 **أرسل شبكة USDT (مثال: TRC20 أو ERC20):**",
                               call.message.chat.id, call.message.message_id)
-        bot.register_next_step_handler_by_chat_id(call.message.chat.id,
-            lambda m: (update_db_setting('usdt_network', m.text.strip(), m.from_user.id),
-                       bot.send_message(m.chat.id, f"✅ تم تحديث شبكة USDT: `{m.text.strip()}`", parse_mode="Markdown")))
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_update_usdt_network)
         return
 
     if data == 'edit_binance_address':
         bot.edit_message_text("📬 **أرسل عنوان محفظة Binance الجديد:**",
                               call.message.chat.id, call.message.message_id)
-        bot.register_next_step_handler_by_chat_id(call.message.chat.id,
-            lambda m: (update_db_setting('binance_address', m.text.strip(), m.from_user.id),
-                       bot.send_message(m.chat.id, f"✅ تم تحديث عنوان Binance: `{m.text.strip()}`", parse_mode="Markdown")))
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_update_binance_address)
         return
 
     if data == 'edit_binance_pay_id':
         bot.edit_message_text("🆔 **أرسل Binance Pay ID الجديد:**",
                               call.message.chat.id, call.message.message_id)
-        bot.register_next_step_handler_by_chat_id(call.message.chat.id,
-            lambda m: (update_db_setting('binance_pay_id', m.text.strip(), m.from_user.id),
-                       bot.send_message(m.chat.id, f"✅ تم تحديث Binance Pay ID: `{m.text.strip()}`", parse_mode="Markdown")))
+        bot.register_next_step_handler_by_chat_id(call.message.chat.id, process_update_binance_pay_id)
         return
 
     if data == 'edit_syriatel':
@@ -6075,6 +6627,131 @@ def handle_all_callbacks(call):
     # الإحصائيات
     if data == 'admin_stats':
         show_detailed_stats(call.message.chat.id)
+        return
+
+    # مركز التحكم الموحد بالتشغيل والصيانة والخدمات
+    if data == 'admin_control_center':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ مركز التحكم للمالك فقط.", show_alert=True)
+            return
+        render_operations_control(call.message.chat.id, call.message.message_id)
+        safe_answer_callback(call.id)
+        return
+
+    if data == 'mode_info':
+        mode = get_operation_mode()
+        message = (
+            "الوضع التجريبي يستخدم قاعدة بيانات اختبار مستقلة عن الإنتاج."
+            if mode == 'demo'
+            else "الوضع الحقيقي يستخدم قاعدة بيانات الإنتاج المستقلة. خدمات API لا تعمل تلقائياً إلا بعد تنفيذ موصل حقيقي واختباره."
+        )
+        safe_answer_callback(call.id, message, show_alert=True)
+        return
+
+    if data == 'request_real_mode':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ للمالك فقط.", show_alert=True)
+            return
+        real_url = os.environ.get('REAL_DATABASE_URL', '').strip()
+        demo_url = os.environ.get('DATABASE_URL', '').strip()
+        if not real_url:
+            safe_answer_callback(
+                call.id,
+                "لم يتم إعداد قاعدة إنتاج مستقلة بعد. أضف REAL_DATABASE_URL في إعدادات Render أولاً. بقي البوت في الوضع التجريبي.",
+                show_alert=True,
+            )
+            return
+        if demo_url and real_url == demo_url:
+            safe_answer_callback(call.id, "❌ قاعدة الإنتاج يجب أن تكون منفصلة عن قاعدة الاختبار.", show_alert=True)
+            return
+        confirm = types.InlineKeyboardMarkup(row_width=1)
+        confirm.add(
+            types.InlineKeyboardButton("✅ تأكيد الانتقال إلى قاعدة الإنتاج", callback_data="confirm_real_mode"),
+            types.InlineKeyboardButton("❌ إلغاء", callback_data="cancel_mode_switch"),
+        )
+        bot.send_message(
+            call.message.chat.id,
+            "⚠️ **تأكيد الانتقال للوضع الحقيقي**\n\n"
+            "سيبدأ البوت باستخدام قاعدة بيانات الإنتاج المنفصلة. لن تُنقل أرصدة المستخدمين أو المعاملات التجريبية؛ "
+            "ستُنقل إعدادات الإدارة والخدمات فقط. وستبقى تكاملات API غير فعالة ما لم يكن لها موصل حقيقي مُختبر.\n\n"
+            "هل تريد المتابعة؟",
+            reply_markup=confirm,
+            parse_mode="Markdown",
+        )
+        safe_answer_callback(call.id)
+        return
+
+    if data == 'request_demo_mode':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ للمالك فقط.", show_alert=True)
+            return
+        confirm = types.InlineKeyboardMarkup(row_width=1)
+        confirm.add(
+            types.InlineKeyboardButton("🧪 تأكيد العودة للوضع التجريبي", callback_data="confirm_demo_mode"),
+            types.InlineKeyboardButton("❌ إلغاء", callback_data="cancel_mode_switch"),
+        )
+        bot.send_message(
+            call.message.chat.id,
+            "⚠️ **تأكيد العودة للوضع التجريبي**\n\n"
+            "سيستخدم البوت قاعدة الاختبار المنفصلة. لن تُحذف بيانات الإنتاج؛ ستبقى في قاعدة الإنتاج ولن تظهر ضمن الاختبار.",
+            reply_markup=confirm,
+            parse_mode="Markdown",
+        )
+        safe_answer_callback(call.id)
+        return
+
+    if data == 'confirm_real_mode':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ للمالك فقط.", show_alert=True)
+            return
+        try:
+            switch_operation_mode('real', uid)
+        except Exception as exc:
+            logger.exception("Failed to switch Matar Bot to real mode")
+            safe_answer_callback(call.id, f"لم يتغير الوضع: {str(exc)[:180]}", show_alert=True)
+            return
+        safe_answer_callback(call.id, "✅ انتقل البوت إلى قاعدة الإنتاج.", show_alert=True)
+        render_operations_control(call.message.chat.id)
+        return
+
+    if data == 'confirm_demo_mode':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ للمالك فقط.", show_alert=True)
+            return
+        try:
+            switch_operation_mode('demo', uid)
+        except Exception as exc:
+            logger.exception("Failed to switch Matar Bot to demo mode")
+            safe_answer_callback(call.id, f"لم يتغير الوضع: {str(exc)[:180]}", show_alert=True)
+            return
+        safe_answer_callback(call.id, "🧪 عاد البوت إلى قاعدة الاختبار.", show_alert=True)
+        render_operations_control(call.message.chat.id)
+        return
+
+    if data == 'cancel_mode_switch':
+        safe_answer_callback(call.id, "تم الإلغاء، لم يتغير وضع التشغيل.")
+        render_operations_control(call.message.chat.id)
+        return
+
+    if data == 'control_toggle_bot':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ للمالك فقط.", show_alert=True)
+            return
+        current = get_db_setting('bot_status') or 'active'
+        new_status = 'maintenance' if current == 'active' else 'active'
+        update_db_setting('bot_status', new_status, uid)
+        safe_answer_callback(call.id, "🛑 تم إيقاف الخدمة للصيانة." if new_status != 'active' else "🟢 تم تشغيل الخدمة.")
+        render_operations_control(call.message.chat.id, call.message.message_id)
+        return
+
+    if data == 'control_toggle_wheel':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ للمالك فقط.", show_alert=True)
+            return
+        new_value = '0' if wheel_is_enabled() else '1'
+        update_db_setting('wheel_enabled', new_value, uid)
+        safe_answer_callback(call.id, "تم إيقاف عجلة الحظ." if new_value == '0' else "تم تشغيل عجلة الحظ.")
+        render_operations_control(call.message.chat.id, call.message.message_id)
         return
 
     # الإعدادات العامة
@@ -6172,6 +6849,34 @@ def handle_all_callbacks(call):
         ActionSystem.show_admin_logs(uid, call.message.chat.id)
         return
 
+    if data.startswith('reply_ticket_'):
+        if uid != ADMIN_ID and not check_permission(uid, 'can_reply_tickets'):
+            safe_answer_callback(call.id, "❌ لا تملك صلاحية الرد على التذاكر.", show_alert=True)
+            return
+        try:
+            parts = data.split('_')
+            ticket_id = int(parts[-2])
+            target_user_id = int(parts[-1])
+        except (ValueError, IndexError):
+            safe_answer_callback(call.id, "❌ بيانات التذكرة غير صالحة.", show_alert=True)
+            return
+        cursor.execute("SELECT user_id, status FROM tickets WHERE ticket_id=?", (ticket_id,))
+        ticket = cursor.fetchone()
+        if not ticket or int(ticket[0]) != target_user_id or ticket[1] != 'open':
+            safe_answer_callback(call.id, "❌ التذكرة غير موجودة أو لم تعد مفتوحة.", show_alert=True)
+            return
+        bot.send_message(
+            call.message.chat.id,
+            f"✏️ أرسل ردك النصي على التذكرة #{ticket_id}. لن تتغير حالة التذكرة.",
+        )
+        bot.register_next_step_handler_by_chat_id(
+            call.message.chat.id,
+            ActionSystem.process_ticket_reply,
+            ticket_id,
+            target_user_id,
+        )
+        return
+
     # ===== اختيار كود سيرياتل بعد إدخال رقم العملية =====
     if data.startswith('syriatel_code_'):
         # format: syriatel_code_{receipt}_{uid}_{number}
@@ -6222,12 +6927,12 @@ def handle_all_callbacks(call):
         bot.send_message(call.message.chat.id, wheel_status_text(), reply_markup=wheel_admin_keyboard(), parse_mode='Markdown')
         return
     if data == 'wheel_toggle':
-        if not check_permission(uid, 'can_manage_wheel'):
-            safe_answer_callback(call.id, '❌ لا تملك الصلاحية.', show_alert=True); return
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, '❌ حالة الخدمات من مركز التحكم للمالك فقط.', show_alert=True); return
         new_value = '0' if wheel_is_enabled() else '1'
         update_db_setting('wheel_enabled', new_value, uid)
         safe_answer_callback(call.id, '✅ تم تحديث حالة العجلة')
-        bot.send_message(call.message.chat.id, wheel_status_text(), reply_markup=wheel_admin_keyboard(), parse_mode='Markdown')
+        render_operations_control(call.message.chat.id)
         return
     if data == 'wheel_prizes':
         if not check_permission(uid, 'can_manage_wheel'):
@@ -6514,7 +7219,10 @@ def handle_all_callbacks(call):
         return
 
     if data == 'back_to_admin':
-        bot.send_message(call.message.chat.id, "🔐 **لوحة التحكم:**", reply_markup=get_admin_main_keyboard(is_owner=(uid == ADMIN_ID), uid=uid))
+        if uid == ADMIN_ID:
+            bot.send_message(call.message.chat.id, "📋 **القائمة الرئيسية:**", reply_markup=get_main_keyboard(uid), parse_mode="Markdown")
+        else:
+            bot.send_message(call.message.chat.id, "🔐 **لوحة تحكم المشرف:**", reply_markup=get_admin_main_keyboard(is_owner=False, uid=uid), parse_mode="Markdown")
         bot.delete_message(call.message.chat.id, call.message.message_id)
         return
 
@@ -8494,7 +9202,12 @@ def process_connect_sham_api(message):
 
 @bot.message_handler(commands=['ai'])
 def handle_ai_command(message):
-    show_ai_menu(message.from_user.id, message.chat.id)
+    uid = message.from_user.id
+    if not check_bot_status() and uid != ADMIN_ID and not is_moderator(uid):
+        maintenance_message = get_db_setting('maintenance_message') or "🔧 البوت في حالة صيانة حالياً. سنعود قريباً!"
+        bot.send_message(message.chat.id, maintenance_message, parse_mode="Markdown")
+        return
+    show_ai_menu(uid, message.chat.id)
 
 
 @bot.message_handler(func=lambda m: True)
@@ -8742,6 +9455,7 @@ def main_router(message):
         else:
             bot.send_message(message.chat.id, "❌ ليس لديك صلاحية للدخول إلى هذه القائمة.")
 
+    # توافق خلفي للأزرار المخصصة القديمة؛ لا تظهر هذه الأزرار في لوحة الإدارة الجديدة.
     elif text == '🛠️ إدارة البوت بالكامل':
         if uid == ADMIN_ID:
             ActionSystem.show_full_admin_menu(uid, message.chat.id)
