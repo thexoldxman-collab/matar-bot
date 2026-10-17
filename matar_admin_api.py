@@ -147,6 +147,24 @@ def register_admin_api(
         db().execute("DELETE FROM admin_operation_claims WHERE expires_at<=?", (now_text,))
         db().commit()
 
+    @app.get("/api/admin/my-permissions")
+    def admin_my_permissions():
+        user = current()
+        if not user:
+            return denied()
+        keys = (
+            "can_reply_tickets", "can_handle_charges", "can_handle_withdraws",
+            "can_send_broadcast", "can_manage_users", "can_charge_withdraw_users",
+            "can_view_stats", "can_manage_buttons", "can_access_full_admin",
+            "can_manage_moderators", "can_use_ai",
+        )
+        user_id = int(user["telegram_id"])
+        permissions = {
+            key: bool(user.get("role") == "owner" or check_permission(user_id, key))
+            for key in keys
+        }
+        return jsonify({"ok": True, "permissions": permissions}), 200
+
     @app.get("/api/admin/dashboard")
     def admin_dashboard():
         user = current()
