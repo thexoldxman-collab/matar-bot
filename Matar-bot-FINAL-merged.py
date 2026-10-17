@@ -5999,6 +5999,9 @@ def handle_all_callbacks(call):
             safe_answer_callback(call.id, "❌ لا تملك صلاحية الوصول إلى لوحة الإدارة الكاملة.", show_alert=True)
             return
         category = data.removeprefix('admin_cat_')
+        if category == 'control' and uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ مركز التشغيل والوضع الحقيقي للمالك فقط.", show_alert=True)
+            return
         if category == 'control':
             render_operations_control(call.message.chat.id, call.message.message_id)
         else:
@@ -6157,14 +6160,20 @@ def handle_all_callbacks(call):
 
     # إعدادات الدفع
     if data == 'admin_payment':
-        syriatel = get_db_setting('syriatel_numbers')
-        sham = get_db_setting('sham_address')
         min_charge = get_db_setting('min_charge')
         min_withdraw = get_db_setting('min_withdraw_syria')
         max_withdraw = get_db_setting('max_withdraw_syria')
         commission = get_db_setting('withdraw_commission')
-        text = f"💳 **إعدادات الدفع الحالية:**\n\n📱 **سيرياتل كاش:** `{syriatel}`\n🏦 **شام كاش:** `{sham}`\n💰 **الحد الأدنى للشحن:** {min_charge} ل.س\n💸 **الحد الأدنى للسحب:** {min_withdraw} ل.س\n📈 **الحد الأقصى للسحب:** {max_withdraw} ل.س\n💵 **عمولة السحب:** {commission}%\n\nاختر ما تريد تعديله:"
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=get_payment_settings_keyboard(), parse_mode="Markdown")
+        text = (
+            f"💳 **حدود وعمولات الدفع:**\n\n"
+            f"💰 **الحد الأدنى للشحن:** {min_charge} ل.س\n"
+            f"💸 **الحد الأدنى للسحب:** {min_withdraw} ل.س\n"
+            f"📈 **الحد الأقصى للسحب:** {max_withdraw} ل.س\n"
+            f"💵 **عمولة السحب:** {commission}%\n\n"
+            "تعديل حالة الخدمات وبياناتها موجود في مركز التشغيل والتحكم."
+        )
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id,
+                              reply_markup=get_payment_settings_keyboard(), parse_mode="Markdown")
         return
 
     if data == 'toggle_syriatel':
@@ -6353,6 +6362,131 @@ def handle_all_callbacks(call):
     # الإحصائيات
     if data == 'admin_stats':
         show_detailed_stats(call.message.chat.id)
+        return
+
+    # مركز التحكم الموحد بالتشغيل والصيانة والخدمات
+    if data == 'admin_control_center':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ مركز التحكم للمالك فقط.", show_alert=True)
+            return
+        render_operations_control(call.message.chat.id, call.message.message_id)
+        safe_answer_callback(call.id)
+        return
+
+    if data == 'mode_info':
+        mode = get_operation_mode()
+        message = (
+            "الوضع التجريبي يستخدم قاعدة بيانات اختبار مستقلة عن الإنتاج."
+            if mode == 'demo'
+            else "الوضع الحقيقي يستخدم قاعدة بيانات الإنتاج المستقلة. خدمات API لا تعمل تلقائياً إلا بعد تنفيذ موصل حقيقي واختباره."
+        )
+        safe_answer_callback(call.id, message, show_alert=True)
+        return
+
+    if data == 'request_real_mode':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ للمالك فقط.", show_alert=True)
+            return
+        real_url = os.environ.get('REAL_DATABASE_URL', '').strip()
+        demo_url = os.environ.get('DATABASE_URL', '').strip()
+        if not real_url:
+            safe_answer_callback(
+                call.id,
+                "لم يتم إعداد قاعدة إنتاج مستقلة بعد. أضف REAL_DATABASE_URL في إعدادات Render أولاً. بقي البوت في الوضع التجريبي.",
+                show_alert=True,
+            )
+            return
+        if demo_url and real_url == demo_url:
+            safe_answer_callback(call.id, "❌ قاعدة الإنتاج يجب أن تكون منفصلة عن قاعدة الاختبار.", show_alert=True)
+            return
+        confirm = types.InlineKeyboardMarkup(row_width=1)
+        confirm.add(
+            types.InlineKeyboardButton("✅ تأكيد الانتقال إلى قاعدة الإنتاج", callback_data="confirm_real_mode"),
+            types.InlineKeyboardButton("❌ إلغاء", callback_data="cancel_mode_switch"),
+        )
+        bot.send_message(
+            call.message.chat.id,
+            "⚠️ **تأكيد الانتقال للوضع الحقيقي**\n\n"
+            "سيبدأ البوت باستخدام قاعدة بيانات الإنتاج المنفصلة. لن تُنقل أرصدة المستخدمين أو المعاملات التجريبية؛ "
+            "ستُنقل إعدادات الإدارة والخدمات فقط. وستبقى تكاملات API غير فعالة ما لم يكن لها موصل حقيقي مُختبر.\n\n"
+            "هل تريد المتابعة؟",
+            reply_markup=confirm,
+            parse_mode="Markdown",
+        )
+        safe_answer_callback(call.id)
+        return
+
+    if data == 'request_demo_mode':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ للمالك فقط.", show_alert=True)
+            return
+        confirm = types.InlineKeyboardMarkup(row_width=1)
+        confirm.add(
+            types.InlineKeyboardButton("🧪 تأكيد العودة للوضع التجريبي", callback_data="confirm_demo_mode"),
+            types.InlineKeyboardButton("❌ إلغاء", callback_data="cancel_mode_switch"),
+        )
+        bot.send_message(
+            call.message.chat.id,
+            "⚠️ **تأكيد العودة للوضع التجريبي**\n\n"
+            "سيستخدم البوت قاعدة الاختبار المنفصلة. لن تُحذف بيانات الإنتاج؛ ستبقى في قاعدة الإنتاج ولن تظهر ضمن الاختبار.",
+            reply_markup=confirm,
+            parse_mode="Markdown",
+        )
+        safe_answer_callback(call.id)
+        return
+
+    if data == 'confirm_real_mode':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ للمالك فقط.", show_alert=True)
+            return
+        try:
+            switch_operation_mode('real', uid)
+        except Exception as exc:
+            logger.exception("Failed to switch Matar Bot to real mode")
+            safe_answer_callback(call.id, f"لم يتغير الوضع: {str(exc)[:180]}", show_alert=True)
+            return
+        safe_answer_callback(call.id, "✅ انتقل البوت إلى قاعدة الإنتاج.", show_alert=True)
+        render_operations_control(call.message.chat.id)
+        return
+
+    if data == 'confirm_demo_mode':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ للمالك فقط.", show_alert=True)
+            return
+        try:
+            switch_operation_mode('demo', uid)
+        except Exception as exc:
+            logger.exception("Failed to switch Matar Bot to demo mode")
+            safe_answer_callback(call.id, f"لم يتغير الوضع: {str(exc)[:180]}", show_alert=True)
+            return
+        safe_answer_callback(call.id, "🧪 عاد البوت إلى قاعدة الاختبار.", show_alert=True)
+        render_operations_control(call.message.chat.id)
+        return
+
+    if data == 'cancel_mode_switch':
+        safe_answer_callback(call.id, "تم الإلغاء، لم يتغير وضع التشغيل.")
+        render_operations_control(call.message.chat.id)
+        return
+
+    if data == 'control_toggle_bot':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ للمالك فقط.", show_alert=True)
+            return
+        current = get_db_setting('bot_status') or 'active'
+        new_status = 'maintenance' if current == 'active' else 'active'
+        update_db_setting('bot_status', new_status, uid)
+        safe_answer_callback(call.id, "🛑 تم إيقاف الخدمة للصيانة." if new_status != 'active' else "🟢 تم تشغيل الخدمة.")
+        render_operations_control(call.message.chat.id, call.message.message_id)
+        return
+
+    if data == 'control_toggle_wheel':
+        if uid != ADMIN_ID:
+            safe_answer_callback(call.id, "❌ للمالك فقط.", show_alert=True)
+            return
+        new_value = '0' if wheel_is_enabled() else '1'
+        update_db_setting('wheel_enabled', new_value, uid)
+        safe_answer_callback(call.id, "تم إيقاف عجلة الحظ." if new_value == '0' else "تم تشغيل عجلة الحظ.")
+        render_operations_control(call.message.chat.id, call.message.message_id)
         return
 
     # الإعدادات العامة
