@@ -228,4 +228,4 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
             conn.commit()
         return jsonify({"ok": True}), 200
 
-    return issue_link_code
+    return issue_link_code_for_user
