@@ -25,6 +25,15 @@ data class ReferralSummary(
     val unpaidTotal: Double,
     val items: List<ReferralItem>
 )
+data class BotContentSettings(
+    val welcomeMessage: String,
+    val subscriptionMessage: String,
+    val termsMessage: String,
+    val maintenanceMessage: String,
+    val requiredChannel: String,
+    val forceSubscription: Boolean,
+    val botStatus: String
+)
 
 data class AdminLoginResult(
     val token: String? = null,
@@ -237,6 +246,36 @@ object AdminApi {
             listOf("users", "pending_charges", "pending_withdraws", "moderators", "open_tickets")
                 .associateWith { stats.optInt(it, 0) }
         } catch (_: Exception) { null }
+    }
+
+    fun loadContent(token: String): BotContentSettings? {
+        val (status, body) = request("GET", "/api/admin/content", token, null)
+        if (status !in 200..299) return null
+        return try {
+            val content = JSONObject(body).optJSONObject("content") ?: return null
+            BotContentSettings(
+                welcomeMessage = content.optString("welcome_message"),
+                subscriptionMessage = content.optString("subscription_message"),
+                termsMessage = content.optString("terms_message"),
+                maintenanceMessage = content.optString("maintenance_message"),
+                requiredChannel = content.optString("required_channel"),
+                forceSubscription = content.optBoolean("force_subscription", true),
+                botStatus = content.optString("bot_status", "active")
+            )
+        } catch (_: Exception) { null }
+    }
+
+    fun saveContent(token: String, content: BotContentSettings): String? {
+        val payload = JSONObject()
+            .put("welcome_message", content.welcomeMessage)
+            .put("subscription_message", content.subscriptionMessage)
+            .put("terms_message", content.termsMessage)
+            .put("maintenance_message", content.maintenanceMessage)
+            .put("required_channel", content.requiredChannel)
+            .put("force_subscription", content.forceSubscription)
+            .put("bot_status", content.botStatus)
+        val (status, body) = request("PUT", "/api/admin/content", token, payload)
+        return if (status in 200..299) null else apiError(body, "تعذر حفظ محتوى البوت.")
     }
 
     fun loadReferrals(token: String): ReferralSummary? {

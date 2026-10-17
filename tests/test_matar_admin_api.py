@@ -150,6 +150,28 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(self.conn.execute("SELECT balance FROM users WHERE user_id=200").fetchone()[0], 100)
 
+    def test_content_settings_update_welcome_and_subscription_gate(self):
+        response = self.client.get("/api/admin/content")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["content"]["force_subscription"])
+
+        response = self.client.put("/api/admin/content", json={
+            "welcome_message": "أهلاً من التطبيق",
+            "subscription_message": "اشترك أولاً",
+            "required_channel": "@Matar_TestChannel",
+            "force_subscription": False,
+            "bot_status": "maintenance"
+        })
+        self.assertEqual(response.status_code, 200)
+        values = {row[0]: row[1] for row in self.conn.execute("SELECT key,value FROM settings").fetchall()}
+        self.assertEqual(values["welcome_message"], "أهلاً من التطبيق")
+        self.assertEqual(values["required_channel"], "@Matar_TestChannel")
+        self.assertEqual(values["force_subscription"], "0")
+        self.assertEqual(values["bot_status"], "maintenance")
+
+        response = self.client.put("/api/admin/content", json={"required_channel": "not a channel"})
+        self.assertEqual(response.status_code, 400)
+
     def test_unauthenticated_requests_are_rejected(self):
         self.app.config["MATAR_ADMIN_AUTH_SESSION"] = lambda: None
         response = self.client.get("/api/admin/operations")

@@ -300,6 +300,102 @@ def register_admin_api(
               target_user=target_id, amount=amount)
         return jsonify({"ok": True, "message": "تم صرف الأرباح وخصم الكاشيرة وتحديث سجل المستحقات.", "receipt": receipt}), 200
 
+    CONTENT_TEXT_FIELDS = {
+        "welcome_message": 4000,
+        "subscription_message": 4000,
+        "terms_message": 4000,
+        "maintenance_message": 4000,
+        "required_channel": 100,
+        "bot_status": 30,
+    }
+
+    @app.get("/api/admin/content")
+    def get_admin_content():
+        user = current()
+        if not user:
+            return denied()
+        if not allowed(user, "can_manage_buttons"):
+            return forbidden()
+        with db_lock:
+            try:
+                content = {}
+                defaults = {
+                    "welcome_message": "أهلاً وسهلاً بك في بوت مطر",
+                    "subscription_message": "الاشتراك بالقناة إلزامي لاستخدام البوت.",
+                    "terms_message": "",
+                    "maintenance_message": "البوت في حالة صيانة حالياً.",
+                    "required_channel": os.environ.get("CHANNEL_ID", "@Matar_ichancy"),
+                    "force_subscription": "1",
+                    "bot_status": "active",
+                }
+                for key, default in defaults.items():
+                    row = db().execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+                    value = str(row[0]) if row and row[0] is not None else str(default)
+                    content[key] = value == "1" if key == "force_subscription" else value
+            except Exception:
+                app.logger.exception("Admin content settings query failed")
+                return jsonify({"ok": False, "error": "content_unavailable"}), 503
+        return jsonify({"ok": True, "content": content}), 200
+
+    @app.put("/api/admin/content")
+    def update_admin_content():
+        user = current()
+        if not user:
+            return denied()
+        if not allowed(user, "can_manage_buttons"):
+            return forbidden()
+        payload = request.get_json(silent=True) or {}
+        if not payload or any(key not in set(CONTENT_TEXT_FIELDS) | {"force_subscription"} for key in payload):
+            return jsonify({"ok": False, "error": "invalid_content_field"}), 400
+        values = {}
+        for key, value in payload.items():
+            if key == "force_subscription":
+                if not isinstance(value, bool):
+                    return jsonify({"ok": False, "error": "invalid_value"}), 400
+                values[key] = "1" if value else "0"
+            else:
+                if not isinstance(value, str) or len(value) > CONTENT_TEXT_FIELDS[key]:
+                    return jsonify({"ok": False, "error": "invalid_value"}), 400
+                value = value.strip()
+                if key == "required_channel" and value:
+                    valid_username = value.startswith("@") and 5 <= len(value) <= 33 and value[1:].replace("_", "").isalnum()
+                    valid_private_id = value.startswith("-100") and value[4:].isdigit()
+                    if not (valid_username or valid_private_id):
+                        return jsonify({"ok": False, "error": "invalid_channel",
+                                        "message": "اكتب معرف القناة مثل @MyChannel أو رقم القناة الخاص الذي يبدأ بـ -100."}), 400
+                if key == "bot_status" and value not in ("active", "maintenance"):
+                    return jsonify({"ok": False, "error": "invalid_bot_status"}), 400
+                values[key] = value
+        now_text = _now().strftime("%Y-%m-%d %H:%M:%S")
+        with db_lock:
+            try:
+                for key, value in values.items():
+                    kind = "boolean" if key == "force_subscription" else "text"
+                    description = {
+                        "welcome_message": "رسالة الترحيب",
+                        "subscription_message": "رسالة الاشتراك الإلزامي",
+                        "terms_message": "نص الشروط",
+                        "maintenance_message": "رسالة الصيانة",
+                        "required_channel": "معرف قناة الاشتراك الإجباري",
+                        "force_subscription": "تفعيل الاشتراك الإجباري لكل المستخدمين",
+                        "bot_status": "حالة البوت",
+                    }[key]
+                    db().execute(
+                        """INSERT INTO settings(key,value,description,type,updated_at,updated_by)
+                           VALUES(?,?,?,?,?,?)
+                           ON CONFLICT(key) DO UPDATE SET value=excluded.value,
+                               description=excluded.description,type=excluded.type,
+                               updated_at=excluded.updated_at,updated_by=excluded.updated_by""",
+                        (key, value, description, kind, now_text, int(user["telegram_id"])),
+                    )
+                db().commit()
+                audit(user, "تعديل محتوى البوت", "تحديث إعدادات الترحيب والاشتراك والشروط والصيانة")
+            except Exception:
+                db().rollback()
+                app.logger.exception("Admin content settings update failed")
+                return jsonify({"ok": False, "error": "content_save_failed"}), 503
+        return jsonify({"ok": True, "message": "تم حفظ إعدادات محتوى البوت."}), 200
+
     return True
         try:
             return bool(check_permission(int(user["telegram_id"]), permission))

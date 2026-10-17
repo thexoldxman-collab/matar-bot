@@ -896,6 +896,8 @@ def setup_database(database_url_override=None):
         ('bot_status', 'active', 'حالة البوت', 'text'),
         ('welcome_message', 'اهلا وسهلا بك في بوت Matar البوت الرسمي لموقع ichancy', 'رسالة الترحيب', 'text'),
         ('subscription_message', '🎯 **أهلاً وسهلاً بك في بوت Matar** 🌧️\n\nالبوت الرسمي لموقع Ichancy.\n\n⚠️ **شرط أساسي لاستخدام البوت:**\nالرجاء الاشتراك في قناتنا على تيلغرام لتتمكن من استخدام البوت', 'رسالة الاشتراك الإلزامي', 'text'),
+        ('required_channel', CHANNEL_ID, 'معرف قناة الاشتراك الإجباري', 'text'),
+        ('force_subscription', '1', 'تفعيل الاشتراك الإجباري لكل المستخدمين', 'boolean'),
         ('terms_message', '📜 الشروط:\n\n1. الاشتراك بالقناة إلزامي\n2. الحد الأدنى للشحن: 100 ل.س\n3. السحب: سيرياتل 25k-500k، شام 25k-5M\n4. عمولة السحب: 10%\n5. مدة السحب: 1-24 ساعة', 'نص الشروط', 'text'),
         ('referral_percentage', '10', 'نسبة الإحالات', 'number'),
         ('next_referral_payout', '', 'موعد الدفعة القادمة', 'text'),
@@ -1374,9 +1376,13 @@ def switch_operation_mode(target_mode, admin_id=ADMIN_ID):
     return target_mode
 
 def check_subscription(uid):
-    """التحقق من اشتراك المستخدم في القناة"""
+    """التحقق من الاشتراك الإجباري باستخدام إعدادات قاعدة البيانات."""
     try:
-        member = bot.get_chat_member(CHANNEL_ID, uid)
+        force = str(get_db_setting('force_subscription') or '1').strip().lower()
+        if force in ('0', 'false', 'no', 'off', 'disabled'):
+            return True
+        channel = str(get_db_setting('required_channel') or CHANNEL_ID).strip() or CHANNEL_ID
+        member = bot.get_chat_member(channel, uid)
         return member.status in ['member', 'administrator', 'creator']
     except Exception as e:
         logger.error(f"خطأ في التحقق من الاشتراك للمستخدم {uid}: {e}")

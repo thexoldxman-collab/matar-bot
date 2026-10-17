@@ -27,7 +27,7 @@ import androidx.compose.ui.unit.dp
 
 private enum class Page(val label: String) {
     HOME("الرئيسية"), ROOM("غرفة العمليات"), USERS("المشرفون"),
-    MESSAGES("الرسائل"), BUTTONS("أزرار البوت"), REFERRALS("الإحالات"), SETTINGS("الإعدادات")
+    MESSAGES("الرسائل"), BUTTONS("أزرار البوت"), REFERRALS("الإحالات"), CONTENT("نصوص البوت"), SETTINGS("الإعدادات")
 }
 
 data class QueueItem(
@@ -68,6 +68,8 @@ private fun MatarAdminApp() {
     var auditItems by remember { mutableStateOf<List<AuditItem>>(emptyList()) }
     var referralSummary by remember { mutableStateOf<ReferralSummary?>(null) }
     var referralMessage by remember { mutableStateOf("") }
+    var contentSettings by remember { mutableStateOf<BotContentSettings?>(null) }
+    var contentMessage by remember { mutableStateOf("") }
     var connecting by remember { mutableStateOf(false) }
     var savingNotifications by remember { mutableStateOf(false) }
     var liveOperations by remember { mutableStateOf(false) }
@@ -116,6 +118,7 @@ private fun MatarAdminApp() {
                 dashboardStats = withContext(Dispatchers.IO) { AdminApi.loadDashboard(savedToken) }
                 if (restored.role == "owner") referralSummary = withContext(Dispatchers.IO) { AdminApi.loadReferrals(savedToken) }
                 buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(savedToken) } ?: emptyList()
+                contentSettings = withContext(Dispatchers.IO) { AdminApi.loadContent(savedToken) }
                 auditItems = withContext(Dispatchers.IO) { AdminApi.loadAudit(savedToken) } ?: emptyList()
                 if (restored.role == "owner" || restored.permissions["can_manage_moderators"] == true) {
                     moderators = withContext(Dispatchers.IO) { AdminApi.loadModerators(savedToken) } ?: emptyList()
@@ -195,6 +198,7 @@ private fun MatarAdminApp() {
                                     dashboardStats = withContext(Dispatchers.IO) { AdminApi.loadDashboard(result.token) }
                                     if (result.role == "owner") referralSummary = withContext(Dispatchers.IO) { AdminApi.loadReferrals(result.token) }
                                     buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(result.token) } ?: emptyList()
+                                    contentSettings = withContext(Dispatchers.IO) { AdminApi.loadContent(result.token) }
                                     auditItems = withContext(Dispatchers.IO) { AdminApi.loadAudit(result.token) } ?: emptyList()
                                     if (result.role == "owner" || result.permissions["can_manage_moderators"] == true) {
                                         moderators = withContext(Dispatchers.IO) { AdminApi.loadModerators(result.token) } ?: emptyList()
@@ -259,6 +263,7 @@ private fun MatarAdminApp() {
                                 Page.MESSAGES -> accountPermissions["can_send_broadcast"] == true
                                 Page.BUTTONS -> accountPermissions["can_manage_buttons"] == true
                                 Page.REFERRALS -> accountRole == "owner"
+                                Page.CONTENT -> accountRole == "owner" || accountPermissions["can_manage_buttons"] == true
                                 Page.SETTINGS -> true
                             } }.forEach { item ->
                                 val icon = when (item) {
@@ -268,6 +273,7 @@ private fun MatarAdminApp() {
                                     Page.MESSAGES -> Icons.Default.MarkChatUnread
                                     Page.BUTTONS -> Icons.Default.EditNote
                                     Page.REFERRALS -> Icons.Default.AccountBalanceWallet
+                                    Page.CONTENT -> Icons.Default.TextFields
                                     Page.SETTINGS -> Icons.Default.Settings
                                 }
                                 NavigationBarItem(
@@ -283,6 +289,9 @@ private fun MatarAdminApp() {
                                         }
                                         if (item == Page.REFERRALS && token != null && accountRole == "owner") {
                                             scope.launch { referralSummary = withContext(Dispatchers.IO) { AdminApi.loadReferrals(token) } }
+                                        }
+                                        if (item == Page.CONTENT && token != null) {
+                                            scope.launch { contentSettings = withContext(Dispatchers.IO) { AdminApi.loadContent(token) } }
                                         }
                                         if (item == Page.HOME && token != null) {
                                             scope.launch { dashboardStats = withContext(Dispatchers.IO) { AdminApi.loadDashboard(token) } }
@@ -485,6 +494,19 @@ private fun MatarAdminApp() {
                                     }
                                 }
                             )
+                            Page.CONTENT -> ContentScreen(
+                                settings = contentSettings,
+                                message = contentMessage,
+                                onSave = { edited ->
+                                    val token = accessToken
+                                    if (token == null) contentMessage = "سجّل الدخول أولاً."
+                                    else scope.launch {
+                                        val error = withContext(Dispatchers.IO) { AdminApi.saveContent(token, edited) }
+                                        contentMessage = error ?: "تم حفظ النصوص وإعداد الاشتراك."
+                                        if (error == null) contentSettings = withContext(Dispatchers.IO) { AdminApi.loadContent(token) } ?: contentSettings
+                                    }
+                                }
+                            )
                             Page.SETTINGS -> SettingsScreen(
                                 notifications = notifications,
                                 onNotificationChange = { key, value -> notifications = notifications + (key to value) },
@@ -525,6 +547,7 @@ private fun MatarAdminApp() {
                                     accountRole = null
                                     accountPermissions = emptyMap()
                                     buttons = emptyList()
+                                    contentSettings = null
                                     dashboardStats = null
                                     auditItems = emptyList()
                                     connected = false
@@ -1005,5 +1028,53 @@ private fun ReferralsScreen(
             confirmButton = { TextButton(onClick = { confirmPayout = false; val uid = targetUser.toLongOrNull(); val value = amount.toDoubleOrNull(); if (uid != null && value != null) onPayout(uid, value) }) { Text("تأكيد الصرف") } },
             dismissButton = { TextButton(onClick = { confirmPayout = false }) { Text("رجوع") } }
         )
+    }
+}
+
+@Composable
+private fun ContentScreen(
+    settings: BotContentSettings?,
+    message: String,
+    onSave: (BotContentSettings) -> Unit
+) {
+    var welcome by remember(settings?.welcomeMessage) { mutableStateOf(settings?.welcomeMessage ?: "") }
+    var subscriptionText by remember(settings?.subscriptionMessage) { mutableStateOf(settings?.subscriptionMessage ?: "") }
+    var terms by remember(settings?.termsMessage) { mutableStateOf(settings?.termsMessage ?: "") }
+    var maintenance by remember(settings?.maintenanceMessage) { mutableStateOf(settings?.maintenanceMessage ?: "") }
+    var channel by remember(settings?.requiredChannel) { mutableStateOf(settings?.requiredChannel ?: "") }
+    var forceSubscription by remember(settings?.forceSubscription) { mutableStateOf(settings?.forceSubscription ?: true) }
+    var botActive by remember(settings?.botStatus) { mutableStateOf(settings?.botStatus != "maintenance") }
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Text("نصوص البوت والاشتراك", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+        item { Text("هذه الإعدادات تُحفظ في قاعدة البوت. تأكد من أن حساب البوت يستطيع الوصول إلى القناة التي تحددها.") }
+        item { OutlinedTextField(value = welcome, onValueChange = { welcome = it.take(4000) }, label = { Text("رسالة الترحيب") }, modifier = Modifier.fillMaxWidth(), minLines = 3) }
+        item { OutlinedTextField(value = subscriptionText, onValueChange = { subscriptionText = it.take(4000) }, label = { Text("رسالة الاشتراك الإجباري") }, modifier = Modifier.fillMaxWidth(), minLines = 3) }
+        item { OutlinedTextField(value = terms, onValueChange = { terms = it.take(4000) }, label = { Text("الشروط والأحكام") }, modifier = Modifier.fillMaxWidth(), minLines = 3) }
+        item { OutlinedTextField(value = maintenance, onValueChange = { maintenance = it.take(4000) }, label = { Text("رسالة الصيانة") }, modifier = Modifier.fillMaxWidth(), minLines = 3) }
+        item { OutlinedTextField(value = channel, onValueChange = { channel = it.take(100) }, label = { Text("معرف القناة مثل @MyChannel أو رقم يبدأ بـ -100") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("فرض الاشتراك لكل المستخدمين", fontWeight = FontWeight.Bold)
+                    Text("عند إيقافه يتجاوز البوت فحص الاشتراك الإجباري.", style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = forceSubscription, onCheckedChange = { forceSubscription = it })
+            }
+        }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("حالة البوت", fontWeight = FontWeight.Bold)
+                    Text(if (botActive) "نشط" else "صيانة", style = MaterialTheme.typography.bodySmall)
+                }
+                Switch(checked = botActive, onCheckedChange = { botActive = it })
+            }
+        }
+        item {
+            Button(onClick = {
+                onSave(BotContentSettings(welcome, subscriptionText, terms, maintenance, channel.trim(), forceSubscription, if (botActive) "active" else "maintenance"))
+            }, enabled = settings != null && channel.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("حفظ إعدادات البوت") }
+        }
+        if (message.isNotBlank()) item { Text(message, color = MaterialTheme.colorScheme.primary) }
     }
 }
