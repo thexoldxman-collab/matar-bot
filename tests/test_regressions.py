@@ -1567,7 +1567,7 @@ class RegressionTests(unittest.TestCase):
 
     def test_admin_category_callback_opens_expected_section(self):
         m = self.m
-        with patch.object(m.bot, 'answer_callback_query') as answer, patch.object(m.bot, 'edit_message_text') as edit:
+        with patch.object(m.bot, 'answer_callback_query'), patch.object(m.bot, 'edit_message_text') as edit:
             m.handle_all_callbacks(self.fake_call('admin_cat_users'))
         edit.assert_called_once()
         kwargs = edit.call_args.kwargs
