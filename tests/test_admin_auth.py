@@ -42,6 +42,28 @@ class AdminAuthTests(unittest.TestCase):
             lambda uid: uid in self.moderators,
             lambda uid, permission: uid == 2002 and permission == "can_view_stats",
         )
+        self.conn.executescript("""
+            CREATE TABLE pending_charges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER, method TEXT, receipt_number TEXT, amount REAL,
+                syriatel_code TEXT, status TEXT DEFAULT 'pending', created_at TEXT,
+                processed_by INTEGER, processed_at TEXT, notification_msg_id INTEGER,
+                txn_receipt TEXT
+            );
+            CREATE TABLE pending_withdraws (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER, method TEXT, account TEXT, amount REAL,
+                commission REAL, net_amount REAL, currency TEXT DEFAULT 'ليرة سورية',
+                status TEXT DEFAULT 'pending', created_at TEXT, processed_by INTEGER,
+                processed_at TEXT, notification_msg_id INTEGER, txn_receipt TEXT,
+                reserved INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO pending_charges(user_id,method,receipt_number,amount,status,created_at)
+            VALUES (3003,'syriatel','receipt-1',25000,'pending','2026-10-17T04:00:00Z');
+            INSERT INTO pending_withdraws(user_id,method,account,amount,commission,net_amount,status,created_at)
+            VALUES (3004,'sham','account-1',10000,500,9500,'pending','2026-10-17T04:01:00Z');
+        """)
+        self.conn.commit()
         self.client = self.app.test_client()
 
     def tearDown(self):
@@ -104,6 +126,7 @@ class AdminAuthTests(unittest.TestCase):
         self.assertIn("غير", self.bot.messages[-1][1])
         count = self.conn.execute("SELECT COUNT(*) FROM admin_link_codes").fetchone()[0]
         self.assertEqual(count, 0)
+
 
     def test_sqlite_begin_immediate_is_translated_for_postgres(self):
         self.assertEqual(translate_sql("BEGIN IMMEDIATE"), ("BEGIN", None))

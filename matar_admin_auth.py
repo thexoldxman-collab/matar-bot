@@ -36,7 +36,7 @@ def _token_hash(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_permission):
+def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_permission, get_conn=None):
     """Register /link and API endpoints; call once after creating the Flask app."""
     conn.execute(
         """CREATE TABLE IF NOT EXISTS admin_link_codes (
@@ -60,6 +60,35 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
         )"""
     )
     conn.commit()
+    initialized_connections = {id(conn)}
+
+    def db():
+        active = get_conn() if callable(get_conn) else conn
+        if id(active) not in initialized_connections:
+            active.execute(
+                """CREATE TABLE IF NOT EXISTS admin_link_codes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id BIGINT NOT NULL,
+                    role TEXT NOT NULL,
+                    code_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    used INTEGER NOT NULL DEFAULT 0
+                )"""
+            )
+            active.execute(
+                """CREATE TABLE IF NOT EXISTS admin_sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    role TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    revoked INTEGER NOT NULL DEFAULT 0
+                )"""
+            )
+            active.commit()
+            initialized_connections.add(id(active))
+        return active
 
     def current_role(user_id):
         if int(user_id) == int(owner_id):
@@ -86,7 +115,7 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
         if role is None:
             bot.send_message(
                 chat_id,
-                "❌ ربط التطبيق متاح للمالك والمشرفين المضافين فقط.",
+                "❌ هذا الحساب غير مخوّل لربط التطبيق؛ الربط متاح للمالك والمشرفين المضافين فقط.",
             )
             return
         code = f"{secrets.randbelow(1_000_000):06d}"
@@ -94,14 +123,14 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
         created_at = _iso(now)
         expires_at = _iso(now + timedelta(minutes=5))
         with db_lock:
-            conn.execute("UPDATE admin_link_codes SET used=1 WHERE user_id=? AND used=0", (user_id,))
-            conn.execute(
+            db().execute("UPDATE admin_link_codes SET used=1 WHERE user_id=? AND used=0", (user_id,))
+            db().execute(
                 """INSERT INTO admin_link_codes
                    (user_id, role, code_hash, created_at, expires_at, used)
                    VALUES (?, ?, ?, ?, ?, 0)""",
                 (user_id, role, _token_hash(code), created_at, expires_at),
             )
-            conn.commit()
+            db().commit()
         bot.send_message(
             chat_id,
             "🔐 رمز ربط تطبيق إدارة ماتر\n\n"
@@ -125,47 +154,47 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
         role = None
         user_id = None
         with db_lock:
-            conn.execute("BEGIN IMMEDIATE")
+            db().execute("BEGIN IMMEDIATE")
             try:
-                row = conn.execute(
+                row = db().execute(
                     """SELECT id, user_id FROM admin_link_codes
                        WHERE code_hash=? AND used=0 AND expires_at>?
                        ORDER BY id DESC LIMIT 1""",
                     (_token_hash(code), now_text),
                 ).fetchone()
                 if not row:
-                    conn.rollback()
+                    db().rollback()
                     return jsonify({"ok": False, "error": "invalid_or_expired_code"}), 401
 
                 code_id, user_id = int(row[0]), int(row[1])
                 role = current_role(user_id)
                 if role is None:
-                    conn.execute(
+                    db().execute(
                         "UPDATE admin_link_codes SET used=1 WHERE id=? AND used=0",
                         (code_id,),
                     )
-                    conn.commit()
+                    db().commit()
                     return jsonify({"ok": False, "error": "access_revoked"}), 403
 
-                changed = conn.execute(
+                changed = db().execute(
                     """UPDATE admin_link_codes SET used=1
                        WHERE id=? AND used=0 AND expires_at>?""",
                     (code_id, now_text),
                 )
                 if changed.rowcount != 1:
-                    conn.rollback()
+                    db().rollback()
                     return jsonify({"ok": False, "error": "invalid_or_expired_code"}), 401
 
                 session_expiry = _iso(_now() + timedelta(hours=12))
-                conn.execute(
+                db().execute(
                     """INSERT INTO admin_sessions
                        (token_hash, user_id, role, created_at, expires_at, revoked)
                        VALUES (?, ?, ?, ?, ?, 0)""",
                     (_token_hash(raw_token), user_id, role, now_text, session_expiry),
                 )
-                conn.commit()
+                db().commit()
             except Exception:
-                conn.rollback()
+                db().rollback()
                 app.logger.exception("Admin app authentication failed")
                 return jsonify({"ok": False, "error": "authentication_unavailable"}), 503
 
@@ -191,7 +220,7 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
             return None
         now_text = _iso(_now())
         with db_lock:
-            row = conn.execute(
+            row = db().execute(
                 """SELECT user_id FROM admin_sessions
                    WHERE token_hash=? AND revoked=0 AND expires_at>?""",
                 (_token_hash(token), now_text),
@@ -224,8 +253,10 @@ def register_admin_auth(app, bot, conn, db_lock, owner_id, is_moderator, check_p
             return jsonify({"ok": False, "error": "unauthorized"}), 401
         _, digest = session
         with db_lock:
-            conn.execute("UPDATE admin_sessions SET revoked=1 WHERE token_hash=?", (digest,))
-            conn.commit()
+            db().execute("UPDATE admin_sessions SET revoked=1 WHERE token_hash=?", (digest,))
+            db().commit()
         return jsonify({"ok": True}), 200
 
+
+    app.config["MATAR_ADMIN_AUTH_SESSION"] = authenticated_session
     return issue_link_code_for_user

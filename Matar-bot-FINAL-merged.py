@@ -203,35 +203,35 @@ class RetrySystem:
             return
         
         now = datetime.now()
-        for request in self.retry_queue:
-            if request['status'] != 'pending':
+        for retry_item in self.retry_queue:
+            if retry_item['status'] != 'pending':
                 continue
             
             # التحقق من وقت المحاولة التالية
-            if request['last_attempt']:
-                last = datetime.strptime(request['last_attempt'], "%Y-%m-%d %H:%M:%S")
+            if retry_item['last_attempt']:
+                last = datetime.strptime(retry_item['last_attempt'], "%Y-%m-%d %H:%M:%S")
                 if (now - last).total_seconds() < RETRY_DELAY * 60:
                     continue
             
             # تنفيذ المحاولة
-            request['attempts'] += 1
-            request['last_attempt'] = now.strftime("%Y-%m-%d %H:%M:%S")
+            retry_item['attempts'] += 1
+            retry_item['last_attempt'] = now.strftime("%Y-%m-%d %H:%M:%S")
             
             try:
-                success = self.execute_request(request)
+                success = self.execute_request(retry_item)
                 if success:
-                    request['status'] = 'success'
-                    retry_logger.info(f"✅ طلب {request['type']} للمستخدم {request['user_id']} نجح بعد {request['attempts']} محاولات")
+                    retry_item['status'] = 'success'
+                    retry_logger.info(f"✅ طلب {retry_item['type']} للمستخدم {retry_item['user_id']} نجح بعد {retry_item['attempts']} محاولات")
                     # إشعار للمستخدم بالنجاح
-                    bot.send_message(request['user_id'], "✅ تمت معالجة طلبك بنجاح بعد محاولة إعادة")
+                    bot.send_message(retry_item['user_id'], "✅ تمت معالجة طلبك بنجاح بعد محاولة إعادة")
                 else:
-                    if request['attempts'] >= request['max_attempts']:
-                        request['status'] = 'failed'
-                        retry_logger.error(f"❌ طلب {request['type']} للمستخدم {request['user_id']} فشل نهائياً بعد {request['attempts']} محاولات")
+                    if retry_item['attempts'] >= retry_item['max_attempts']:
+                        retry_item['status'] = 'failed'
+                        retry_logger.error(f"❌ طلب {retry_item['type']} للمستخدم {retry_item['user_id']} فشل نهائياً بعد {retry_item['attempts']} محاولات")
                         # إشعار للمالك
                         notifier.send_to_admin(
                             title="⚠️ فشل طلب بعد إعادة المحاولة",
-                            message=f"نوع الطلب: {request['type']}\nالمستخدم: {request['user_id']}\nالبيانات: {request['data']}"
+                            message=f"نوع الطلب: {retry_item['type']}\nالمستخدم: {retry_item['user_id']}\nالبيانات: {retry_item['data']}"
                         )
             except Exception as e:
                 error_logger.error(f"خطأ في إعادة المحاولة: {e}")
@@ -896,6 +896,8 @@ def setup_database(database_url_override=None):
         ('bot_status', 'active', 'حالة البوت', 'text'),
         ('welcome_message', 'اهلا وسهلا بك في بوت Matar البوت الرسمي لموقع ichancy', 'رسالة الترحيب', 'text'),
         ('subscription_message', '🎯 **أهلاً وسهلاً بك في بوت Matar** 🌧️\n\nالبوت الرسمي لموقع Ichancy.\n\n⚠️ **شرط أساسي لاستخدام البوت:**\nالرجاء الاشتراك في قناتنا على تيلغرام لتتمكن من استخدام البوت', 'رسالة الاشتراك الإلزامي', 'text'),
+        ('required_channel', CHANNEL_ID, 'معرف قناة الاشتراك الإجباري', 'text'),
+        ('force_subscription', '1', 'تفعيل الاشتراك الإجباري لكل المستخدمين', 'boolean'),
         ('terms_message', '📜 الشروط:\n\n1. الاشتراك بالقناة إلزامي\n2. الحد الأدنى للشحن: 100 ل.س\n3. السحب: سيرياتل 25k-500k، شام 25k-5M\n4. عمولة السحب: 10%\n5. مدة السحب: 1-24 ساعة', 'نص الشروط', 'text'),
         ('referral_percentage', '10', 'نسبة الإحالات', 'number'),
         ('next_referral_payout', '', 'موعد الدفعة القادمة', 'text'),
@@ -1374,9 +1376,13 @@ def switch_operation_mode(target_mode, admin_id=ADMIN_ID):
     return target_mode
 
 def check_subscription(uid):
-    """التحقق من اشتراك المستخدم في القناة"""
+    """التحقق من الاشتراك الإجباري باستخدام إعدادات قاعدة البيانات."""
     try:
-        member = bot.get_chat_member(CHANNEL_ID, uid)
+        force = str(get_db_setting('force_subscription') or '1').strip().lower()
+        if force in ('0', 'false', 'no', 'off', 'disabled'):
+            return True
+        channel = str(get_db_setting('required_channel') or CHANNEL_ID).strip() or CHANNEL_ID
+        member = bot.get_chat_member(channel, uid)
         return member.status in ['member', 'administrator', 'creator']
     except Exception as e:
         logger.error(f"خطأ في التحقق من الاشتراك للمستخدم {uid}: {e}")
@@ -10833,7 +10839,15 @@ PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://matar-bot.onrender.
 
 # ربط آمن لتطبيق الإدارة: رمز تيليغرام أحادي الاستخدام وصلاحيات يحددها الخادم.
 from matar_admin_auth import register_admin_auth
-issue_admin_link_code = register_admin_auth(app, bot, conn, db_lock, ADMIN_ID, is_moderator, check_permission)
+issue_admin_link_code = register_admin_auth(app, bot, conn, db_lock, ADMIN_ID, is_moderator, check_permission, get_conn=lambda: conn)
+from matar_admin_api import register_admin_api
+register_admin_api(app, bot, conn, db_lock, ADMIN_ID, check_permission,
+                   get_operation_mode=get_operation_mode,
+                   complete_charge=complete_pending_charge,
+                   complete_withdraw=complete_pending_withdraw,
+                   cancel_charge=cancel_pending_charge_atomic,
+                   cancel_withdraw=cancel_pending_withdraw_atomic,
+                   get_conn=lambda: conn)
 
 @app.route('/telegram/webhook', methods=['POST'])
 def telegram_webhook():
