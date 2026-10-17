@@ -74,7 +74,7 @@ class AdminApiTests(unittest.TestCase):
         os.unlink(self.path)
 
     def test_pairing_code_is_one_time_and_returns_owner_session(self):
-        self.bot.handlers["adminapp"](FakeMessage(123456))
+        self.app.config["matar_admin_app_pairing_handler"](FakeMessage(123456))
         code = re.findall(r"\b[A-Z0-9]{8}\b", self.bot.replies[-1])[-1]
 
         response = self.client.post("/api/admin/pairing/exchange", json={"code": code})
@@ -91,7 +91,7 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(reused.status_code, 401)
 
     def test_unknown_telegram_user_cannot_request_pairing_code(self):
-        self.bot.handlers["adminapp"](FakeMessage(777777))
+        self.app.config["matar_admin_app_pairing_handler"](FakeMessage(777777))
         self.assertIn("غير مخوّل", self.bot.replies[-1])
 
     def _owner_token(self):
