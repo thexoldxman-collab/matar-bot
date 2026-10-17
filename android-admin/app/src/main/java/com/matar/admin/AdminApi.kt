@@ -66,6 +66,68 @@ object AdminApi {
         request("POST", "/api/admin/logout", token, null)
     }
 
+    fun loadOperations(token: String): List<QueueItem>? {
+        val (status, body) = request("GET", "/api/admin/operations", token, null)
+        if (status !in 200..299) return null
+        return try {
+            val items = JSONObject(body).optJSONArray("items") ?: return emptyList()
+            buildList {
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    val typeKey = item.optString("type", "charge")
+                    val claim = item.optJSONObject("claim")
+                    val claimOwner = if (claim != null && !claim.isNull("claimed_by")) claim.optLong("claimed_by") else null
+                    val baseStatus = item.optString("status", "pending")
+                    val visibleStatus = if (claimOwner != null) "مستلم بواسطة $claimOwner" else when (baseStatus) {
+                        "pending" -> "بانتظار التنفيذ"
+                        "processing" -> "قيد المعالجة"
+                        else -> baseStatus
+                    }
+                    val amount = item.optDouble("amount", 0.0)
+                    add(QueueItem(
+                        id = item.optInt("id"),
+                        type = if (typeKey == "withdraw") "طلب سحب" else "طلب شحن",
+                        user = item.optString("user_id", "غير معروف"),
+                        amount = String.format(java.util.Locale.ROOT, "%,.0f", amount) + " ل.س",
+                        status = visibleStatus,
+                        typeKey = typeKey,
+                        userId = if (item.isNull("user_id")) null else item.optLong("user_id"),
+                        claimOwner = claimOwner
+                    ))
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun claimOperation(token: String, type: String, id: Int): String? {
+        val (status, body) = request("POST", "/api/admin/operations/$type/$id/claim", token, JSONObject())
+        if (status in 200..299) return null
+        return try {
+            when (JSONObject(body).optString("error")) {
+                "already_claimed" -> "استلم مشرف آخر هذا الطلب. حدّث القائمة وحاول بطلب آخر."
+                "permission_denied" -> "ما عندك صلاحية لتنفيذ هذا النوع من الطلبات."
+                "operation_not_found" -> "الطلب لم يعد موجوداً."
+                "operation_not_open" -> "الطلب لم يعد متاحاً للاستلام."
+                else -> "تعذر استلام الطلب؛ تحقق من اتصال الخادم."
+            }
+        } catch (_: Exception) {
+            "تعذر استلام الطلب؛ تحقق من اتصال الخادم."
+        }
+    }
+
+    fun completeOperation(token: String, type: String, id: Int): String {
+        val (status, body) = request("POST", "/api/admin/operations/$type/$id/complete", token, JSONObject())
+        return try {
+            val json = JSONObject(body)
+            json.optString("message").takeIf { it.isNotBlank() }
+                ?: if (status in 200..299) "تمت العملية." else "لم يتم تنفيذ العملية؛ لم تتغير الأرصدة."
+        } catch (_: Exception) {
+            "تعذر الاتصال بالخادم؛ لم يتم تأكيد التنفيذ."
+        }
+    }
+
     fun saveNotifications(token: String, preferences: Map<String, Boolean>): Boolean {
         val prefs = JSONObject()
         preferences.forEach { (key, value) -> prefs.put(key, value) }
