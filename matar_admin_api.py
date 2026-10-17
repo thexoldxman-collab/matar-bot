@@ -102,8 +102,21 @@ def register_admin_api(app, bot, conn, db_lock, owner_id, check_permission,\n   
         return "can_handle_withdraws" if operation_type == "withdraw" else "can_handle_charges"
 
     def ensure_claims_table():
-        # Expired claims are treated as free immediately; delete lazily to keep the table small.
-        conn.execute("DELETE FROM admin_operation_claims WHERE expires_at<=?", (_iso(),))
+        # Reopen the underlying request when the ten-minute lease expires.
+        now_text = _iso()
+        expired = conn.execute(
+            "SELECT operation_type,operation_id,claimed_by FROM admin_operation_claims WHERE expires_at<=?",
+            (now_text,),
+        ).fetchall()
+        for claim in expired:
+            operation_type, operation_id, claimed_by = claim
+            table = "pending_charges" if operation_type == "charge" else "pending_withdraws"
+            conn.execute(
+                f"""UPDATE {table} SET status='pending', processed_by=NULL, processed_at=NULL
+                    WHERE id=? AND status='processing' AND processed_by=?""",
+                (int(operation_id), int(claimed_by)),
+            )
+        conn.execute("DELETE FROM admin_operation_claims WHERE expires_at<=?", (now_text,))
         conn.commit()
 
     @app.get("/api/admin/dashboard")
@@ -193,12 +206,16 @@ def register_admin_api(app, bot, conn, db_lock, owner_id, check_permission,\n   
         table = "pending_charges" if operation_type == "charge" else "pending_withdraws"
         with db_lock:
             try:
+                ensure_claims_table()
+                conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute(
-                    f"SELECT status FROM {table} WHERE id=?", (operation_id,)
+                    f"SELECT status,processed_by FROM {table} WHERE id=?", (operation_id,)
                 ).fetchone()
                 if not row:
+                    conn.rollback()
                     return jsonify({"ok": False, "error": "operation_not_found"}), 404
                 if row[0] not in ("pending", "processing"):
+                    conn.rollback()
                     return jsonify({"ok": False, "error": "operation_not_open"}), 409
                 existing = conn.execute(
                     """SELECT claimed_by,expires_at FROM admin_operation_claims
@@ -207,6 +224,19 @@ def register_admin_api(app, bot, conn, db_lock, owner_id, check_permission,\n   
                 ).fetchone()
                 uid = int(user["telegram_id"])
                 if existing and str(existing[1]) > now_text and int(existing[0]) != uid:
+                    conn.rollback()
+                    return jsonify({"ok": False, "error": "already_claimed"}), 409
+                processed_by = row[1]
+                if row[0] == "processing" and processed_by not in (None, uid):
+                    conn.rollback()
+                    return jsonify({"ok": False, "error": "already_claimed"}), 409
+                updated = conn.execute(
+                    f"""UPDATE {table} SET status='processing',processed_by=?
+                        WHERE id=? AND status IN ('pending','processing')""",
+                    (uid, operation_id),
+                )
+                if updated.rowcount != 1:
+                    conn.rollback()
                     return jsonify({"ok": False, "error": "already_claimed"}), 409
                 if existing:
                     conn.execute(
@@ -247,8 +277,15 @@ def register_admin_api(app, bot, conn, db_lock, owner_id, check_permission,\n   
             ).fetchone()
             if not row:
                 return jsonify({"ok": True, "message": "الطلب غير مستلم حالياً."}), 200
-            if int(row[0]) != int(user["telegram_id"]) and user.get("role") != "owner":
+            claimed_by = int(row[0])
+            if claimed_by != int(user["telegram_id"]) and user.get("role") != "owner":
                 return forbidden()
+            table = "pending_charges" if operation_type == "charge" else "pending_withdraws"
+            conn.execute(
+                f"""UPDATE {table} SET status='pending',processed_by=NULL,processed_at=NULL
+                    WHERE id=? AND status='processing' AND processed_by=?""",
+                (operation_id, claimed_by),
+            )
             conn.execute(
                 "DELETE FROM admin_operation_claims WHERE operation_type=? AND operation_id=?",
                 (operation_type, operation_id),
