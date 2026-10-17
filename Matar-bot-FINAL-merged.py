@@ -10840,7 +10840,8 @@ register_admin_api(app, bot, conn, db_lock, ADMIN_ID, check_permission,
                    complete_charge=complete_pending_charge,
                    complete_withdraw=complete_pending_withdraw,
                    cancel_charge=cancel_pending_charge_atomic,
-                   cancel_withdraw=cancel_pending_withdraw_atomic)
+                   cancel_withdraw=cancel_pending_withdraw_atomic,
+                   get_conn=lambda: conn)
 
 @app.route('/telegram/webhook', methods=['POST'])
 def telegram_webhook():
