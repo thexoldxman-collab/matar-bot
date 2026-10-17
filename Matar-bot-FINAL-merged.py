@@ -2168,8 +2168,7 @@ def wheel_admin_keyboard():
     kb.add(types.InlineKeyboardButton('➕ إضافة جائزة', callback_data='wheel_add'))
     kb.add(types.InlineKeyboardButton('📋 إدارة الجوائز', callback_data='wheel_prizes'))
     kb.add(types.InlineKeyboardButton('💰 تعديل شرط الشحن', callback_data='wheel_threshold'))
-    kb.add(types.InlineKeyboardButton('🧰 التحكم بحالة العجلة من مركز التحكم', callback_data='admin_control_center'))
-    kb.add(types.InlineKeyboardButton('🔙 رجوع', callback_data='back_to_full_admin'))
+    kb.add(types.InlineKeyboardButton('🔙 رجوع إلى مركز التحكم', callback_data='admin_control_center'))
     return kb
 
 def wheel_status_text():
@@ -3785,7 +3784,6 @@ def get_full_admin_keyboard():
     keyboard.add(
         types.InlineKeyboardButton("👥 المستخدمون والمشرفون", callback_data="admin_cat_users"),
         types.InlineKeyboardButton("💰 المال والعمليات", callback_data="admin_cat_finance"),
-        types.InlineKeyboardButton("🔌 التكاملات والميزات", callback_data="admin_cat_services"),
         types.InlineKeyboardButton("🧩 الأزرار والرسائل", callback_data="admin_cat_content"),
         types.InlineKeyboardButton("📊 التقارير والسجلات", callback_data="admin_cat_reports"),
         types.InlineKeyboardButton("⚙️ النظام والنسخ الاحتياطي", callback_data="admin_cat_system"),
@@ -3830,10 +3828,13 @@ def get_operations_control_keyboard():
             types.InlineKeyboardButton(f"✏️ تعديل {label}", callback_data=edit_callback),
         )
     wheel_active = wheel_is_enabled()
-    keyboard.add(types.InlineKeyboardButton(
-        f"{'🟢' if wheel_active else '🔴'} عجلة الحظ: {'إيقاف' if wheel_active else 'تشغيل'}",
-        callback_data="control_toggle_wheel",
-    ))
+    keyboard.add(
+        types.InlineKeyboardButton(
+            f"{'🟢' if wheel_active else '🔴'} عجلة الحظ: {'إيقاف' if wheel_active else 'تشغيل'}",
+            callback_data="control_toggle_wheel",
+        ),
+        types.InlineKeyboardButton("🎡 إعدادات وجوائز العجلة", callback_data="wheel_admin"),
+    )
     keyboard.add(
         types.InlineKeyboardButton("🔌 إدارة اتصالات API", callback_data="admin_api_connect"),
         types.InlineKeyboardButton("💳 حدود وعمولات الدفع", callback_data="admin_payment"),
@@ -3892,10 +3893,7 @@ def get_admin_category_keyboard(category):
             ("👥 نظام الإحالات", "admin_referrals"),
             ("🎁 نظام الهدايا", "admin_gifts"),
         ],
-        "services": [
-            ("🔌 اتصالات API", "admin_api_connect"),
-            ("🎡 إدارة جوائز عجلة الحظ", "wheel_admin"),
-        ],
+        "services": [],
         "content": [
             ("📝 إدارة الأزرار", "admin_buttons"),
             ("📨 الرسائل الجماعية", "admin_broadcast"),
@@ -6277,7 +6275,7 @@ def handle_all_callbacks(call):
         if category == 'control' and uid != ADMIN_ID:
             safe_answer_callback(call.id, "❌ مركز التشغيل والوضع الحقيقي للمالك فقط.", show_alert=True)
             return
-        if category == 'control':
+        if category in ('control', 'services'):
             render_operations_control(call.message.chat.id, call.message.message_id)
         else:
             bot.edit_message_text(
