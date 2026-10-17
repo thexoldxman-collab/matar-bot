@@ -127,17 +127,13 @@ object AdminApi {
 
     fun releaseOperation(token: String, type: String, id: Int): String? {
         val (status, body) = request("POST", "/api/admin/operations/$type/$id/release", token, JSONObject())
-        return if (status in 200..299) {
-            try { JSONObject(body).optString("message").takeIf { it.isNotBlank() } } catch (_: Exception) { null }
-        } else apiError(body, "تعذر تحرير استلام الطلب.")
+        return if (status in 200..299) null else apiError(body, "تعذر تحرير استلام الطلب.")
     }
 
     fun cancelOperation(token: String, type: String, id: Int, reason: String): String? {
         val payload = JSONObject().put("reason", reason)
         val (status, body) = request("POST", "/api/admin/operations/$type/$id/cancel", token, payload)
-        return if (status in 200..299) {
-            try { JSONObject(body).optString("message").takeIf { it.isNotBlank() } } catch (_: Exception) { null }
-        } else apiError(body, "تعذر إلغاء الطلب؛ لم يتم تأكيد الإلغاء.")
+        return if (status in 200..299) null else apiError(body, "تعذر إلغاء الطلب؛ لم يتم تأكيد الإلغاء.")
     }
 
     fun completeOperation(token: String, type: String, id: Int): String {

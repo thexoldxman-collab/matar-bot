@@ -226,11 +226,39 @@ private fun MatarAdminApp() {
                                         selectedRequest = id
                                     }
                                 },
-                                onTake = { id ->
-                                    if (connected && liveOperations) {
-                                        operationMessage = "تم استلام الطلب. خيارات التنفيذ المالي لم تُفعّل بعد حتى لا نعلن نجاحاً وهمياً."
+                                onRelease = { id ->
+                                    val token = accessToken
+                                    val item = queue.firstOrNull { it.id == id }
+                                    if (connected && liveOperations && token != null && item != null) {
+                                        scope.launch {
+                                            val error = withContext(Dispatchers.IO) { AdminApi.releaseOperation(token, item.typeKey, id) }
+                                            operationMessage = error ?: "تم تحرير الطلب وإعادته إلى قائمة الانتظار."
+                                            if (error == null) {
+                                                queue = withContext(Dispatchers.IO) { AdminApi.loadOperations(token) } ?: queue
+                                                selectedRequest = null
+                                                actionNote = ""
+                                            }
+                                        }
                                     } else {
-                                        queue = queue.map { if (it.id == id) it.copy(status = "قيد التنفيذ — مشرف تجريبي") else it }
+                                        selectedRequest = null
+                                        operationMessage = "تم إلغاء الاستلام التجريبي."
+                                    }
+                                },
+                                onCancel = { id, reason ->
+                                    val token = accessToken
+                                    val item = queue.firstOrNull { it.id == id }
+                                    if (connected && liveOperations && token != null && item != null) {
+                                        scope.launch {
+                                            val error = withContext(Dispatchers.IO) { AdminApi.cancelOperation(token, item.typeKey, id, reason) }
+                                            operationMessage = error ?: "تم إلغاء الطلب وإشعار المستخدم."
+                                            if (error == null) {
+                                                queue = withContext(Dispatchers.IO) { AdminApi.loadOperations(token) } ?: queue
+                                                selectedRequest = null
+                                                actionNote = ""
+                                            }
+                                        }
+                                    } else {
+                                        operationMessage = "الإلغاء التجريبي لا يغيّر أي بيانات مالية."
                                     }
                                 },
                                 onComplete = { id ->
@@ -239,6 +267,14 @@ private fun MatarAdminApp() {
                                     if (connected && liveOperations && token != null && item != null) {
                                         scope.launch {
                                             operationMessage = withContext(Dispatchers.IO) { AdminApi.completeOperation(token, item.typeKey, id) }
+                                            val refreshed = withContext(Dispatchers.IO) { AdminApi.loadOperations(token) }
+                                            if (refreshed != null) {
+                                                queue = refreshed
+                                                if (refreshed.none { it.id == id && it.typeKey == item.typeKey }) {
+                                                    selectedRequest = null
+                                                    actionNote = ""
+                                                }
+                                            }
                                         }
                                     } else {
                                         queue = queue.map { if (it.id == id) it.copy(status = "منجز تجريبياً") else it }
@@ -436,8 +472,10 @@ private fun OperationsRoom(
     queue: List<QueueItem>, selected: Int?, note: String,
     message: String, liveMode: Boolean,
     onNoteChange: (String) -> Unit, onSelect: (Int) -> Unit,
-    onTake: (Int) -> Unit, onComplete: (Int) -> Unit
+    onRelease: (Int) -> Unit, onCancel: (Int, String) -> Unit, onComplete: (Int) -> Unit
 ) {
+    var confirmCancel by remember { mutableStateOf(false) }
+    var cancelTarget by remember { mutableStateOf<Int?>(null) }
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("غرفة العمليات المشتركة", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
         item { Text(if (liveMode) "قائمة الطلبات متصلة بالخادم. الاستلام يقفل الطلب 10 دقائق؛ إتمام المعاملة المالية محظور حتى ربط المعالجة الذرية." else "آلية الاستلام والتنفيذ معروضة تجريبياً. لن تُنفّذ أي معاملة حقيقية.") }
@@ -458,15 +496,44 @@ private fun OperationsRoom(
                     if (selected == item.id) {
                         OutlinedTextField(value = note, onValueChange = onNoteChange, label = { Text("ملاحظات / تفاصيل الإجراء") }, modifier = Modifier.fillMaxWidth())
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { onTake(item.id) }, modifier = Modifier.weight(1f)) { Text("إجراء") }
-                            OutlinedButton(onClick = { onComplete(item.id) }, modifier = Modifier.weight(1f)) { Text("تم التنفيذ") }
+                            OutlinedButton(onClick = { onRelease(item.id) }, modifier = Modifier.weight(1f)) { Text("تحرير الاستلام") }
+                            Button(onClick = { onComplete(item.id) }, modifier = Modifier.weight(1f)) { Text("تم التنفيذ") }
                         }
+                        OutlinedButton(
+                            onClick = { cancelTarget = item.id; confirmCancel = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                        ) { Text("إلغاء الطلب") }
                     } else {
                         Button(onClick = { onSelect(item.id) }, modifier = Modifier.fillMaxWidth()) { Text("تنفيذ الطلب") }
                     }
                 }
             }
         }
+    }
+    if (confirmCancel && cancelTarget != null) {
+        AlertDialog(
+            onDismissRequest = { confirmCancel = false; cancelTarget = null },
+            title = { Text("تأكيد إلغاء الطلب") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("لن يتم الإلغاء إلا إذا أكد الخادم نجاح الإجراء. اكتب سبب الإلغاء في خانة الملاحظات أولاً.")
+                    Text("السبب الحالي: " + note.ifBlank { "لم يُكتب سبب بعد" })
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val id = cancelTarget
+                        if (id != null && note.isNotBlank()) onCancel(id, note.trim())
+                        confirmCancel = false
+                        cancelTarget = null
+                    },
+                    enabled = note.isNotBlank()
+                ) { Text("تأكيد الإلغاء") }
+            },
+            dismissButton = { TextButton(onClick = { confirmCancel = false; cancelTarget = null }) { Text("رجوع") } }
+        )
     }
 }
 
