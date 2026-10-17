@@ -1256,10 +1256,11 @@ def _copy_mode_configuration(source_conn, target_conn):
         setting_columns = [column[0] for column in (source_cursor.description or ())]
         setting_rows = source_cursor.fetchall()
         key_index = setting_columns.index('key')
-        placeholders = ','.join('?' for _ in MODE_SPECIFIC_SETTING_KEYS)
+        mode_specific_keys = tuple(sorted(MODE_SPECIFIC_SETTING_KEYS))
+        placeholders = ','.join('?' for _ in mode_specific_keys)
         target_conn.execute(
             f"DELETE FROM settings WHERE key NOT IN ({placeholders})",
-            tuple(MODE_SPECIFIC_SETTING_KEYS),
+            mode_specific_keys,
         )
         column_sql = ','.join(setting_columns)
         row_placeholders = ','.join('?' for _ in setting_columns)
