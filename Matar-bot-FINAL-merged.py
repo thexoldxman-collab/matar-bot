@@ -3562,18 +3562,16 @@ def get_admin_category_keyboard(category):
         ],
         "content": [
             ("📝 إدارة الأزرار", "admin_buttons"),
-            ("⚙️ الترحيب والشروط وإعدادات البوت", "admin_settings"),
             ("📨 الرسائل الجماعية", "admin_broadcast"),
-            ("🔔 إعدادات الإشعارات", "admin_notifications"),
         ],
         "reports": [
             ("📊 الإحصائيات", "admin_stats"),
             ("📋 سجل الإجراءات", "admin_logs"),
         ],
         "system": [
+            ("⚙️ رسالة الترحيب والشروط والإعدادات العامة", "admin_settings"),
+            ("🔔 إعدادات الإشعارات", "admin_notifications"),
             ("💾 النسخ الاحتياطي وقاعدة البيانات", "admin_backup"),
-            ("⚙️ إعدادات البوت العامة", "admin_settings"),
-            ("📋 سجل الإجراءات", "admin_logs"),
         ],
     }
     keyboard = types.InlineKeyboardMarkup(row_width=2)
