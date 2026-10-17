@@ -1762,5 +1762,36 @@ class RegressionTests(unittest.TestCase):
         start_ai.assert_not_called()
 
 
+    def test_database_target_comparison_ignores_connection_query_parameters(self):
+        m = self.m
+        self.assertTrue(m._same_database_target(
+            'postgresql://user:pass@db.example/neon?sslmode=require',
+            'postgresql://user:pass@db.example/neon?sslmode=verify-full',
+        ))
+        self.assertFalse(m._same_database_target(
+            'postgresql://user:pass@db.example/demo',
+            'postgresql://user:pass@db.example/production',
+        ))
+
+    def test_operation_mode_cannot_be_changed_without_switching_database(self):
+        m = self.m
+        with self.assertRaisesRegex(ValueError, 'switch_operation_mode'):
+            m.update_db_setting('operation_mode', 'real', m.ADMIN_ID)
+        self.assertEqual(m.get_operation_mode(), 'demo')
+
+    def test_ai_command_obeys_maintenance_mode(self):
+        m = self.m
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=m.ADMIN_ID + 11),
+            chat=SimpleNamespace(id=m.ADMIN_ID + 11),
+        )
+        with patch.object(m, 'check_bot_status', return_value=False), \\
+             patch.object(m.bot, 'send_message') as send, \\
+             patch.object(m, 'show_ai_menu') as show_ai:
+            m.handle_ai_command(message)
+        send.assert_called_once()
+        show_ai.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()
