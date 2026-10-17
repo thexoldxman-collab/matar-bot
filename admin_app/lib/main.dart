@@ -65,7 +65,7 @@ class _AdminHomeState extends State<AdminHome> {
   Future<void> pair() async {
     setState(() { busy = true; error = null; });
     try {
-      final r = await http.post(Uri.parse(apiBase + '/api/admin/v1/pair'),
+      final r = await http.post(Uri.parse('$apiBase/api/admin/v1/pair'),
         headers: {'Content-Type': 'application/json'}, body: jsonEncode({'code': code.text.trim()}))
         .timeout(const Duration(seconds: 80));
       final v = decode(r);
@@ -82,7 +82,7 @@ class _AdminHomeState extends State<AdminHome> {
   }
 
   Future<Map<String, dynamic>> call(String path, {Map<String, dynamic>? body}) async {
-    final headers = {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (token ?? '')};
+    final headers = {'Content-Type': 'application/json', 'Authorization': 'Bearer ${token ?? ''}'};
     final r = body == null
       ? await http.get(Uri.parse(apiBase + path), headers: headers).timeout(const Duration(seconds: 80))
       : await http.post(Uri.parse(apiBase + path), headers: headers, body: jsonEncode(body)).timeout(const Duration(seconds: 130));
@@ -156,7 +156,7 @@ class _AdminHomeState extends State<AdminHome> {
 
   @override
   Widget build(BuildContext context) {
-    if (token == null) return Scaffold(
+    if (token == null) {\n      return Scaffold(
       appBar: AppBar(title: const Text('إدارة Matar Bot')),
       body: Center(child: SingleChildScrollView(padding: const EdgeInsets.all(22), child: Card(
         child: Padding(padding: const EdgeInsets.all(20), child: Column(mainAxisSize: MainAxisSize.min, children: [
