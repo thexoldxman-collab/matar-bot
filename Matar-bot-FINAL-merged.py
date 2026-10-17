@@ -4500,6 +4500,108 @@ def process_update_binance_address(message):
 def process_update_binance_pay_id(message):
     _save_service_setting_from_message(message, 'binance_pay_id', 'معرّف Binance Pay')
 
+def process_demo_charge_amount(message, method_key):
+    """محاكاة طلب شحن في قاعدة الاختبار دون عرض بيانات دفع أو إرسال أموال."""
+    uid = message.from_user.id
+    try:
+        amount = float((message.text or '').strip())
+        minimum = float(get_db_setting('min_charge') or 0)
+        if not math.isfinite(amount) or amount <= 0 or amount < minimum:
+            raise ValueError
+    except (TypeError, ValueError):
+        bot.send_message(message.chat.id, "❌ أدخل مبلغاً تجريبياً موجباً لا يقل عن الحد الأدنى.")
+        return
+    if get_operation_mode() != 'demo':
+        bot.send_message(message.chat.id, "⚠️ تغيّر وضع التشغيل. أعد فتح طلب الشحن من القائمة.")
+        return
+    method_name = {'syria': 'سيرياتل كاش', 'sham': 'شام كاش', 'usdt': 'USDT', 'binance': 'Binance'}.get(method_key, method_key)
+    receipt = f"DEMO-{secrets.token_hex(6).upper()}"
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute(
+        "INSERT INTO pending_charges(user_id, method, receipt_number, amount, status, created_at) VALUES(?,?,?,?,?,?)",
+        (uid, f"demo_{method_key}", receipt, amount, 'pending', created_at),
+    )
+    charge_id = cursor.lastrowid
+    conn.commit()
+    bot.send_message(
+        message.chat.id,
+        f"🧪 **تم إنشاء طلب شحن تجريبي #{charge_id}**\n"
+        f"الوسيلة: {method_name}\nالمبلغ: {amount:,.2f}\n"
+        "لم نعرض أي عنوان دفع ولم يتم تحويل أو استقبال أي أموال حقيقية.",
+        parse_mode="Markdown",
+    )
+    try:
+        bot.send_message(
+            ADMIN_ID,
+            f"🧪 طلب شحن تجريبي #{charge_id}\nالمستخدم: {uid}\nالوسيلة: {method_name}\nالمبلغ: {amount:,.2f}\nالإيصال التجريبي: {receipt}",
+        )
+    except Exception:
+        logger.exception("Could not notify owner about demo charge request")
+
+def process_demo_withdraw_amount(message, method_key):
+    """بدء طلب سحب تجريبي من رصيد قاعدة الاختبار فقط."""
+    uid = message.from_user.id
+    try:
+        amount = float((message.text or '').strip())
+        if not math.isfinite(amount) or amount <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        bot.send_message(message.chat.id, "❌ أدخل مبلغ سحب تجريبي موجباً.")
+        return
+    if get_operation_mode() != 'demo':
+        bot.send_message(message.chat.id, "⚠️ تغيّر وضع التشغيل. أعد فتح طلب السحب من القائمة.")
+        return
+    row = cursor.execute("SELECT balance FROM users WHERE user_id=? AND deleted=0", (uid,)).fetchone()
+    if not row or float(row[0] or 0) < amount:
+        bot.send_message(message.chat.id, "❌ رصيد الاختبار غير كافٍ. أضف رصيداً تجريبياً أولاً ثم أعد المحاولة.")
+        return
+    method_name = {'syria': 'سيرياتل كاش', 'sham': 'شام كاش', 'usdt': 'USDT', 'binance': 'Binance'}.get(method_key, method_key)
+    msg = bot.send_message(
+        message.chat.id,
+        f"🧪 أرسل بيانات حساب اختبارية فقط لطلب سحب {method_name}. لا ترسل بيانات حقيقية.",
+    )
+    bot.register_next_step_handler(msg, process_demo_withdraw_account, method_key, amount)
+
+def process_demo_withdraw_account(message, method_key, amount):
+    """حفظ طلب سحب تجريبي دون تحويل مالي حقيقي."""
+    uid = message.from_user.id
+    if get_operation_mode() != 'demo':
+        bot.send_message(message.chat.id, "⚠️ تغيّر وضع التشغيل. لم يتم إنشاء طلب السحب.")
+        return
+    account = (getattr(message, 'text', None) or '').strip()
+    if not account or account == '🔙 إلغاء':
+        bot.send_message(message.chat.id, "تم إلغاء طلب السحب التجريبي.")
+        return
+    row = cursor.execute("SELECT balance FROM users WHERE user_id=? AND deleted=0", (uid,)).fetchone()
+    if not row or float(row[0] or 0) < amount:
+        bot.send_message(message.chat.id, "❌ تغيّر رصيد الاختبار ولم يتم إنشاء الطلب.")
+        return
+    commission_percent = float(get_db_setting('withdraw_commission') or 0)
+    commission = round(amount * commission_percent / 100, 2)
+    net_amount = round(amount - commission, 2)
+    method_name = {'syria': 'سيرياتل كاش', 'sham': 'شام كاش', 'usdt': 'USDT', 'binance': 'Binance'}.get(method_key, method_key)
+    created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute(
+        "INSERT INTO pending_withdraws(user_id, method, account, amount, commission, net_amount, currency, status, created_at, reserved) VALUES(?,?,?,?,?,?,?,?,?,0)",
+        (uid, f"demo_{method_key}", account[:250], amount, commission, net_amount, 'TEST', 'pending', created_at),
+    )
+    withdraw_id = cursor.lastrowid
+    conn.commit()
+    bot.send_message(
+        message.chat.id,
+        f"🧪 **تم إنشاء طلب سحب تجريبي #{withdraw_id}**\n"
+        f"المبلغ: {amount:,.2f}\nالعمولة التجريبية: {commission:,.2f}\nالصافي التجريبي: {net_amount:,.2f}\n"
+        "لم يتم تنفيذ أي تحويل حقيقي.",
+        parse_mode="Markdown",
+    )
+    try:
+        bot.send_message(
+            ADMIN_ID,
+            f"🧪 طلب سحب تجريبي #{withdraw_id}\nالمستخدم: {uid}\nالوسيلة: {method_name}\nالمبلغ: {amount:,.2f}\nبيانات الاختبار: {account[:120]}",
+        )
+    except Exception:
+        logger.exception("Could not notify owner about demo withdrawal request")
+
 def process_update_limits(message):
     """تحديث حدود الدفع بأرقام صحيحة وتحقق من ترتيب الحدود."""
     uid = message.from_user.id
@@ -5544,6 +5646,40 @@ def handle_all_callbacks(call):
     # نؤكد الضغط بأمان أولاً؛ الفشل هنا لا يلغي تنفيذ الزر.
     safe_answer_callback(call.id)
 
+    # في الوضع التجريبي لا نعرض عناوين دفع حقيقية ولا ننفذ عمليات مالية خارجية.
+    demo_payment_methods = {
+        'charge_syria': ('charge', 'syria', 'syriatel_status'),
+        'charge_sham': ('charge', 'sham', 'sham_status'),
+        'charge_usdt': ('charge', 'usdt', 'usdt_status'),
+        'charge_binance': ('charge', 'binance', 'binance_status'),
+        'withdraw_syria': ('withdraw', 'syria', 'syriatel_status'),
+        'withdraw_sham': ('withdraw', 'sham', 'sham_status'),
+        'withdraw_usdt': ('withdraw', 'usdt', 'usdt_status'),
+        'withdraw_binance': ('withdraw', 'binance', 'binance_status'),
+    }
+    if get_operation_mode() == 'demo' and data in demo_payment_methods:
+        action, method_key, setting_key = demo_payment_methods[data]
+        service_status = get_db_setting(setting_key) or ('active' if setting_key == 'syriatel_status' else 'متوقف')
+        if service_status != 'active':
+            bot.send_message(call.message.chat.id, "🔴 هذه الخدمة متوقفة في وضع الاختبار حالياً.")
+            return
+        method_name = {'syria': 'سيرياتل كاش', 'sham': 'شام كاش', 'usdt': 'USDT', 'binance': 'Binance'}.get(method_key, method_key)
+        if action == 'charge':
+            prompt = bot.send_message(
+                call.message.chat.id,
+                f"🧪 **طلب شحن تجريبي عبر {method_name}**\nأدخل مبلغ الاختبار فقط. لن نعرض عنوان دفع حقيقياً ولن يتم تحويل أموال.",
+                parse_mode="Markdown",
+            )
+            bot.register_next_step_handler(prompt, process_demo_charge_amount, method_key)
+        else:
+            prompt = bot.send_message(
+                call.message.chat.id,
+                f"🧪 **طلب سحب تجريبي عبر {method_name}**\nأدخل مبلغ الاختبار فقط. لن يتم تنفيذ أي تحويل حقيقي.",
+                parse_mode="Markdown",
+            )
+            bot.register_next_step_handler(prompt, process_demo_withdraw_amount, method_key)
+        return
+
     # ===== المساعد الذكي =====
     if data == 'ai_chat':
         safe_answer_callback(call.id)
@@ -6298,7 +6434,7 @@ def handle_all_callbacks(call):
 
     if data == 'toggle_sham':
         current = get_db_setting('sham_status') or 'متوقف'
-        if current != 'active':
+        if current != 'active' and get_operation_mode() != 'demo':
             address = (get_db_setting('sham_address') or '').strip()
             if not address or 'example' in address.lower() or address == 'غير محدد':
                 safe_answer_callback(call.id, "أدخل عنوان شام كاش الحقيقي أولاً؛ لم يتم فتح الخدمة.", show_alert=True)
@@ -6312,7 +6448,7 @@ def handle_all_callbacks(call):
 
     if data == 'toggle_usdt':
         current = get_db_setting('usdt_status') or 'متوقف'
-        if current != 'active':
+        if current != 'active' and get_operation_mode() != 'demo':
             address = (get_db_setting('usdt_address') or '').strip()
             if not address or address == 'غير محدد':
                 safe_answer_callback(call.id, "أدخل عنوان محفظة USDT الصحيح أولاً؛ لم يتم فتح الخدمة.", show_alert=True)
@@ -6326,7 +6462,7 @@ def handle_all_callbacks(call):
 
     if data == 'toggle_binance':
         current = get_db_setting('binance_status') or 'متوقف'
-        if current != 'active':
+        if current != 'active' and get_operation_mode() != 'demo':
             address = (get_db_setting('binance_address') or '').strip()
             pay_id = (get_db_setting('binance_pay_id') or '').strip()
             if (not address or address == 'غير محدد') and not pay_id:
