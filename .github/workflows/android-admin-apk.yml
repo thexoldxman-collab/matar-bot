@@ -1,0 +1,58 @@
+name: Build Matar Admin APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "admin_app/**"
+      - ".github/workflows/android-admin-apk.yml"
+  pull_request:
+    paths:
+      - "admin_app/**"
+      - ".github/workflows/android-admin-apk.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+      - name: Run backend regression tests
+        run: python -m unittest discover -s tests -p "test_regressions.py" -v
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Generate Android platform files
+        working-directory: admin_app
+        run: flutter create --platforms=android --project-name matar_admin --org com.matar.admin .
+      - name: Resolve packages
+        working-directory: admin_app
+        run: flutter pub get
+      - name: Analyze Flutter app
+        working-directory: admin_app
+        run: flutter analyze
+      - name: Run Flutter tests
+        working-directory: admin_app
+        run: flutter test
+      - name: Build release APK
+        working-directory: admin_app
+        run: flutter build apk --release
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: matar-admin-android-apk
+          path: admin_app/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
