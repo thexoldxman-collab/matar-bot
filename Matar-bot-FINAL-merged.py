@@ -18,6 +18,7 @@ import string
 import time
 import json
 import base64
+import binascii
 import hashlib
 import hmac
 import requests
@@ -10879,7 +10880,7 @@ def _admin_app_get_user():
         if user_id != ADMIN_ID:
             return None
         return user_id
-    except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+    except Exception:
         return None
 
 
@@ -10906,8 +10907,8 @@ def issue_admin_app_pair_code(message):
         conn.commit()
     bot.reply_to(
         message,
-        '🔐 رمز ربط تطبيق إدارة Matar Bot (صالح لخمس دقائق ولمرة واحدة):\\n\\n'
-        + code + '\\n\\nلا ترسله لأي شخص. بعد إدخاله في التطبيق يصبح غير صالح.',
+        '🔐 رمز ربط تطبيق إدارة Matar Bot (صالح لخمس دقائق ولمرة واحدة):\n\n'
+        + code + '\n\nلا ترسله لأي شخص. بعد إدخاله في التطبيق يصبح غير صالح.',
     )
 
 
