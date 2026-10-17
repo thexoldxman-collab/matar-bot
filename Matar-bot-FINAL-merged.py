@@ -10835,7 +10835,12 @@ PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "https://matar-bot.onrender.
 from matar_admin_auth import register_admin_auth
 issue_admin_link_code = register_admin_auth(app, bot, conn, db_lock, ADMIN_ID, is_moderator, check_permission)
 from matar_admin_api import register_admin_api
-register_admin_api(app, bot, conn, db_lock, ADMIN_ID, check_permission,\n                   get_operation_mode=get_operation_mode,\n                   complete_charge=complete_pending_charge,\n                   complete_withdraw=complete_pending_withdraw,\n                   cancel_charge=cancel_pending_charge_atomic,\n                   cancel_withdraw=cancel_pending_withdraw_atomic)
+register_admin_api(app, bot, conn, db_lock, ADMIN_ID, check_permission,
+                   get_operation_mode=get_operation_mode,
+                   complete_charge=complete_pending_charge,
+                   complete_withdraw=complete_pending_withdraw,
+                   cancel_charge=cancel_pending_charge_atomic,
+                   cancel_withdraw=cancel_pending_withdraw_atomic)
 
 @app.route('/telegram/webhook', methods=['POST'])
 def telegram_webhook():
