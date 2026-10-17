@@ -9226,9 +9226,17 @@ def main_router(message):
     if not isinstance(text, str):
         return
 
-    # يجب التقاط /link قبل معالج الرسائل العام وقبل فحص الاشتراك.
-    if text.strip() and text.strip().split()[0].split("@")[0].lower() == "/link":
+    # أوامر ربط تطبيق الإدارة تُعالج قبل فحوصات المستخدم العادي.
+    command = text.strip().split(maxsplit=1)[0].split("@")[0].lower() if text.strip() else ""
+    if command == "/link":
         issue_admin_link_code(uid, message.chat.id)
+        return
+    if command == "/adminapp":
+        pairing_handler = app.config.get("matar_admin_app_pairing_handler") if "app" in globals() else None
+        if pairing_handler:
+            pairing_handler(message)
+        else:
+            bot.send_message(message.chat.id, "خدمة ربط تطبيق الإدارة غير جاهزة حالياً.")
         return
 
     # التحقق من السبام
