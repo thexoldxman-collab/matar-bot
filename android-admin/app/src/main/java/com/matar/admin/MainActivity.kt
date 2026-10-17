@@ -93,7 +93,7 @@ private fun MatarAdminApp() {
             if (showLogin && !connected) {
                 LoginScreen(
                     code = pairingCode,
-                    onCodeChange = { pairingCode = it.filter { ch -> ch.isDigit() }.take(6) },
+                    onCodeChange = { pairingCode = it.filter { ch -> ch in '0'..'9' }.take(6) },
                     message = loginMessage,
                     connecting = connecting,
                     onConnect = {
@@ -556,7 +556,7 @@ private fun ModeratorsScreen(
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Text("إدارة المشرفين", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
         item { Text("تُقرأ الصلاحيات من الخادم. الصلاحيات الحساسة لا يمنحها إلا المدير.") }
-        item { OutlinedTextField(value = userId, onValueChange = { userId = it.filter { ch -> ch.isDigit() }.take(18) }, label = { Text("معرف تيليغرام") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
+        item { OutlinedTextField(value = userId, onValueChange = { userId = it.filter { ch -> ch in '0'..'9' }.take(18) }, label = { Text("معرف تيليغرام") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
         item { OutlinedTextField(value = name, onValueChange = { name = it.take(80) }, label = { Text("اسم المشرف (اختياري)") }, modifier = Modifier.fillMaxWidth(), singleLine = true) }
         item { PermissionToggle("إدارة طلبات الشحن", canCharges) { canCharges = it } }
         item { PermissionToggle("إدارة طلبات السحب", canWithdraws) { canWithdraws = it } }
