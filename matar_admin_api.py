@@ -133,6 +133,14 @@ def register_admin_api(app, bot, owner_id: int, db_factory: Callable):
                 created_at INTEGER NOT NULL,
                 result TEXT NOT NULL DEFAULT 'success'
             )""")
+            db.execute("""CREATE TABLE IF NOT EXISTS admin_app_operation_claims (
+                operation_type TEXT NOT NULL,
+                operation_id INTEGER NOT NULL,
+                claimed_by INTEGER NOT NULL,
+                claimed_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                PRIMARY KEY (operation_type, operation_id)
+            )""")
             db.commit()
         finally:
             db.close()
@@ -268,8 +276,104 @@ def register_admin_api(app, bot, owner_id: int, db_factory: Callable):
                 "WHERE status IN ('pending','processing') ORDER BY id DESC LIMIT 100"
             ).fetchall()
             results.extend([{"id": int(r[0]), "type": "withdraw", "user_id": r[1], "method": r[2], "amount": r[3], "status": r[4], "created_at": r[5], "processed_by": r[6]} for r in rows])
+        for item in results:
+            claim = _fetchone(
+                db,
+                "SELECT claimed_by, expires_at FROM admin_app_operation_claims "
+                "WHERE operation_type=? AND operation_id=? AND expires_at>?",
+                (item["type"], item["id"], _now()),
+            )
+            item["claim"] = {"claimed_by": int(claim[0]), "expires_at": int(claim[1])} if claim else None
         results.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
-        return jsonify({"items": results, "mode": "read_only_until_workflow_integration"})
+        return jsonify({"items": results, "mode": "demo_until_financial_workflow_integration"})
+
+    def _operation_permission(kind):
+        if kind == "charge":
+            return "can_handle_charges", "pending_charges"
+        if kind == "withdraw":
+            return "can_handle_withdraws", "pending_withdraws"
+        return None, None
+
+    @bp.post("/operations/<kind>/<int:operation_id>/claim")
+    @require_session
+    def claim_operation(kind, operation_id):
+        permission, table = _operation_permission(kind)
+        actor = request.admin_actor
+        db = request.admin_db
+        if not permission:
+            return jsonify({"error": "invalid_operation_type"}), 400
+        if actor["role"] != "owner" and not actor["permissions"].get(permission, False):
+            _audit(db, actor["user_id"], "permission_denied", {"permission": permission}, "denied")
+            return jsonify({"error": "permission_denied"}), 403
+        operation = _fetchone(db, f"SELECT id, status, processed_by FROM {table} WHERE id=?", (operation_id,))
+        if not operation:
+            return jsonify({"error": "operation_not_found"}), 404
+        if str(operation[1]).lower() not in ("pending", "processing"):
+            return jsonify({"error": "operation_not_open"}), 409
+        now = _now()
+        db.execute(
+            "DELETE FROM admin_app_operation_claims WHERE operation_type=? AND operation_id=? AND expires_at<=?",
+            (kind, operation_id, now),
+        )
+        db.execute(
+            "INSERT OR IGNORE INTO admin_app_operation_claims(operation_type,operation_id,claimed_by,claimed_at,expires_at) VALUES (?,?,?,?,?)",
+            (kind, operation_id, actor["user_id"], now, now + 600),
+        )
+        claim = _fetchone(
+            db,
+            "SELECT claimed_by, claimed_at, expires_at FROM admin_app_operation_claims WHERE operation_type=? AND operation_id=?",
+            (kind, operation_id),
+        )
+        if not claim or int(claim[0]) != actor["user_id"]:
+            db.commit()
+            return jsonify({"error": "already_claimed", "claimed_by": int(claim[0]) if claim else None}), 409
+        _audit(db, actor["user_id"], "operation_claimed", {"type": kind, "id": operation_id, "expires_at": int(claim[2])})
+        db.commit()
+        return jsonify({"claimed": True, "type": kind, "id": operation_id, "claimed_at": int(claim[1]), "expires_at": int(claim[2])})
+
+    @bp.post("/operations/<kind>/<int:operation_id>/release")
+    @require_session
+    def release_operation(kind, operation_id):
+        permission, _table = _operation_permission(kind)
+        actor = request.admin_actor
+        db = request.admin_db
+        if not permission:
+            return jsonify({"error": "invalid_operation_type"}), 400
+        if actor["role"] != "owner" and not actor["permissions"].get(permission, False):
+            return jsonify({"error": "permission_denied"}), 403
+        claim = _fetchone(
+            db,
+            "SELECT claimed_by FROM admin_app_operation_claims WHERE operation_type=? AND operation_id=?",
+            (kind, operation_id),
+        )
+        if not claim:
+            return jsonify({"released": True})
+        if int(claim[0]) != actor["user_id"] and actor["role"] != "owner":
+            return jsonify({"error": "claim_owned_by_another_admin"}), 403
+        db.execute(
+            "DELETE FROM admin_app_operation_claims WHERE operation_type=? AND operation_id=?",
+            (kind, operation_id),
+        )
+        _audit(db, actor["user_id"], "operation_claim_released", {"type": kind, "id": operation_id})
+        db.commit()
+        return jsonify({"released": True})
+
+    @bp.post("/operations/<kind>/<int:operation_id>/complete")
+    @require_session
+    def block_financial_completion(kind, operation_id):
+        permission, _table = _operation_permission(kind)
+        actor = request.admin_actor
+        db = request.admin_db
+        if not permission:
+            return jsonify({"error": "invalid_operation_type"}), 400
+        if actor["role"] != "owner" and not actor["permissions"].get(permission, False):
+            return jsonify({"error": "permission_denied"}), 403
+        _audit(db, actor["user_id"], "financial_completion_blocked", {"type": kind, "id": operation_id}, "blocked")
+        db.commit()
+        return jsonify({
+            "error": "financial_workflow_not_integrated",
+            "message": "لم يتم اعتماد التنفيذ المالي الحقيقي؛ لم تُغيّر أرصدة ولم يُعلن نجاح العملية."
+        }), 423
 
     @bp.get("/notifications")
     @require_session
