@@ -23,7 +23,7 @@ class AdminNotificationWorker(context: Context, params: WorkerParameters) : Coro
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val context = applicationContext
         val token = AdminSessionStore.token(context) ?: return@withContext Result.success()
-        val preferences = AdminApi.loadNotifications(token) ?: emptyMap()
+        val preferences = AdminApi.loadNotifications(token) ?: AdminSessionStore.notificationPreferences(context) ?: emptyMap()
 
         if (!AdminApi.isServerHealthy()) {
             if (preferences["bot_offline"] == true && !AdminSessionStore.offlineNotified(context)) {

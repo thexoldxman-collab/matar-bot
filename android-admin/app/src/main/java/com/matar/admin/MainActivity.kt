@@ -124,6 +124,7 @@ private fun MatarAdminApp() {
                 }
                 val savedPreferences = withContext(Dispatchers.IO) { AdminApi.loadNotifications(savedToken) }
                 if (savedPreferences != null) {
+                    AdminSessionStore.saveNotificationPreferences(appContext, savedPreferences)
                     val labels = mapOf(
                         "طلب شحن جديد" to "charge_new",
                         "طلب سحب جديد" to "withdraw_new",
@@ -203,6 +204,7 @@ private fun MatarAdminApp() {
                                     }
                                     val savedPreferences = withContext(Dispatchers.IO) { AdminApi.loadNotifications(result.token) }
                                     if (savedPreferences != null) {
+                                        AdminSessionStore.saveNotificationPreferences(appContext, savedPreferences)
                                         val labels = mapOf(
                                             "طلب شحن جديد" to "charge_new",
                                             "طلب سحب جديد" to "withdraw_new",
@@ -470,6 +472,7 @@ private fun MatarAdminApp() {
                                             )
                                             val prefs = notifications.mapNotNull { (label, enabled) -> keyMap[label]?.let { it to enabled } }.toMap()
                                             val saved = withContext(Dispatchers.IO) { AdminApi.saveNotifications(token, prefs) }
+                                            if (saved) AdminSessionStore.saveNotificationPreferences(appContext, prefs)
                                             savingNotifications = false
                                             notificationMessage = if (saved) "تم حفظ تفضيلاتك على الخادم. توصيل الإشعارات الفعلية بالخلفية لم يُفعّل بعد." else "تعذر الحفظ؛ تأكد من اتصال الخادم وصلاحية الجلسة."
                                         }

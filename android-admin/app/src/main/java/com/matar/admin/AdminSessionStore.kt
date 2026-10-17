@@ -57,6 +57,21 @@ object AdminSessionStore {
         prefs(context)?.edit()?.putBoolean(OFFLINE_NOTIFIED, value)?.apply()
     }
 
+    fun saveNotificationPreferences(context: Context, values: Map<String, Boolean>) {
+        val editor = prefs(context)?.edit() ?: return
+        values.forEach { (key, value) -> editor.putBoolean("notification_" + key, value) }
+        editor.putBoolean("notification_preferences_ready", true).apply()
+    }
+
+    fun notificationPreferences(context: Context): Map<String, Boolean>? {
+        val p = prefs(context) ?: return null
+        if (!p.getBoolean("notification_preferences_ready", false)) return null
+        return listOf("charge_new", "withdraw_new", "financial_error", "moderator_actions",
+            "referrals", "bot_offline", "ai_decisions").associateWith {
+            p.getBoolean("notification_" + it, false)
+        }
+    }
+
     fun saveSeenOperationIds(context: Context, ids: Set<String>) {
         prefs(context)?.edit()
             ?.putStringSet(SEEN_IDS, ids.toSet())
