@@ -9230,6 +9230,9 @@ def issue_admin_app_pair_code(message):
     if user_id != ADMIN_ID:
         bot.reply_to(message, 'هذا الأمر متاح لمالك البوت فقط.')
         return
+    if getattr(getattr(message, 'chat', None), 'type', 'private') != 'private':
+        bot.reply_to(message, 'لأمانك، أرسل هذا الأمر في محادثة خاصة مع البوت فقط.')
+        return
     code = secrets.token_urlsafe(18)
     now = datetime.now()
     created = now.strftime('%Y-%m-%d %H:%M:%S')
