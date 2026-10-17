@@ -1564,7 +1564,8 @@ class RegressionTests(unittest.TestCase):
         ]
         self.assertIn('admin_cat_users', callbacks)
         self.assertIn('admin_cat_finance', callbacks)
-        self.assertIn('admin_cat_services', callbacks)
+        self.assertNotIn('admin_cat_services', callbacks)
+        self.assertIn('admin_cat_control', callbacks)
         self.assertIn('admin_cat_content', callbacks)
         self.assertIn('admin_cat_reports', callbacks)
         self.assertIn('admin_cat_system', callbacks)
