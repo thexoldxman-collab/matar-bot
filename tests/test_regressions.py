@@ -1793,5 +1793,41 @@ class RegressionTests(unittest.TestCase):
         show_ai.assert_not_called()
 
 
+    def test_demo_charge_callback_never_displays_real_payment_address(self):
+        m = self.m
+        call = self.fake_call('charge_syria')
+        with patch.object(m.bot, 'send_message') as send, \\
+             patch.object(m.bot, 'register_next_step_handler') as register:
+            m.handle_all_callbacks(call)
+        register.assert_called_once_with(
+            send.return_value,
+            m.process_demo_charge_amount,
+            'syria',
+        )
+        all_text = " ".join(str(c.args[1]) for c in send.call_args_list if len(c.args) > 1)
+        self.assertIn('لن نعرض عنوان دفع حقيقياً', all_text)
+        self.assertNotIn('42483891', all_text)
+
+    def test_demo_charge_request_is_marked_as_test_and_saved_only_in_demo_database(self):
+        m = self.m
+        message = SimpleNamespace(
+            from_user=SimpleNamespace(id=m.ADMIN_ID + 21),
+            chat=SimpleNamespace(id=m.ADMIN_ID + 21),
+            text='250',
+        )
+        with patch.object(m.bot, 'send_message'):
+            m.process_demo_charge_amount(message, 'syria')
+        row = m.cursor.execute(
+            "SELECT id, method, receipt_number, amount FROM pending_charges WHERE user_id=? AND method='demo_syria' ORDER BY id DESC LIMIT 1",
+            (m.ADMIN_ID + 21,),
+        ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[1], 'demo_syria')
+        self.assertTrue(row[2].startswith('DEMO-'))
+        self.assertEqual(float(row[3]), 250.0)
+        m.cursor.execute("DELETE FROM pending_charges WHERE id=?", (row[0],))
+        m.conn.commit()
+
+
 if __name__ == '__main__':
     unittest.main()
