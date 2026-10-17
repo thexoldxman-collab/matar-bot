@@ -42,6 +42,28 @@ class AdminAuthTests(unittest.TestCase):
             lambda uid: uid in self.moderators,
             lambda uid, permission: uid == 2002 and permission == "can_view_stats",
         )
+        self.conn.executescript("""
+            CREATE TABLE pending_charges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER, method TEXT, receipt_number TEXT, amount REAL,
+                syriatel_code TEXT, status TEXT DEFAULT 'pending', created_at TEXT,
+                processed_by INTEGER, processed_at TEXT, notification_msg_id INTEGER,
+                txn_receipt TEXT
+            );
+            CREATE TABLE pending_withdraws (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER, method TEXT, account TEXT, amount REAL,
+                commission REAL, net_amount REAL, currency TEXT DEFAULT 'ليرة سورية',
+                status TEXT DEFAULT 'pending', created_at TEXT, processed_by INTEGER,
+                processed_at TEXT, notification_msg_id INTEGER, txn_receipt TEXT,
+                reserved INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO pending_charges(user_id,method,receipt_number,amount,status,created_at)
+            VALUES (3003,'syriatel','receipt-1',25000,'pending','2026-10-17T04:00:00Z');
+            INSERT INTO pending_withdraws(user_id,method,account,amount,commission,net_amount,status,created_at)
+            VALUES (3004,'sham','account-1',10000,500,9500,'pending','2026-10-17T04:01:00Z');
+        """)
+        self.conn.commit()
         self.client = self.app.test_client()
 
     def tearDown(self):
@@ -104,6 +126,52 @@ class AdminAuthTests(unittest.TestCase):
         self.assertIn("غير", self.bot.messages[-1][1])
         count = self.conn.execute("SELECT COUNT(*) FROM admin_link_codes").fetchone()[0]
         self.assertEqual(count, 0)
+
+
+    def test_owner_can_load_and_claim_operations_but_completion_stays_locked(self):
+        code = self.issue_code(1001)
+        login = self.client.post("/api/admin/auth/verify", json={"code": code}).get_json()
+        headers = {"Authorization": "Bearer " + login["access_token"]}
+
+        listed = self.client.get("/api/admin/operations", headers=headers)
+        self.assertEqual(listed.status_code, 200)
+        items = listed.get_json()["items"]
+        self.assertEqual({item["type"] for item in items}, {"charge", "withdraw"})
+
+        claimed = self.client.post("/api/admin/operations/charge/1/claim", json={}, headers=headers)
+        self.assertEqual(claimed.status_code, 200)
+        self.assertIn("expires_at", claimed.get_json())
+
+        completed = self.client.post("/api/admin/operations/charge/1/complete", json={}, headers=headers)
+        self.assertEqual(completed.status_code, 423)
+        self.assertEqual(completed.get_json()["error"], "financial_actions_locked")
+        status = self.conn.execute("SELECT status FROM pending_charges WHERE id=1").fetchone()[0]
+        self.assertEqual(status, "pending")
+
+    def test_moderator_cannot_claim_financial_queue_without_permission(self):
+        code = self.issue_code(2002)
+        login = self.client.post("/api/admin/auth/verify", json={"code": code}).get_json()
+        headers = {"Authorization": "Bearer " + login["access_token"]}
+        response = self.client.post("/api/admin/operations/charge/1/claim", json={}, headers=headers)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["error"], "permission_denied")
+
+    def test_notification_preferences_are_persisted_per_account(self):
+        code = self.issue_code(1001)
+        login = self.client.post("/api/admin/auth/verify", json={"code": code}).get_json()
+        headers = {"Authorization": "Bearer " + login["access_token"]}
+        saved = self.client.put(
+            "/api/admin/notifications",
+            json={"preferences": {"charge_new": False, "ai_decisions": True}},
+            headers=headers,
+        )
+        self.assertEqual(saved.status_code, 200)
+        loaded = self.client.get("/api/admin/notifications", headers=headers)
+        self.assertEqual(loaded.status_code, 200)
+        prefs = loaded.get_json()["preferences"]
+        self.assertFalse(prefs["charge_new"])
+        self.assertTrue(prefs["ai_decisions"])
+        self.assertTrue(prefs["withdraw_new"])
 
     def test_sqlite_begin_immediate_is_translated_for_postgres(self):
         self.assertEqual(translate_sql("BEGIN IMMEDIATE"), ("BEGIN", None))
