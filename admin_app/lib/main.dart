@@ -156,7 +156,8 @@ class _AdminHomeState extends State<AdminHome> {
 
   @override
   Widget build(BuildContext context) {
-    if (token == null) {\n      return Scaffold(
+    if (token == null) {
+      return Scaffold(
       appBar: AppBar(title: const Text('إدارة Matar Bot')),
       body: Center(child: SingleChildScrollView(padding: const EdgeInsets.all(22), child: Card(
         child: Padding(padding: const EdgeInsets.all(20), child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -170,7 +171,8 @@ class _AdminHomeState extends State<AdminHome> {
           const SizedBox(height: 12),
           SizedBox(width: double.infinity, child: FilledButton(onPressed: busy ? null : pair, child: Text(busy ? 'جارٍ الربط...' : 'ربط التطبيق'))),
         ]))))),
-    );
+      );
+    }
     final counts = Map<String, dynamic>.from(data?['counts'] ?? {});
     final services = Map<String, dynamic>.from(data?['services'] ?? {});
     final maintenanceOn = data?['bot_status'] != 'active';
