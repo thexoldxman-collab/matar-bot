@@ -80,6 +80,7 @@ private fun MatarAdminApp() {
     var pairingCode by remember { mutableStateOf("") }
     var loginMessage by remember { mutableStateOf("") }
     var showLogin by remember { mutableStateOf(true) }
+    var restoringSession by remember { mutableStateOf(true) }
     var notifications by remember {
         mutableStateOf(mapOf(
             "طلب شحن جديد" to true,
@@ -102,9 +103,65 @@ private fun MatarAdminApp() {
     var actionNote by remember { mutableStateOf("") }
     var showAppearance by remember { mutableStateOf(false) }
 
+    LaunchedEffect(Unit) {
+        val savedToken = AdminSessionStore.token(appContext)
+        if (!savedToken.isNullOrBlank()) {
+            val restored = withContext(Dispatchers.IO) { AdminApi.restoreSession(savedToken) }
+            if (restored?.token != null) {
+                accessToken = restored.token
+                accountRole = restored.role
+                accountPermissions = restored.permissions
+                dashboardStats = withContext(Dispatchers.IO) { AdminApi.loadDashboard(savedToken) }
+                buttons = withContext(Dispatchers.IO) { AdminApi.loadButtons(savedToken) } ?: emptyList()
+                auditItems = withContext(Dispatchers.IO) { AdminApi.loadAudit(savedToken) } ?: emptyList()
+                if (restored.role == "owner" || restored.permissions["can_manage_moderators"] == true) {
+                    moderators = withContext(Dispatchers.IO) { AdminApi.loadModerators(savedToken) } ?: emptyList()
+                }
+                val operations = withContext(Dispatchers.IO) { AdminApi.loadOperations(savedToken) }
+                if (operations != null) {
+                    queue = operations
+                    liveOperations = true
+                }
+                val savedPreferences = withContext(Dispatchers.IO) { AdminApi.loadNotifications(savedToken) }
+                if (savedPreferences != null) {
+                    val labels = mapOf(
+                        "طلب شحن جديد" to "charge_new",
+                        "طلب سحب جديد" to "withdraw_new",
+                        "خطأ أو فشل مالي" to "financial_error",
+                        "إجراءات المشرفين" to "moderator_actions",
+                        "الإحالات والمستحقات" to "referrals",
+                        "توقف البوت أو انقطاع الاتصال" to "bot_offline",
+                        "قرارات المساعد الذكي" to "ai_decisions"
+                    )
+                    notifications = notifications.mapValues { (label, defaultValue) -> savedPreferences[labels[label]] ?: defaultValue }
+                }
+                if (restored.role == "owner" || restored.permissions["can_handle_charges"] == true || restored.permissions["can_handle_withdraws"] == true) {
+                    AdminNotificationScheduler.schedule(appContext)
+                }
+                connected = true
+                showLogin = false
+                demoMode = true
+            } else {
+                AdminSessionStore.clear(appContext)
+                AdminNotificationScheduler.cancel(appContext)
+            }
+        }
+        restoringSession = false
+    }
+
     MaterialTheme(colorScheme = if (useDark) darkColorScheme() else lightColorScheme()) {
         CompositionLocalProvider(androidx.compose.ui.platform.LocalLayoutDirection provides androidx.compose.ui.unit.LayoutDirection.Rtl) {
-            if (showLogin && !connected) {
+            if (restoringSession) {
+                Column(
+                    Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(12.dp))
+                    Text("جارٍ التحقق من جلسة الإدارة...")
+                }
+            } else if (showLogin && !connected) {
                 LoginScreen(
                     code = pairingCode,
                     onCodeChange = { pairingCode = it.filter { ch -> ch in '0'..'9' }.take(6) },
