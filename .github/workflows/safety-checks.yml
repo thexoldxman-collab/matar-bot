@@ -49,7 +49,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyflakes
       - name: Compile main bot
-        run: python -m py_compile Matar-bot-FINAL-merged.py matar_db.py tests/test_regressions.py tests/test_db_backend.py postgres_startup_smoke.py
+        run: python -m py_compile Matar-bot-FINAL-merged.py matar_db.py matar_admin_api.py tests/test_admin_api.py tests/test_regressions.py tests/test_db_backend.py postgres_startup_smoke.py
       - name: Run regression tests with isolated SQLite database
         run: python -m unittest discover -s tests -v
       - name: Exercise full bot schema against PostgreSQL
@@ -58,4 +58,29 @@ jobs:
           REQUIRE_PERSISTENT_DATABASE: "1"
         run: python postgres_startup_smoke.py
       - name: Run pyflakes
-        run: python -m pyflakes Matar-bot-FINAL-merged.py matar_db.py tests
+        run: python -m pyflakes Matar-bot-FINAL-merged.py matar_db.py matar_admin_api.py tests
+
+  android-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: Build Android debug APK
+        working-directory: android-admin
+        run: gradle --no-daemon assembleDebug
+      - name: Upload debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: matar-admin-debug-apk
+          path: android-admin/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

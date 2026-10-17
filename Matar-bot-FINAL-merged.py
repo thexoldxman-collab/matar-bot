@@ -9221,6 +9221,17 @@ def main_router(message):
     if not isinstance(text, str):
         return
 
+    # أمر ربط تطبيق الإدارة يُعالَج قبل فحوصات المستخدم العادي.
+    # تم تسجيل callback داخل app.config عند تهيئة واجهة الإدارة في نهاية الملف.
+    command = text.strip().split(maxsplit=1)[0].split("@")[0] if text.strip() else ""
+    if command == "/adminapp":
+        pairing_handler = app.config.get("matar_admin_app_pairing_handler") if "app" in globals() else None
+        if pairing_handler:
+            pairing_handler(message)
+        else:
+            bot.send_message(message.chat.id, "خدمة ربط تطبيق الإدارة غير جاهزة حالياً.")
+        return
+
     # التحقق من السبام
     if not check_spam(uid):
         return
@@ -10816,6 +10827,18 @@ def process_change_user_password(message, target):
 
 # إعداد Flask للتشغيل على Render/Replit
 app = Flask(__name__)
+
+# Mobile admin API: Telegram-issued one-time pairing codes, server-side roles,
+# notification preferences and audit trail. No financial settlement endpoints.
+from matar_admin_api import register_admin_api
+
+def _admin_app_db_factory():
+    active_database = MODE_DATABASES.get(CURRENT_OPERATION_MODE)
+    if active_database:
+        return connect_database(active_database[2], active_database[3])
+    return connect_database(DATABASE_URL, DB_PATH)
+
+register_admin_api(app, bot, ADMIN_ID, _admin_app_db_factory)
 
 @app.route('/')
 def home():
