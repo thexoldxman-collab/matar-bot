@@ -7,6 +7,24 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 
+data class AdminButtonItem(
+    val id: Int,
+    val name: String,
+    val text: String,
+    val message: String,
+    val parent: String,
+    val active: Boolean,
+    val requiresSubscription: Boolean
+)
+
+data class AuditItem(
+    val id: Long,
+    val adminName: String,
+    val action: String,
+    val details: String,
+    val createdAt: String
+)
+
 data class ModeratorItem(
     val userId: Long,
     val customName: String,
@@ -170,6 +188,58 @@ object AdminApi {
         return result.first in 200..299
     }
 
+
+
+    fun loadButtons(token: String): List<AdminButtonItem>? {
+        val (status, body) = request("GET", "/api/admin/buttons", token, null)
+        if (status !in 200..299) return null
+        return try {
+            val items = JSONObject(body).optJSONArray("items") ?: return emptyList()
+            buildList {
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    add(AdminButtonItem(
+                        id = item.optInt("id"),
+                        name = item.optString("button_name", ""),
+                        text = item.optString("button_text", ""),
+                        message = item.optString("message_text", ""),
+                        parent = item.optString("parent_button", "main"),
+                        active = item.optInt("is_active", 1) == 1,
+                        requiresSubscription = item.optInt("requires_subscription", 0) == 1
+                    ))
+                }
+            }
+        } catch (_: Exception) { null }
+    }
+
+    fun updateButton(token: String, id: Int, text: String, message: String, active: Boolean): String? {
+        val payload = JSONObject()
+            .put("button_text", text)
+            .put("message_text", message)
+            .put("is_active", active)
+        val (status, body) = request("PUT", "/api/admin/buttons/$id", token, payload)
+        return if (status in 200..299) null else apiError(body, "تعذر حفظ الزر.")
+    }
+
+    fun loadAudit(token: String): List<AuditItem>? {
+        val (status, body) = request("GET", "/api/admin/audit", token, null)
+        if (status !in 200..299) return null
+        return try {
+            val items = JSONObject(body).optJSONArray("items") ?: return emptyList()
+            buildList {
+                for (index in 0 until items.length()) {
+                    val item = items.optJSONObject(index) ?: continue
+                    add(AuditItem(
+                        id = item.optLong("id"),
+                        adminName = item.optString("display_name", "إدارة"),
+                        action = item.optString("action_type", ""),
+                        details = item.optString("details", ""),
+                        createdAt = item.optString("created_at", "")
+                    ))
+                }
+            }
+        } catch (_: Exception) { null }
+    }
 
     fun loadModerators(token: String): List<ModeratorItem>? {
         val (status, body) = request("GET", "/api/admin/moderators", token, null)
