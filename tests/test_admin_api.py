@@ -95,7 +95,7 @@ class AdminApiTests(unittest.TestCase):
         self.assertIn("غير مخوّل", self.bot.replies[-1])
 
     def _owner_token(self):
-        self.bot.handlers["adminapp"](FakeMessage(123456))
+        self.app.config["matar_admin_app_pairing_handler"](FakeMessage(123456))
         code = re.findall(r"\b[A-Z0-9]{8}\b", self.bot.replies[-1])[-1]
         response = self.client.post("/api/admin/pairing/exchange", json={"code": code})
         return response.get_json()["access_token"]
