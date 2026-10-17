@@ -10917,7 +10917,7 @@ def _admin_app_unauthorized():
 
 @app.route('/api/admin/v1/pair', methods=['POST'])
 def admin_app_pair():
-    body = flask_request.get_json(silent=True) or {}
+    body = flask_flask_request.get_json(silent=True) or {}
     code = str(body.get('code', '')).strip()
     if not code or len(code) > 128:
         return jsonify({'ok': False, 'error': 'أدخل رمز الربط الذي أنشأته من تلغرام.'}), 400
@@ -10994,7 +10994,7 @@ def admin_app_ai():
     user_id = _admin_app_get_user()
     if user_id is None:
         return _admin_app_unauthorized()
-    body = request.get_json(silent=True) or {}
+    body = flask_request.get_json(silent=True) or {}
     prompt = str(body.get('message', '')).strip()
     if not prompt or len(prompt) > 4000:
         return jsonify({'ok': False, 'error': 'اكتب رسالة من حرف واحد حتى 4000 حرف.'}), 400
@@ -11021,7 +11021,7 @@ def admin_app_set_maintenance():
     user_id = _admin_app_get_user()
     if user_id is None:
         return _admin_app_unauthorized()
-    body = request.get_json(silent=True) or {}
+    body = flask_request.get_json(silent=True) or {}
     enabled = body.get('enabled')
     if not isinstance(enabled, bool):
         return jsonify({'ok': False, 'error': 'قيمة الصيانة يجب أن تكون تشغيل أو إيقاف.'}), 400
@@ -11039,7 +11039,7 @@ def admin_app_set_mode():
     user_id = _admin_app_get_user()
     if user_id is None:
         return _admin_app_unauthorized()
-    body = request.get_json(silent=True) or {}
+    body = flask_request.get_json(silent=True) or {}
     target = str(body.get('mode', '')).strip().lower()
     if target not in ('demo', 'real'):
         return jsonify({'ok': False, 'error': 'الوضع المطلوب غير معروف.'}), 400
