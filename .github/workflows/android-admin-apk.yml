@@ -15,7 +15,7 @@ on:
       - "Matar-bot-FINAL-merged.py"
       - "tests/**"
   push:
-    branches: [main]
+    branches: [main, fix/matar-admin-api-readonly]
     paths:
       - "android-admin/**"
       - ".github/workflows/android-admin-apk.yml"
