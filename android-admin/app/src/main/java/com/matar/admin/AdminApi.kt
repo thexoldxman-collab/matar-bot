@@ -6,6 +6,19 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
+
+data class ManagedUser(
+    val userId: Long,
+    val firstName: String,
+    val username: String,
+    val accountName: String,
+    val status: String,
+    val balance: Double,
+    val siteBalance: Double,
+    val referralCount: Int,
+    val lastActive: String
+)
 
 data class ModeratorItem(
     val userId: Long,
@@ -457,6 +470,43 @@ object AdminApi {
         } catch (_: Exception) {
             null to "تعذر قراءة رد المساعد الذكي."
         }
+    }
+
+    fun loadUsers(token: String, search: String = ""): List<ManagedUser>? {
+        val encoded = URLEncoder.encode(search.trim().take(120), "UTF-8")
+        val (status, body) = request("GET", "/api/admin/users?search=$encoded&limit=50", token, null)
+        if (status !in 200..299) return null
+        return try {
+            val items = JSONObject(body).optJSONArray("items") ?: return emptyList()
+            buildList {
+                for (i in 0 until items.length()) {
+                    val item = items.optJSONObject(i) ?: continue
+                    add(ManagedUser(
+                        userId = item.optLong("user_id"),
+                        firstName = item.optString("first_name"),
+                        username = item.optString("username"),
+                        accountName = item.optString("account_name"),
+                        status = item.optString("status", "active"),
+                        balance = item.optDouble("balance", 0.0),
+                        siteBalance = item.optDouble("site_balance", 0.0),
+                        referralCount = item.optInt("referral_count", 0),
+                        lastActive = item.optString("last_active")
+                    ))
+                }
+            }
+        } catch (_: Exception) { null }
+    }
+
+    fun updateUserStatus(token: String, userId: Long, statusValue: String): String? {
+        val payload = JSONObject().put("status", statusValue)
+        val (status, body) = request("PUT", "/api/admin/users/$userId/status", token, payload)
+        return if (status in 200..299) null else apiError(body, "تعذر تعديل حالة المستخدم.")
+    }
+
+    fun messageUser(token: String, userId: Long, message: String): String? {
+        val payload = JSONObject().put("text", message.trim().take(4000))
+        val (status, body) = request("POST", "/api/admin/users/$userId/message", token, payload)
+        return if (status in 200..299) null else apiError(body, "تعذر إرسال الرسالة للمستخدم.")
     }
 
     fun isServerHealthy(): Boolean = request("GET", "/health", "", null).first == 200
