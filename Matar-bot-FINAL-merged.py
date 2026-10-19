@@ -9226,8 +9226,9 @@ def main_router(message):
     if not isinstance(text, str):
         return
 
-    # يجب التقاط /link قبل معالج الرسائل العام وقبل فحص الاشتراك.
-    if text.strip() and text.strip().split()[0].split("@")[0].lower() == "/link":
+    # يجب التقاط أوامر ربط التطبيق قبل الراوتر العام وفحص الاشتراك.
+    command = text.strip().split()[0].split("@")[0].lower() if text.strip() else ""
+    if command in {"/link", "/adminapp"}:
         issue_admin_link_code(uid, message.chat.id)
         return
 
