@@ -27,7 +27,7 @@ import androidx.compose.ui.unit.dp
 
 private enum class Page(val label: String) {
     HOME("الرئيسية"), ROOM("غرفة العمليات"), USERS("المشرفون"),
-    MESSAGES("الرسائل"), BUTTONS("أزرار البوت"), REFERRALS("الإحالات"), CONTENT("نصوص البوت"), SETTINGS("الإعدادات")
+    MESSAGES("الرسائل"), BUTTONS("أزرار البوت"), REFERRALS("الإحالات"), CONTENT("نصوص البوت"), AI("المساعد الذكي"), SETTINGS("الإعدادات")
 }
 
 data class QueueItem(
@@ -81,6 +81,10 @@ private fun MatarAdminApp() {
     var moderatorMessage by remember { mutableStateOf("") }
     var sendingMessage by remember { mutableStateOf(false) }
     var sentMessage by remember { mutableStateOf("") }
+    var assistantPrompt by remember { mutableStateOf("") }
+    var assistantAnswer by remember { mutableStateOf("") }
+    var assistantMessage by remember { mutableStateOf("") }
+    var assistantBusy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val appContext = LocalContext.current
     var pairingCode by remember { mutableStateOf("") }
@@ -149,7 +153,7 @@ private fun MatarAdminApp() {
                 }
                 connected = true
                 showLogin = false
-                demoMode = true
+                demoMode = false
             } else {
                 AdminSessionStore.clear(appContext)
                 AdminNotificationScheduler.cancel(appContext)
@@ -228,7 +232,7 @@ private fun MatarAdminApp() {
                                     }
                                     connected = true
                                     showLogin = false
-                                    demoMode = true
+                                    demoMode = false
                                     pairingCode = ""
                                     loginMessage = ""
                                 } else {
@@ -266,6 +270,7 @@ private fun MatarAdminApp() {
                                 Page.BUTTONS -> accountPermissions["can_manage_buttons"] == true
                                 Page.REFERRALS -> accountRole == "owner"
                                 Page.CONTENT -> accountRole == "owner" || accountPermissions["can_manage_buttons"] == true
+                                Page.AI -> accountPermissions["can_use_ai"] == true
                                 Page.SETTINGS -> true
                             } }.forEach { item ->
                                 val icon = when (item) {
@@ -276,6 +281,7 @@ private fun MatarAdminApp() {
                                     Page.BUTTONS -> Icons.Default.EditNote
                                     Page.REFERRALS -> Icons.Default.AccountBalanceWallet
                                     Page.CONTENT -> Icons.Default.TextFields
+                                    Page.AI -> Icons.Default.AutoAwesome
                                     Page.SETTINGS -> Icons.Default.Settings
                                 }
                                 NavigationBarItem(
@@ -298,6 +304,7 @@ private fun MatarAdminApp() {
                                         if (item == Page.HOME && token != null) {
                                             scope.launch { dashboardStats = withContext(Dispatchers.IO) { AdminApi.loadDashboard(token) } }
                                         }
+                                        if (item == Page.AI) { assistantAnswer = ""; assistantMessage = "" }
                                     },
                                     icon = { Icon(icon, contentDescription = item.label) },
                                     label = { Text(item.label, maxLines = 1) }
@@ -494,6 +501,26 @@ private fun MatarAdminApp() {
                                         val error = withContext(Dispatchers.IO) { AdminApi.saveContent(token, edited) }
                                         contentMessage = error ?: "تم حفظ النصوص وإعداد الاشتراك."
                                         if (error == null) contentSettings = withContext(Dispatchers.IO) { AdminApi.loadContent(token) } ?: contentSettings
+                                    }
+                                }
+                            )
+                            Page.AI -> AssistantScreen(
+                                prompt = assistantPrompt,
+                                answer = assistantAnswer,
+                                message = assistantMessage,
+                                busy = assistantBusy,
+                                onPromptChange = { assistantPrompt = it.take(4000) },
+                                onAsk = {
+                                    val token = accessToken
+                                    if (token == null) assistantMessage = "سجّل الدخول عبر تيليغرام لاستخدام المساعد المتصل."
+                                    else if (assistantPrompt.isBlank()) assistantMessage = "اكتب سؤالك أولاً."
+                                    else scope.launch {
+                                        assistantBusy = true
+                                        assistantMessage = ""
+                                        val result = withContext(Dispatchers.IO) { AdminApi.askAssistant(token, assistantPrompt.trim()) }
+                                        assistantAnswer = result.first.orEmpty()
+                                        assistantMessage = result.second.orEmpty()
+                                        assistantBusy = false
                                     }
                                 }
                             )
