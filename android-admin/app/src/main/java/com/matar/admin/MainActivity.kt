@@ -1086,3 +1086,80 @@ private fun ContentScreen(
         if (message.isNotBlank()) item { Text(message, color = MaterialTheme.colorScheme.primary) }
     }
 }
+
+
+@Composable
+private fun AssistantScreen(
+    prompt: String,
+    answer: String,
+    message: String,
+    busy: Boolean,
+    onPromptChange: (String) -> Unit,
+    onAsk: () -> Unit
+) {
+    LazyColumn(
+        Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            Text("المساعد الذكي", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("مساعد مطر", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("اسأله عن حالة البوت أو اطلب منه تحليل مشكلة واقتراح خطوات إصلاح.")
+                    Text(
+                        "تنبيه أمان: المساعد يقدم اقتراحات فقط. لا يغيّر الكود أو الإعدادات ولا ينفّذ عمليات مالية تلقائياً؛ راجع كل اقتراح قبل تطبيقه.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+            }
+        }
+        item {
+            OutlinedTextField(
+                value = prompt,
+                onValueChange = onPromptChange,
+                label = { Text("اكتب سؤالك أو المشكلة") },
+                placeholder = { Text("مثال: حلّل سبب تعطل أحد أقسام البوت") },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 4,
+                maxLines = 8
+            )
+        }
+        item {
+            Button(
+                onClick = onAsk,
+                enabled = !busy && prompt.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (busy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("جارٍ التفكير...")
+                } else {
+                    Icon(Icons.Default.AutoAwesome, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("اسأل المساعد")
+                }
+            }
+        }
+        if (message.isNotBlank()) {
+            item { Text(message, color = MaterialTheme.colorScheme.error) }
+        }
+        if (answer.isNotBlank()) {
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("رد المساعد", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(answer)
+                    }
+                }
+            }
+        }
+    }
+}
