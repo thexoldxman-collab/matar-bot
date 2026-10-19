@@ -26,7 +26,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
 private enum class Page(val label: String) {
-    HOME("الرئيسية"), ROOM("غرفة العمليات"), USERS("المشرفون"),
+    HOME("الرئيسية"), ROOM("غرفة العمليات"), USERS("المستخدمون"), MODERATORS("المشرفون"),
     MESSAGES("الرسائل"), BUTTONS("أزرار البوت"), REFERRALS("الإحالات"), CONTENT("نصوص البوت"), AI("المساعد الذكي"), SETTINGS("الإعدادات")
 }
 
@@ -85,6 +85,9 @@ private fun MatarAdminApp() {
     var assistantAnswer by remember { mutableStateOf("") }
     var assistantMessage by remember { mutableStateOf("") }
     var assistantBusy by remember { mutableStateOf(false) }
+    var managedUsers by remember { mutableStateOf(emptyList<ManagedUser>()) }
+    var userSearch by remember { mutableStateOf("") }
+    var userAdminMessage by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     val appContext = LocalContext.current
     var pairingCode by remember { mutableStateOf("") }
@@ -265,7 +268,8 @@ private fun MatarAdminApp() {
                             Page.values().filter { !connected || accountRole == "owner" || when (it) {
                                 Page.HOME -> accountPermissions["can_view_stats"] == true
                                 Page.ROOM -> accountPermissions["can_handle_charges"] == true || accountPermissions["can_handle_withdraws"] == true
-                                Page.USERS -> accountPermissions["can_manage_moderators"] == true
+                                Page.USERS -> accountPermissions["can_manage_users"] == true
+                                Page.MODERATORS -> accountPermissions["can_manage_moderators"] == true
                                 Page.MESSAGES -> accountPermissions["can_send_broadcast"] == true
                                 Page.BUTTONS -> accountPermissions["can_manage_buttons"] == true
                                 Page.REFERRALS -> accountRole == "owner"
@@ -276,7 +280,8 @@ private fun MatarAdminApp() {
                                 val icon = when (item) {
                                     Page.HOME -> Icons.Default.Dashboard
                                     Page.ROOM -> Icons.Default.Groups
-                                    Page.USERS -> Icons.Default.AdminPanelSettings
+                                    Page.USERS -> Icons.Default.PeopleAlt
+                                    Page.MODERATORS -> Icons.Default.AdminPanelSettings
                                     Page.MESSAGES -> Icons.Default.MarkChatUnread
                                     Page.BUTTONS -> Icons.Default.EditNote
                                     Page.REFERRALS -> Icons.Default.AccountBalanceWallet
@@ -290,6 +295,13 @@ private fun MatarAdminApp() {
                                         page = item
                                         val token = accessToken
                                         if (item == Page.USERS && token != null) {
+                                            scope.launch {
+                                                val result = withContext(Dispatchers.IO) { AdminApi.loadUsers(token, userSearch) }
+                                                if (result != null) { managedUsers = result; userAdminMessage = "" }
+                                                else userAdminMessage = "تعذر تحميل المستخدمين؛ تحقق من صلاحية إدارة المستخدمين."
+                                            }
+                                        }
+                                        if (item == Page.MODERATORS && token != null) {
                                             scope.launch { moderators = withContext(Dispatchers.IO) { AdminApi.loadModerators(token) } ?: moderators }
                                         }
                                         if (item == Page.BUTTONS && token != null) {
@@ -399,7 +411,39 @@ private fun MatarAdminApp() {
                                     }
                                 }
                             )
-                            Page.USERS -> ModeratorsScreen(
+                            Page.USERS -> UserManagementScreen(
+                                users = managedUsers,
+                                search = userSearch,
+                                message = userAdminMessage,
+                                onSearchChange = { userSearch = it.take(120) },
+                                onSearch = {
+                                    val token = accessToken
+                                    if (token == null) userAdminMessage = "سجّل الدخول أولاً."
+                                    else scope.launch {
+                                        val result = withContext(Dispatchers.IO) { AdminApi.loadUsers(token, userSearch) }
+                                        if (result != null) { managedUsers = result; userAdminMessage = "تم تحديث قائمة المستخدمين." }
+                                        else userAdminMessage = "تعذر تحميل المستخدمين؛ تحقق من صلاحيتك واتصال الخادم."
+                                    }
+                                },
+                                onStatusChange = { userId, newStatus ->
+                                    val token = accessToken
+                                    if (token == null) userAdminMessage = "سجّل الدخول أولاً."
+                                    else scope.launch {
+                                        val error = withContext(Dispatchers.IO) { AdminApi.updateUserStatus(token, userId, newStatus) }
+                                        userAdminMessage = error ?: "تم تحديث حالة المستخدم $userId."
+                                        if (error == null) managedUsers = withContext(Dispatchers.IO) { AdminApi.loadUsers(token, userSearch) } ?: managedUsers
+                                    }
+                                },
+                                onMessage = { userId, text ->
+                                    val token = accessToken
+                                    if (token == null) userAdminMessage = "سجّل الدخول أولاً."
+                                    else scope.launch {
+                                        val error = withContext(Dispatchers.IO) { AdminApi.messageUser(token, userId, text) }
+                                        userAdminMessage = error ?: "تم إرسال الرسالة للمستخدم $userId."
+                                    }
+                                }
+                            )
+                            Page.MODERATORS -> ModeratorsScreen(
                                 moderators = moderators,
                                 message = moderatorMessage,
                                 onRefresh = {
@@ -1163,3 +1207,103 @@ private fun AssistantScreen(
         }
     }
 }
+
+
+@Composable
+private fun UserManagementScreen(
+    users: List<ManagedUser>,
+    search: String,
+    message: String,
+    onSearchChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    onStatusChange: (Long, String) -> Unit,
+    onMessage: (Long, String) -> Unit
+) {
+    LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { Text("إدارة المستخدمين", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) }
+        item { Text("بحث وعرض الحسابات وتغيير حالة المستخدم أو مراسلته. الأرصدة للعرض فقط من هذه الشاشة.") }
+        item {
+            OutlinedTextField(
+                value = search,
+                onValueChange = onSearchChange,
+                label = { Text("ابحث بالمعرّف أو الاسم أو اسم المستخدم") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+        }
+        item {
+            Button(onClick = onSearch, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Search, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("بحث / تحديث القائمة")
+            }
+        }
+        if (message.isNotBlank()) item { Text(message, color = MaterialTheme.colorScheme.primary) }
+        if (users.isEmpty()) item { Text("لا توجد نتائج حالياً، أو أن الحساب لا يملك صلاحية إدارة المستخدمين.") }
+        items(users, key = { it.userId }) { user ->
+            var showStatusConfirm by remember(user.userId, user.status) { mutableStateOf(false) }
+            var showMessageDialog by remember(user.userId) { mutableStateOf(false) }
+            var draft by remember(user.userId) { mutableStateOf("") }
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(user.customDisplayName(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("معرّف تيليغرام: ${user.userId}")
+                    if (user.username.isNotBlank()) Text("@${user.username}")
+                    if (user.accountName.isNotBlank()) Text("اسم الحساب: ${user.accountName}")
+                    Text("الحالة: ${if (user.status == "banned") "محظور" else "نشط"}")
+                    Text("الرصيد: ${String.format(java.util.Locale.ROOT, "%,.2f", user.balance)} ل.س")
+                    Text("رصيد الموقع: ${String.format(java.util.Locale.ROOT, "%,.2f", user.siteBalance)}")
+                    Text("عدد الإحالات: ${user.referralCount}")
+                    if (user.lastActive.isNotBlank()) Text("آخر نشاط: ${user.lastActive}", style = MaterialTheme.typography.labelSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { showStatusConfirm = true }, modifier = Modifier.weight(1f)) {
+                            Text(if (user.status == "banned") "إلغاء الحظر" else "حظر المستخدم")
+                        }
+                        Button(onClick = { showMessageDialog = true }, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.Send, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("مراسلة")
+                        }
+                    }
+                }
+            }
+            if (showStatusConfirm) {
+                val nextStatus = if (user.status == "banned") "active" else "banned"
+                AlertDialog(
+                    onDismissRequest = { showStatusConfirm = false },
+                    title = { Text(if (nextStatus == "banned") "تأكيد حظر المستخدم" else "تأكيد إلغاء الحظر") },
+                    text = { Text("هل تريد ${if (nextStatus == "banned") "حظر" else "إلغاء حظر"} الحساب ${user.userId}؟") },
+                    confirmButton = {
+                        TextButton(onClick = { showStatusConfirm = false; onStatusChange(user.userId, nextStatus) }) { Text("تأكيد") }
+                    },
+                    dismissButton = { TextButton(onClick = { showStatusConfirm = false }) { Text("رجوع") } }
+                )
+            }
+            if (showMessageDialog) {
+                AlertDialog(
+                    onDismissRequest = { showMessageDialog = false },
+                    title = { Text("مراسلة المستخدم ${user.userId}") },
+                    text = {
+                        OutlinedTextField(
+                            value = draft,
+                            onValueChange = { draft = it.take(4000) },
+                            label = { Text("نص الرسالة") },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 3
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            enabled = draft.isNotBlank(),
+                            onClick = { showMessageDialog = false; onMessage(user.userId, draft.trim()); draft = "" }
+                        ) { Text("إرسال") }
+                    },
+                    dismissButton = { TextButton(onClick = { showMessageDialog = false }) { Text("إلغاء") } }
+                )
+            }
+        }
+    }
+}
+
+private fun ManagedUser.customDisplayName(): String =
+    firstName.ifBlank { accountName.ifBlank { username.ifBlank { "مستخدم $userId" } } }
