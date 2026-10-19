@@ -1,7 +1,9 @@
 import re
+import os
 import sqlite3
 import threading
 import unittest
+from unittest.mock import patch
 from types import SimpleNamespace
 
 from flask import Flask
@@ -101,15 +103,32 @@ class AdminApiTests(unittest.TestCase):
         self.assertEqual(detail.get_json()["user"]["balance"], 100)
 
     def test_balance_adjustment_is_idempotent(self):
+        # The default is locked; this test explicitly opts into real mode.
+        with patch.dict(os.environ, {"MATAR_ADMIN_FINANCIAL_ACTIONS_ENABLED": "1"}):
+            self.app.config["MATAR_OPERATION_MODE"] = "real"
+            headers = self.headers()
+            payload = {"action": "bot_charge", "amount": 25, "idempotency_key": "same-key-001"}
+            first = self.client.post("/api/admin/users/9001/balance", json=payload, headers=headers)
+            second = self.client.post("/api/admin/users/9001/balance", json=payload, headers=headers)
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(second.status_code, 200)
+            self.assertTrue(second.get_json()["replayed"])
+            self.assertEqual(self.adjust_count, 1)
+            self.assertEqual(self.conn.execute("SELECT balance FROM users WHERE user_id=9001").fetchone()[0], 125)
+
+    def test_financial_actions_are_locked_by_default(self):
         headers = self.headers()
-        payload = {"action": "bot_charge", "amount": 25, "idempotency_key": "same-key-001"}
-        first = self.client.post("/api/admin/users/9001/balance", json=payload, headers=headers)
-        second = self.client.post("/api/admin/users/9001/balance", json=payload, headers=headers)
-        self.assertEqual(first.status_code, 200)
-        self.assertEqual(second.status_code, 200)
-        self.assertFalse(second.get_json()["replayed"] is False)
-        self.assertEqual(self.adjust_count, 1)
-        self.assertEqual(self.conn.execute("SELECT balance FROM users WHERE user_id=9001").fetchone()[0], 125)
+        payload = {"action": "bot_charge", "amount": 25, "idempotency_key": "locked-key-001"}
+        response = self.client.post("/api/admin/users/9001/balance", json=payload, headers=headers)
+        self.assertEqual(response.status_code, 423)
+        self.assertEqual(response.get_json()["error"], "financial_execution_disabled")
+        self.assertEqual(self.adjust_count, 0)
+        self.assertEqual(self.conn.execute("SELECT balance FROM users WHERE user_id=9001").fetchone()[0], 100)
+
+        complete = self.client.post("/api/admin/operations/charge/1/complete", json={}, headers=headers)
+        cancel = self.client.post("/api/admin/operations/charge/1/cancel", json={"reason": "test"}, headers=headers)
+        self.assertEqual(complete.status_code, 423)
+        self.assertEqual(cancel.status_code, 423)
 
     def test_wheel_prize_and_service_controls(self):
         headers = self.headers()

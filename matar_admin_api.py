@@ -159,6 +159,14 @@ def register_admin_api(
             app.logger.exception("Could not read operation mode")
         return str(app.config.get("MATAR_OPERATION_MODE", "demo"))
 
+    def financial_actions_enabled():
+        # Require both an explicit server-side opt-in and the bot's real mode.
+        # Never trust a client/UI toggle to authorize changes to balances.
+        enabled = os.environ.get("MATAR_ADMIN_FINANCIAL_ACTIONS_ENABLED", "0").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        return enabled and operation_mode_value().strip().lower() == "real"
+
     def ensure_claims_table():
         # Reopen the underlying request when the ten-minute lease expires.
         now_text = _iso()
@@ -379,6 +387,10 @@ def register_admin_api(
             return jsonify({"ok": False, "error": "operation_not_found"}), 404
         if not allowed(user, permission_for_type(operation_type)):
             return forbidden()
+        if not financial_actions_enabled():
+            audit(user, "financial_completion_blocked", f"{operation_type}:{operation_id}; explicit real-mode opt-in missing")
+            return jsonify({"ok": False, "error": "financial_execution_disabled",
+                            "message": "التنفيذ المالي من التطبيق مقفول افتراضياً؛ لم تتغير الأرصدة."}), 423
         handler = complete_charge if operation_type == "charge" else complete_withdraw
         if not callable(handler):
             audit(user, "financial_completion_blocked", f"{operation_type}:{operation_id}; handler unavailable")
@@ -410,6 +422,10 @@ def register_admin_api(
             return jsonify({"ok": False, "error": "operation_not_found"}), 404
         if not allowed(user, permission_for_type(operation_type)):
             return forbidden()
+        if not financial_actions_enabled():
+            audit(user, "financial_cancellation_blocked", f"{operation_type}:{operation_id}; explicit real-mode opt-in missing")
+            return jsonify({"ok": False, "error": "financial_execution_disabled",
+                            "message": "الإلغاء المالي من التطبيق مقفول افتراضياً؛ لم تتغير الأرصدة."}), 423
         handler = cancel_charge if operation_type == "charge" else cancel_withdraw
         if not callable(handler):
             audit(user, "financial_cancellation_blocked", f"{operation_type}:{operation_id}; handler unavailable")
@@ -1007,6 +1023,10 @@ def register_admin_api(
             return denied()
         if not allowed(user, "can_charge_withdraw_users"):
             return forbidden()
+        if not financial_actions_enabled():
+            audit(user, "balance_adjustment_blocked", f"user={target_id}; explicit real-mode opt-in missing", target_user=target_id)
+            return jsonify({"ok": False, "error": "financial_execution_disabled",
+                            "message": "تعديل الأرصدة من التطبيق مقفول افتراضياً؛ لم يتغير أي رصيد."}), 423
         if not callable(adjust_balance):
             return jsonify({"ok": False, "error": "financial_handler_unavailable"}), 503
         payload = request.get_json(silent=True) or {}
