@@ -439,6 +439,26 @@ object AdminApi {
         }
     }
 
+    fun askAssistant(token: String, prompt: String): Pair<String?, String?> {
+        val payload = JSONObject().put("prompt", prompt)
+        val (status, body) = request("POST", "/api/admin/assistant/ask", token, payload)
+        return try {
+            val json = JSONObject(body)
+            if (status in 200..299 && json.optBoolean("ok", false)) {
+                val answer = json.optString("answer").takeIf { it.isNotBlank() }
+                if (answer != null && json.optBoolean("executed", false) == false) {
+                    answer to null
+                } else {
+                    null to "المساعد لم يُرجع إجابة آمنة قابلة للعرض."
+                }
+            } else {
+                null to apiError(body, "تعذر استخدام المساعد الذكي؛ تحقق من الصلاحية واتصال الخادم.")
+            }
+        } catch (_: Exception) {
+            null to "تعذر قراءة رد المساعد الذكي."
+        }
+    }
+
     fun isServerHealthy(): Boolean = request("GET", "/health", "", null).first == 200
 
     private fun request(method: String, path: String, token: String, payload: JSONObject?): Pair<Int, String> {
